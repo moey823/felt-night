@@ -4,3 +4,31 @@ __pycache__/
 *.sqlite3-*
 *.db
 *.db-*
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.secret
+
+# Runtime output and local captures
+*.log
+*.log.*
+/runtime/
+/screenshots/runtime/
+/test-results/
+
+# Editor and backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.swp
+*~
+
+# Local archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z

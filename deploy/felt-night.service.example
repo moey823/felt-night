@@ -1,0 +1,19 @@
+[Unit]
+Description=Felt Night poker room
+After=network.target
+
+[Service]
+Type=simple
+User=felt-night
+Group=felt-night
+WorkingDirectory=/opt/felt-night
+Environment=PYTHONUNBUFFERED=1
+Environment=FELT_NIGHT_ROOM_PASSWORD_FILE=/etc/felt-night/room-invite
+ExecStart=/usr/bin/python3 -B /opt/felt-night/server.py --host 127.0.0.1 --port 18943 --public-origin https://poker.example.com --data-dir /var/lib/felt-night
+Restart=on-failure
+RestartSec=3
+UMask=0077
+StateDirectory=felt-night
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+poker.example.com {
+    @poker path /poker /poker/*
+    reverse_proxy @poker 127.0.0.1:18943
+}
