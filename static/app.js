@@ -20,7 +20,26 @@
     noticeTimer: 0,
     settingsTableId: "",
     settingsDirty: false,
-    settingsSaving: false
+    settingsSaving: false,
+    actionPending: null,
+    actionConfirmation: null,
+    actionRenderKey: "",
+    raiseDraftKey: "",
+    raiseDraftValue: null,
+    tableFx: {
+      handId: null,
+      lastSeq: -1,
+      generation: 0,
+      eventAware: false,
+      actions: {},
+      revealed: {},
+      awards: [],
+      displayWagers: {},
+      wagerPositions: {},
+      queue: [],
+      currentItem: null,
+      running: false
+    }
   };
 
   function byId(id) {
@@ -285,7 +304,7 @@
     var rank = String(info.rank || "").toUpperCase();
     var cls = small ? "mini-card" : "playing-card";
     if (suit.red) cls += " red";
-    if (small) return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '">' + esc(rank) + esc(suit.symbol) + '</span>';
+    if (small) return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="mini-rank">' + esc(rank) + '</b><span class="mini-suit">' + esc(suit.symbol) + '</span></span>';
     return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="rank">' + esc(rank) + '</b><span class="suit">' + esc(suit.symbol) + '</span></span>';
   }
 
@@ -318,6 +337,323 @@
     return Boolean(seat.is_bot || seat.bot || seat.kind === "bot" || id.indexOf("bot:") === 0);
   }
 
+  function eventSeatNo(event) {
+    var raw = event && (event.seat_no != null ? event.seat_no : event.seat);
+    return raw == null ? null : String(Math.floor(number(raw, -1)));
+  }
+
+  function eventActorId(event) {
+    var actor = event && (event.actor_id || event.player_id || event.actor);
+    if (actor && typeof actor === "object") actor = actor.player_id || actor.id || "";
+    return actor == null ? "" : String(actor);
+  }
+
+  function eventActionText(event) {
+    var action = String(event && event.action || "action").toLowerCase().replace(/[ -]+/g, "_");
+    var paid = number(event && event.amount, 0);
+    var streetTotal = number(event && event.street_contribution, paid);
+    var actionTotal = action === "bet" || action === "raise" || action === "raise_to" || action === "all_in" || action === "allin" ? streetTotal : paid;
+    var value = actionTotal > 0 ? " · " + chips(actionTotal) : "";
+    var names = {
+      fold: ["FOLDED", "FOLD"],
+      check: ["CHECKED", "CHECK"],
+      call: ["CALL" + value, "CALL" + value],
+      bet: ["BET" + value, "BET" + value],
+      raise: ["RAISE TO" + value, "RAISE" + value],
+      raise_to: ["RAISE TO" + value, "RAISE" + value],
+      all_in: ["ALL-IN" + value, "ALL-IN" + value],
+      allin: ["ALL-IN" + value, "ALL-IN" + value],
+      small_blind: ["SMALL BLIND" + value, "SB" + value],
+      big_blind: ["BIG BLIND" + value, "BB" + value],
+      ante: ["ANTE" + value, "ANTE" + value]
+    };
+    return names[action] || [action.toUpperCase() + value, action.toUpperCase() + value];
+  }
+
+  function rememberTableEvent(event) {
+    var fx = state.tableFx;
+    if (!event || typeof event !== "object") return;
+    if (event.type === "action") {
+      var text = eventActionText(event);
+      var actionState = {
+        label: text[0],
+        compactLabel: text[1],
+        kind: String(event.action || "").toLowerCase().replace(/[ -]+/g, "_"),
+        seatNo: eventSeatNo(event),
+        actorLabel: String(event.actor_label || "")
+      };
+      var id = eventActorId(event);
+      if (id) fx.actions[id] = actionState;
+      if (actionState.seatNo != null) fx.actions["seat:" + actionState.seatNo] = actionState;
+      if (actionState.actorLabel) fx.actions["name:" + actionState.actorLabel.toLowerCase()] = actionState;
+    } else if (event.type === "reveal") {
+      (Array.isArray(event.hands) ? event.hands : []).forEach(function (hand) {
+        var id = String(hand && hand.player_id || "");
+        if (id && Array.isArray(hand.cards)) fx.revealed[id] = hand.cards;
+      });
+    } else if (event.type === "showdown_result" || event.type === "payout") {
+      fx.awards = Array.isArray(event.winners) ? event.winners : [];
+      (Array.isArray(event.showdown) ? event.showdown : []).forEach(function (hand) {
+        var id = String(hand && hand.player_id || "");
+        if (id && Array.isArray(hand.cards)) fx.revealed[id] = hand.cards;
+      });
+    }
+  }
+
+  function snapshotTableEffects(view, events) {
+    var fx = state.tableFx;
+    fx.generation += 1;
+    fx.queue = [];
+    fx.currentItem = null;
+    fx.actions = {};
+    fx.revealed = {};
+    fx.awards = [];
+    fx.displayWagers = {};
+    fx.wagerPositions = {};
+    fx.eventAware = Array.isArray(events);
+    fx.lastSeq = 0;
+    (events || []).forEach(function (event) {
+      rememberTableEvent(event);
+      fx.lastSeq = Math.max(fx.lastSeq, number(event && event.seq, -1));
+    });
+    (Array.isArray(view.seats) ? view.seats : []).forEach(function (seat, index) {
+      var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
+      var amount = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
+      if (amount > 0) fx.displayWagers[String(Math.floor(number(rawSeatNo, index)))] = amount;
+    });
+  }
+
+  function consumeTableEvents(view) {
+    var fx = state.tableFx;
+    var handId = String(view.hand_id || (number(view.hand_no, 0) ? "hand:" + number(view.hand_no, 0) : ""));
+    var events = Array.isArray(view.events) ? view.events : null;
+    var baseSeq = number(view.event_base_seq, 0);
+    var firstView = fx.handId === null;
+    var handChanged = !firstView && handId !== fx.handId;
+
+    if (firstView || handChanged) {
+      fx.handId = handId;
+      fx.lastSeq = 0;
+      var replayNewHand = handChanged && Boolean(handId) && Array.isArray(events) && baseSeq <= 1;
+      if (replayNewHand) {
+        fx.generation += 1;
+        fx.actions = {};
+        fx.revealed = {};
+        fx.awards = [];
+        fx.displayWagers = {};
+        fx.wagerPositions = {};
+        fx.queue = [];
+        fx.currentItem = null;
+        fx.eventAware = true;
+        events.slice().sort(function (a, b) { return number(a.seq, 0) - number(b.seq, 0); }).forEach(function (event) {
+          var seq = number(event && event.seq, -1);
+          rememberTableEvent(event);
+          if (event && event.type === "action" && number(event.amount, 0) > 0) fx.queue.push({ type: "action", event: event });
+          else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
+          fx.lastSeq = Math.max(fx.lastSeq, seq);
+        });
+      } else {
+        snapshotTableEffects(view, events);
+      }
+      return;
+    }
+
+    if (!events) return;
+    fx.eventAware = true;
+    if (baseSeq > fx.lastSeq + 1) {
+      snapshotTableEffects(view, events);
+      return;
+    }
+    var ordered = events.slice().sort(function (a, b) { return number(a.seq, 0) - number(b.seq, 0); });
+    var unseen = ordered.filter(function (event) { return number(event && event.seq, -1) > fx.lastSeq; });
+    if (unseen.length && number(unseen[0].seq, -1) > fx.lastSeq + 1) {
+      snapshotTableEffects(view, events);
+      return;
+    }
+    unseen.forEach(function (event) {
+      var seq = number(event && event.seq, -1);
+      rememberTableEvent(event);
+      if (event && event.type === "action" && number(event.amount, 0) > 0) fx.queue.push({ type: "action", event: event });
+      else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
+      fx.lastSeq = Math.max(fx.lastSeq, seq);
+    });
+  }
+
+  function actionForSeat(seat, seatNo) {
+    var fx = state.tableFx;
+    var id = String(seat.id || seat.player_id || "");
+    var name = String(seat.name || "").toLowerCase();
+    return fx.actions[id] || fx.actions["seat:" + seatNo] || (name ? fx.actions["name:" + name] : null) || null;
+  }
+
+  function addLayerPoint(node, gridRect, x, y) {
+    if (!node || !gridRect.width || !gridRect.height) return;
+    node.style.left = (x / gridRect.width * 100).toFixed(2) + "%";
+    node.style.top = (y / gridRect.height * 100).toFixed(2) + "%";
+  }
+
+  function boxForNode(node, gridRect) {
+    if (!node || node.hidden) return null;
+    var rect = node.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return { left: rect.left - gridRect.left, top: rect.top - gridRect.top, right: rect.right - gridRect.left, bottom: rect.bottom - gridRect.top };
+  }
+
+  function boxesOverlap(a, b, gap) {
+    var pad = gap || 0;
+    return a.left < b.right + pad && a.right + pad > b.left && a.top < b.bottom + pad && a.bottom + pad > b.top;
+  }
+
+  function findBadgeSpot(node, seatNode, gridRect, blockers) {
+    var seatRect = boxForNode(seatNode, gridRect);
+    if (!seatRect) return null;
+    var width = node.offsetWidth || 20;
+    var height = node.offsetHeight || 20;
+    var seatWidth = seatRect.right - seatRect.left;
+    var seatHeight = seatRect.bottom - seatRect.top;
+    var cx = (seatRect.left + seatRect.right) / 2;
+    var cy = (seatRect.top + seatRect.bottom) / 2;
+    var baseAngle = Math.atan2(gridRect.height / 2 - cy, gridRect.width / 2 - cx);
+    var offsets = [0, 36, -36, 72, -72, 108, -108, 144, -144, 180];
+    var steps = [0, 14, 28, 42, 56, 70, 84, 98];
+
+    function valid(x, y) {
+      var box = { left: x - width / 2, right: x + width / 2, top: y - height / 2, bottom: y + height / 2 };
+      if (box.left < 4 || box.top < 4 || box.right > gridRect.width - 4 || box.bottom > gridRect.height - 4) return null;
+      for (var i = 0; i < blockers.length; i += 1) {
+        if (boxesOverlap(box, blockers[i], 4)) return null;
+      }
+      return { x: x, y: y, box: box };
+    }
+
+    for (var a = 0; a < offsets.length; a += 1) {
+      var angle = baseAngle + offsets[a] * Math.PI / 180;
+      var ux = Math.cos(angle);
+      var uy = Math.sin(angle);
+      var xClear = Math.abs(ux) > .001 ? ((seatWidth + width) / 2 + 7) / Math.abs(ux) : Infinity;
+      var yClear = Math.abs(uy) > .001 ? ((seatHeight + height) / 2 + 7) / Math.abs(uy) : Infinity;
+      var distance = Math.min(xClear, yClear);
+      for (var step = 0; step < steps.length; step += 1) {
+        var found = valid(cx + ux * (distance + steps[step]), cy + uy * (distance + steps[step]));
+        if (found) return found;
+      }
+    }
+
+    var fallback = null;
+    var fallbackScore = Infinity;
+    for (var y = height / 2 + 5; y <= gridRect.height - height / 2 - 5; y += 14) {
+      for (var x = width / 2 + 5; x <= gridRect.width - width / 2 - 5; x += 14) {
+        var candidate = valid(x, y);
+        if (!candidate) continue;
+        var distanceToSeat = Math.hypot(x - cx, y - cy);
+        if (distanceToSeat < fallbackScore) {
+          fallback = candidate;
+          fallbackScore = distanceToSeat;
+        }
+      }
+    }
+    return fallback;
+  }
+
+  function queuedWagerAmounts(fx) {
+    var amounts = {};
+    var pending = [];
+    if (fx.currentItem) pending.push(fx.currentItem);
+    (fx.queue || []).some(function (item) {
+      if (item.type === "sweep") return true;
+      pending.push(item);
+      return false;
+    });
+    pending.forEach(function (item) {
+      if (item.type !== "action" || number(item.event && item.event.amount, 0) <= 0) return;
+      var seatNo = eventSeatNo(item.event);
+      if (seatNo == null) return;
+      amounts[seatNo] = number(item.event.street_contribution, number(item.event.amount, 0));
+    });
+    return amounts;
+  }
+
+  function motionAllowed() {
+    if (document.hidden) return false;
+    return !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  function animateChip(layer, start, end, amount, duration) {
+    if (!motionAllowed() || !layer || !start || !end || typeof layer.animate !== "function") return Promise.resolve();
+    var bounds = layer.getBoundingClientRect();
+    var chip = document.createElement("span");
+    chip.className = "chip-flight";
+    chip.textContent = chips(amount);
+    chip.style.left = (start.x - bounds.left) + "px";
+    chip.style.top = (start.y - bounds.top) + "px";
+    layer.appendChild(chip);
+    var dx = end.x - start.x;
+    var dy = end.y - start.y;
+    var animation = chip.animate([
+      { transform: "translate(-50%, -50%) scale(.82)", opacity: .96 },
+      { transform: "translate(calc(-50% + " + dx + "px), calc(-50% + " + dy + "px)) scale(.65)", opacity: .84 }
+    ], { duration: duration || 430, easing: "cubic-bezier(.18,.74,.32,1)", fill: "forwards" });
+    return animation.finished.catch(function () {}).then(function () { chip.remove(); });
+  }
+
+  function playTableEffects() {
+    var fx = state.tableFx;
+    if (fx.running || !fx.queue.length) return;
+    var item = fx.queue.shift();
+    var generation = fx.generation;
+    fx.currentItem = item;
+    var view = state.tableView;
+    fx.running = true;
+
+    function stillCurrent() { return generation === fx.generation; }
+    function complete() {
+      fx.running = false;
+      if (fx.currentItem === item) fx.currentItem = null;
+      if (stillCurrent() && state.tableView) renderSeats(state.tableView);
+      playTableEffects();
+    }
+
+    if (item.type === "action") {
+      var event = item.event || {};
+      var seatNo = eventSeatNo(event);
+      var seat = (view && Array.isArray(view.seats) ? view.seats : []).find(function (candidate, index) {
+        var rawSeatNo = candidate.seat_no != null ? candidate.seat_no : index;
+        return String(Math.floor(number(rawSeatNo, index))) === seatNo;
+      });
+      var sourceNode = seat && byId("seat-grid").querySelector('.seat-card[data-seat-no="' + seatNo + '"]');
+      var layer = byId("chip-layer");
+      var sourceRect = sourceNode && sourceNode.getBoundingClientRect();
+      var target = fx.wagerPositions[seatNo];
+      var start = sourceRect ? { x: sourceRect.left + sourceRect.width / 2, y: sourceRect.top + sourceRect.height / 2 } : null;
+      var contribution = number(event.street_contribution, number(event.amount, 0));
+      animateChip(layer, start, target, event.amount, 430).then(function () {
+        if (stillCurrent() && seatNo != null) fx.displayWagers[seatNo] = contribution;
+        complete();
+      });
+      return;
+    }
+
+    if (item.type === "sweep") {
+      var layerNode = byId("chip-layer");
+      var potNode = byId("pot-amount");
+      var potRect = potNode && potNode.getBoundingClientRect();
+      var center = potRect ? { x: potRect.left + potRect.width / 2, y: potRect.top + potRect.height / 2 } : null;
+      var motions = [];
+      byId("seat-grid").querySelectorAll(".seat-wager:not(.is-reserved)").forEach(function (node) {
+        var rect = node.getBoundingClientRect();
+        var raw = node.getAttribute("data-seat-no");
+        var amount = fx.displayWagers[String(raw)] || 0;
+        motions.push(animateChip(layerNode, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }, center, amount, 470));
+      });
+      Promise.all(motions).then(function () {
+        if (stillCurrent()) fx.displayWagers = {};
+        complete();
+      });
+      return;
+    }
+    complete();
+  }
+
   function renderSeats(view) {
     var layout = seatLayout(view);
     var max = layout.max;
@@ -336,6 +672,8 @@
     var actorId = String(view.actor_id || view.to_act_id || "");
     var buttonId = String(view.button_id || "");
     var currentHand = view.status === "playing";
+    var fx = state.tableFx;
+    var pendingWagers = queuedWagerAmounts(fx);
     var html = "";
 
     for (var i = 0; i < max; i += 1) {
@@ -353,42 +691,52 @@
       var allIn = Boolean(seat.all_in || seat.is_all_in);
       var acting = actorId && id === actorId;
       var dealer = buttonId && id === buttonId;
-      var host = hostId === id;
       var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") + (folded ? " is-folded" : "") + (bot ? " is-bot" : "");
       var label = folded ? "Folded" : (allIn ? "All in" : "");
-      var seatBet = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
       var stack = number(seat.stack, 0);
+      var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
+      var seatNo = String(Math.floor(number(rawSeatNo, i)));
+      var actionState = actionForSeat(seat, seatNo);
+      if (acting) actionState = { label: "TO ACT", compactLabel: "TO ACT", kind: "turn" };
+      else if (!actionState && allIn) actionState = { label: "ALL-IN", compactLabel: "ALL-IN", kind: "all_in" };
       var cards = [];
       if (isMe) {
         cards = cardArray(viewer.hole_cards);
         if (!cards.length) cards = cardArray(seat.hole_cards);
-      } else if (Array.isArray(seat.cards)) {
-        cards = seat.cards;
-      } else if (Array.isArray(seat.revealed_cards)) {
-        cards = seat.revealed_cards;
+      } else {
+        cards = fx.revealed[id] || cardArray(seat.cards);
+        if (!cards.length) cards = cardArray(seat.revealed_cards);
       }
+      var exposed = Boolean(cards.length && !isMe && (fx.revealed[id] || seat.cards || seat.revealed_cards));
 
       var cardHtml = "";
       if (cards.length) {
-        cardHtml = '<div class="seat-cards">' + cards.map(function (card) { return playingCardHTML(card, true); }).join("") + '</div>';
+        cardHtml = '<div class="seat-cards' + (exposed ? ' is-exposed' : ' is-viewer-cards') + '">' + cards.map(function (card) { return playingCardHTML(card, true); }).join("") + '</div>';
       } else if (currentHand && !folded && (stack > 0 || allIn)) {
         cardHtml = '<div class="seat-cards">' + hiddenCardHTML(true, false) + hiddenCardHTML(true, false) + '</div>';
       }
 
-      var tags = (host ? '<span class="seat-label">HOST</span>' : '') +
+      var tags = (hostId === id ? '<span class="seat-label">HOST</span>' : '') +
         (isMe ? '<span class="seat-label">YOU</span>' : '') +
-        (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '') +
-        (acting ? '<span class="seat-label">TURN</span>' : '');
-      var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
-      html += '<div class="' + classes + '" data-seat-no="' + Math.floor(number(rawSeatNo, i)) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
-        '<div class="seat-top"><span class="seat-name-wrap">' + (dealer ? '<span class="position-chip" title="Dealer button">D</span>' : '') +
-        '<span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
+        (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '');
+      html += '<div class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
+        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
         '<div class="seat-tags">' + tags + '</div>' +
         '<div class="seat-stack">' + chips(stack) + ' <span class="seat-number">chips</span></div>' +
-        '<div class="seat-detail"><span>' + esc(label) + '</span><span>' + (seatBet ? "Bet " + chips(seatBet) : "") + '</span></div>' +
+        '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
         cardHtml +
       '</div>';
+      if (dealer) html += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
+      if (actionState) html += '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionState.label) + '"><span class="seat-action-full">' + esc(actionState.label) + '</span><span class="seat-action-short">' + esc(actionState.compactLabel || actionState.label) + '</span></span>';
+      var wager = number(fx.displayWagers[seatNo], 0);
+      if (!fx.eventAware && !wager) wager = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
+      if (wager > 0) {
+        html += '<span class="seat-wager" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + chips(wager) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + chips(wager) + '</strong></span>';
+      } else if (number(pendingWagers[seatNo], 0) > 0) {
+        html += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-hidden="true"><span class="wager-stack"><i></i><i></i><i></i></span><strong>' + chips(pendingWagers[seatNo]) + '</strong></span>';
+      }
     }
+
     var grid = byId("seat-grid");
     var felt = byId("felt");
     grid.innerHTML = html;
@@ -419,17 +767,62 @@
       }
       var gridRect = grid.getBoundingClientRect();
       var halfWidth = node.offsetWidth / 2;
-      if (compact && gridRect.width > 0) {
-        var insetPercent = halfWidth / gridRect.width * 100;
-        x = Math.max(insetPercent, Math.min(100 - insetPercent, x));
-      }
-      var pageX = gridRect.left + x * gridRect.width / 100;
-      var viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-      pageX = Math.max(halfWidth, Math.min(viewportWidth - halfWidth, pageX));
+      var insetPercent = gridRect.width ? halfWidth / gridRect.width * 100 : 0;
+      x = Math.max(insetPercent + 1, Math.min(99 - insetPercent, x));
       var halfHeightPercent = grid.clientHeight ? (node.offsetHeight / 2) / grid.clientHeight * 100 : 0;
-      y = Math.max(halfHeightPercent, Math.min(100 - halfHeightPercent, y));
-      node.style.left = ((pageX - gridRect.left) / gridRect.width * 100).toFixed(2) + "%";
+      y = Math.max(halfHeightPercent + 1, Math.min(99 - halfHeightPercent, y));
+      node.style.left = x.toFixed(2) + "%";
       node.style.top = y.toFixed(2) + "%";
+    });
+
+    var gridRect = grid.getBoundingClientRect();
+    var blockers = [];
+    grid.querySelectorAll(".seat-card").forEach(function (node) {
+      var box = boxForNode(node, gridRect);
+      if (box) blockers.push(box);
+    });
+    ["board-caption", "board-cards", "pot-display", "street-label", "hand-result"].forEach(function (id) {
+      var box = boxForNode(byId(id), gridRect);
+      if (box) blockers.push(box);
+    });
+
+    var seatNodeFor = function (seatNo) {
+      return grid.querySelector('.seat-card[data-seat-no="' + seatNo + '"]');
+    };
+    grid.querySelectorAll(".dealer-marker").forEach(function (node) {
+      var seatNo = String(node.getAttribute("data-marker-seat"));
+      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
+      if (!spot) return;
+      addLayerPoint(node, gridRect, spot.x, spot.y);
+      blockers.push(spot.box);
+    });
+
+    fx.wagerPositions = {};
+    Array.prototype.slice.call(grid.querySelectorAll(".seat-wager")).sort(function (a, b) {
+      return number(a.getAttribute("data-seat-no"), 0) - number(b.getAttribute("data-seat-no"), 0);
+    }).forEach(function (node) {
+      var seatNo = String(node.getAttribute("data-seat-no"));
+      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
+      if (!spot) {
+        node.classList.add("is-unplaced");
+        return;
+      }
+      addLayerPoint(node, gridRect, spot.x, spot.y);
+      fx.wagerPositions[seatNo] = { x: gridRect.left + spot.x, y: gridRect.top + spot.y };
+      blockers.push(spot.box);
+    });
+
+    Array.prototype.slice.call(grid.querySelectorAll(".seat-action")).sort(function (a, b) {
+      return Number(b.classList.contains("kind-turn")) - Number(a.classList.contains("kind-turn"));
+    }).forEach(function (node) {
+      var seatNo = String(node.getAttribute("data-action-seat"));
+      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
+      if (!spot) {
+        node.classList.add("is-unplaced");
+        return;
+      }
+      addLayerPoint(node, gridRect, spot.x, spot.y);
+      blockers.push(spot.box);
     });
   }
 
@@ -450,8 +843,21 @@
     byId("board-cards").innerHTML = slots.join("");
     var pot = number(view.pot, view.hand && view.hand.pot);
     byId("pot-amount").textContent = chips(pot);
-    byId("pot-label").textContent = pot > 0 ? "Pot" : "Pot";
+    byId("pot-label").textContent = "Pot";
     byId("street-label").textContent = view.street && view.street !== "lobby" ? String(view.street).replace(/_/g, " ").toUpperCase() : "";
+    var awards = Array.isArray(state.tableFx.awards) ? state.tableFx.awards : [];
+    byId("pot-display").hidden = Boolean(awards.length && pot === 0);
+    var resultNode = byId("hand-result");
+    if (awards.length) {
+      resultNode.hidden = false;
+      resultNode.innerHTML = '<span class="hand-result-title">HAND PAYOUT</span>' + awards.map(function (award) {
+        var name = String(award.actor_label || award.name || "Player");
+        return '<span class="hand-result-winner"><strong>' + esc(name) + '</strong><span>+' + chips(award.amount) + '</span></span>';
+      }).join("");
+    } else {
+      resultNode.hidden = true;
+      resultNode.innerHTML = "";
+    }
   }
 
   function renderBlindStrip(view) {
@@ -512,85 +918,202 @@
     }).join("");
   }
 
+  function actionTokenKey(view) {
+    return [state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0)].join(":");
+  }
+
+  function actionIntentIsCurrent(intent) {
+    var view = state.tableView;
+    var viewer = view && view.viewer || {};
+    return Boolean(intent && state.activeTableId === intent.tableId && view &&
+      view.status === "playing" && viewer.can_act &&
+      number(view.hand_no, 0) === intent.payload.expected_hand &&
+      number(view.turn_version, 0) === intent.payload.expected_turn_version);
+  }
+
+  function dismissAllInConfirmation(restoreFocus) {
+    var intent = state.actionConfirmation;
+    if (!intent) return;
+    state.actionConfirmation = null;
+    var dialog = byId("allInConfirm");
+    if (dialog && dialog.open) dialog.close();
+    if (!restoreFocus) return;
+    window.setTimeout(function () {
+      var panel = byId("action-panel");
+      if (intent.trigger && intent.trigger.isConnected && panel && !panel.hidden && !intent.trigger.disabled) {
+        intent.trigger.focus();
+      } else if (panel && !panel.hidden) {
+        var first = byId("action-controls").querySelector("button:not(:disabled)");
+        if (first) first.focus();
+      }
+    }, 0);
+  }
+
+  function updateRaisePreview() {
+    var input = byId("raise-amount");
+    var view = state.tableView;
+    if (!input || !view) return;
+    var target = Number(input.value);
+    var min = number(input.min, 0);
+    var max = number(input.max, 0);
+    var viewer = view.viewer || {};
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    var seat = (view.seats || []).find(function (item) {
+      return String(item.id || item.player_id || "") === playerId;
+    });
+    var stack = number(seat && seat.stack, 0);
+    var ownBet = number(seat && seat.bet, 0);
+    var valid = Number.isInteger(target) && target >= min && target <= max;
+    var paid = Math.min(stack, Math.max(0, target - ownBet));
+    var projection = byId("raise-projection");
+    var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
+    if (projection) {
+      projection.textContent = valid
+        ? "Adds " + chips(paid) + " chips to reach " + chips(target) + " total on this street."
+        : "Choose a whole-chip total from " + chips(min) + " to " + chips(max) + ".";
+    }
+    if (button) {
+      var actionName = number(view.current_bet, 0) > 0 ? "Raise" : "Bet";
+      button.textContent = valid
+        ? actionName + " to " + chips(target) + (target === max ? " · all-in" : "")
+        : actionName + " amount";
+      button.disabled = Boolean(state.actionPending || state.actionConfirmation || !valid);
+    }
+  }
+
   function renderActions(view) {
     var panel = byId("action-panel");
     var waitPanel = byId("wait-panel");
     var viewer = view.viewer || {};
     var playing = view.status === "playing";
     var canAct = playing && Boolean(viewer.can_act);
+
+    if (state.actionPending && state.actionPending.accepted && !actionIntentIsCurrent(state.actionPending)) {
+      state.actionPending = null;
+    }
+    if (state.actionConfirmation && !actionIntentIsCurrent(state.actionConfirmation)) {
+      dismissAllInConfirmation(true);
+      showNotice("That turn changed, so the all-in confirmation was canceled. Review the updated action.", "info", false);
+    }
+
     panel.hidden = !canAct;
+    panel.setAttribute("aria-busy", String(Boolean(state.actionPending)));
     waitPanel.hidden = !playing || canAct;
-
-    if (!playing) return;
-
     var actorId = String(view.actor_id || view.to_act_id || "");
     var actor = (view.seats || []).find(function (seat) {
       return String(seat.id || seat.player_id || "") === actorId;
     });
-    if (canAct) {
-      byId("action-title").textContent = "Choose an action";
-      var deadline = number(view.turn_deadline, 0);
-      var seconds = -1;
-      if (deadline > 0) {
-        var stamp = deadline < 100000000000 ? deadline * 1000 : deadline;
-        seconds = Math.max(0, Math.floor((stamp - Date.now()) / 1000));
-      }
-      byId("turn-clock").textContent = seconds >= 0 ? "Auto-action in " + formatClock(seconds) : "";
-      var toCall = number(viewer.to_call, 0);
-      var seat = (view.seats || []).find(function (s) {
-        return String(s.id || s.player_id || "") === String(viewer.player_id || (state.player && state.player.id) || "");
-      });
-      var stack = number(seat && seat.stack, 0);
-      var canRaise = viewer.raise_rights !== false;
-      var maxRaise = number(viewer.max_raise_to, number(view.current_bet, 0) + stack);
-      var minRaise = number(viewer.min_raise_to, number(view.current_bet, 0) + number(view.min_raise, 0));
-      var raising = canRaise && maxRaise > number(view.current_bet, 0);
-      var controls = "";
-
-      if (toCall > 0) {
-        var callLabel = stack > 0 && stack <= toCall ? "Call all-in · " + chips(stack) : "Call · " + chips(toCall);
-        controls += '<button class="button button-outline call-button" type="button" data-poker-action="call">' + esc(callLabel) + '</button>';
-      } else {
-        controls += '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>';
-      }
-      controls += '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>';
-
-      if (stack > 0 && (canRaise || stack <= toCall)) {
-        controls += '<button class="button button-quiet" type="button" data-poker-action="all_in">All in · ' + chips(stack) + '</button>';
-      }
-
-      if (raising && minRaise > 0 && maxRaise >= minRaise) {
-        var raiseLabel = number(view.current_bet, 0) > 0 ? "Raise to" : "Bet";
-        var inputValue = Math.min(maxRaise, Math.max(minRaise, number(viewer.suggested_raise_to, minRaise)));
-        controls += '<div class="raise-control"><label for="raise-amount">' + raiseLabel + '</label>' +
-          '<input id="raise-amount" type="number" inputmode="numeric" min="' + minRaise + '" max="' + maxRaise + '" step="1" value="' + inputValue + '" aria-label="Bet or raise to total">' +
-          '<button class="button button-primary" type="button" data-poker-action="raise_to">' + (number(view.current_bet, 0) > 0 ? "Raise" : "Bet") + '</button>' +
-          '<span class="raise-range">' + chips(minRaise) + '–' + chips(maxRaise) + '</span></div>';
-      } else if (!canRaise && toCall > 0) {
-        controls += '<span class="action-disabled-note">Raising is closed after a short all-in.</span>';
-      }
-      byId("action-controls").innerHTML = controls;
+    if (!playing) {
+      state.actionRenderKey = "";
       return;
     }
-
-    if (actor) {
-      byId("wait-title").textContent = esc(actor.name || "Another player") + " is acting";
-      var deadline = number(view.turn_deadline, 0);
-      var seconds = -1;
-      if (deadline > 0) {
-        var stamp = deadline < 100000000000 ? deadline * 1000 : deadline;
-        seconds = Math.max(0, Math.floor((stamp - Date.now()) / 1000));
+    if (!canAct) {
+      state.actionRenderKey = "";
+      if (actor) {
+        byId("wait-title").textContent = esc(actor.name || "Another player") + " is acting";
+        var waitDeadline = number(view.turn_deadline, 0);
+        var waitSeconds = -1;
+        if (waitDeadline > 0) {
+          var waitStamp = waitDeadline < 100000000000 ? waitDeadline * 1000 : waitDeadline;
+          waitSeconds = Math.max(0, Math.floor((waitStamp - Date.now()) / 1000));
+        }
+        byId("wait-description").textContent = waitSeconds >= 0 ? "The turn clock has " + formatClock(waitSeconds) + " left." : "The table will update as play continues.";
+      } else if (viewer.seated) {
+        byId("wait-title").textContent = "Waiting for the next hand";
+        byId("wait-description").textContent = "Your seat stays at the table while the tournament continues.";
+      } else {
+        byId("wait-title").textContent = "Watching the table";
+        byId("wait-description").textContent = "Join during the lobby phase to take a seat.";
       }
-      byId("wait-description").textContent = seconds >= 0 ? "The turn clock has " + formatClock(seconds) + " left." : "The table will update as play continues.";
-    } else if (viewer.seated) {
-      byId("wait-title").textContent = "Waiting for the next hand";
-      byId("wait-description").textContent = "Your seat stays at the table while the tournament continues.";
-    } else {
-      byId("wait-title").textContent = "Watching the table";
-      byId("wait-description").textContent = "Join during the lobby phase to take a seat.";
+      return;
     }
-  }
+    byId("action-title").textContent = "Choose an action";
+    var deadline = number(view.turn_deadline, 0);
+    var seconds = -1;
+    if (deadline > 0) {
+      var stamp = deadline < 100000000000 ? deadline * 1000 : deadline;
+      seconds = Math.max(0, Math.floor((stamp - Date.now()) / 1000));
+    }
+    byId("turn-clock").textContent = seconds >= 0 ? "Auto-action in " + formatClock(seconds) : "";
 
+    var toCall = number(viewer.to_call, 0);
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    var seat = (view.seats || []).find(function (item) {
+      return String(item.id || item.player_id || "") === playerId;
+    });
+    var stack = number(seat && seat.stack, 0);
+    var ownBet = number(seat && seat.bet, 0);
+    var currentBet = number(view.current_bet, 0);
+    var callAmount = Math.min(stack, toCall);
+    var callIsAllIn = stack > 0 && callAmount === stack && toCall > 0;
+    var canRaise = viewer.raise_rights !== false;
+    var maxRaise = number(viewer.max_raise_to, ownBet + stack);
+    var minRaise = number(viewer.min_raise_to, currentBet + number(view.min_raise, 0));
+    var raising = canRaise && maxRaise > currentBet && minRaise > 0 && maxRaise >= minRaise;
+    var draftKey = actionTokenKey(view);
+    if (state.raiseDraftKey !== draftKey) {
+      state.raiseDraftKey = draftKey;
+      state.raiseDraftValue = null;
+    }
+
+    var summary = toCall > 0
+      ? "You owe " + chips(toCall) + " chips. " + (callIsAllIn
+        ? "Calling puts all " + chips(stack) + " chips left in your stack into the pot."
+        : "Your remaining stack is " + chips(stack) + " chips.")
+      : "No bet to call. Check is free. Your remaining stack is " + chips(stack) + " chips.";
+    byId("action-guidance").textContent = summary;
+
+    var actionKey = JSON.stringify([
+      state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0),
+      toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
+      minRaise, maxRaise, raising
+    ]);
+    var controls = "";
+    if (toCall > 0) {
+      var callLabel = "Call " + chips(callAmount) + " chips" + (callIsAllIn ? " · all-in" : "");
+      controls += '<button class="button button-outline call-button" type="button" data-poker-action="call" aria-label="' + esc(callLabel) + '">' + esc(callLabel) + '</button>';
+      controls += '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>';
+    } else {
+      controls += '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>';
+    }
+
+    var allInRaises = stack > 0 && canRaise && maxRaise > currentBet;
+    if (allInRaises && !callIsAllIn) {
+      controls += '<button class="button button-quiet all-in-button" type="button" data-poker-action="all_in" aria-label="All in with ' + chips(stack) + ' chips">All-in · ' + chips(stack) + ' chips</button>';
+    }
+
+    if (raising) {
+      var isRaise = currentBet > 0;
+      var raiseLabel = isRaise ? "Raise to" : "Bet to";
+      var suggested = Math.min(maxRaise, Math.max(minRaise, number(viewer.suggested_raise_to, minRaise)));
+      var inputValue = state.raiseDraftValue !== null ? state.raiseDraftValue : String(suggested);
+      controls += '<div class="raise-control"><label for="raise-amount">' + raiseLabel + ' (total)</label>' +
+        '<input id="raise-amount" type="number" inputmode="numeric" min="' + minRaise + '" max="' + maxRaise + '" step="1" value="' + esc(inputValue) + '" aria-label="' + raiseLabel + ' total street contribution" aria-describedby="raise-range raise-projection">' +
+        '<button class="button button-primary" type="button" data-poker-action="raise_to">' + raiseLabel + ' ' + chips(number(inputValue, suggested)) + '</button>' +
+        '<span class="raise-range" id="raise-range">Min ' + chips(minRaise) + ' · max ' + chips(maxRaise) + ' total</span>' +
+        '<span class="raise-projection" id="raise-projection"></span></div>';
+    } else if (!canRaise && toCall > 0) {
+      controls += '<span class="action-disabled-note">Raising is closed after a short all-in.</span>';
+    }
+
+    if (state.actionRenderKey !== actionKey) {
+      var keepRaiseFocus = document.activeElement && document.activeElement.id === "raise-amount";
+      byId("action-controls").innerHTML = controls;
+      state.actionRenderKey = actionKey;
+      if (keepRaiseFocus) {
+        var newInput = byId("raise-amount");
+        if (newInput) newInput.focus({ preventScroll: true });
+      }
+    }
+    var blocked = Boolean(state.actionPending || state.actionConfirmation);
+    byId("action-controls").querySelectorAll("button[data-poker-action]").forEach(function (button) {
+      if (button.getAttribute("data-poker-action") !== "raise_to") button.disabled = blocked;
+    });
+    var raiseInput = byId("raise-amount");
+    if (raiseInput) raiseInput.disabled = blocked;
+    updateRaisePreview();
+
+  }
 
   function renderLobbyControls(view, host, ownSeat, isSeated, layout) {
     var panel = byId("lobby-seat-panel");
@@ -699,6 +1222,7 @@
       return;
     }
 
+    consumeTableEvents(view);
     var status = view.status || "lobby";
     var statusNode = byId("view-status");
     statusNode.textContent = statusName(status);
@@ -715,11 +1239,12 @@
     byId("button-caption").textContent = view.status === "playing" ? "Dealer button moves each hand" : "Play chips · No rebuys";
 
     renderBlindStrip(view);
-    renderSeats(view);
     renderBoard(view);
+    renderSeats(view);
     renderLog(view);
     renderResults(view);
     renderActions(view);
+    playTableEffects();
 
     var viewer = view.viewer || {};
     var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
@@ -816,7 +1341,8 @@
       if (err.status !== 401) showNotice(err.message, "error", false);
     } finally {
       state.refreshBusy = false;
-      var delay = state.refreshPending ? 0 : (document.hidden ? 8000 : 2000);
+      var activeHand = Boolean(state.tableView && state.tableView.status === "playing");
+      var delay = state.refreshPending ? 0 : (document.hidden ? 8000 : (activeHand ? 900 : 2800));
       state.refreshPending = false;
       scheduleRefresh(delay);
     }
@@ -880,6 +1406,165 @@
     var data = await request("/tables/" + encodeURIComponent(state.activeTableId));
     state.tableView = data.table || data;
     renderTable();
+  }
+
+  function actionIntentFor(action, view, trigger) {
+    var viewer = view.viewer || {};
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    var seat = (view.seats || []).find(function (item) {
+      return String(item.id || item.player_id || "") === playerId;
+    });
+    var stack = number(seat && seat.stack, 0);
+    var ownBet = number(seat && seat.bet, 0);
+    var currentBet = number(view.current_bet, 0);
+    var toCall = number(viewer.to_call, 0);
+    var payload = {
+      expected_hand: number(view.hand_no, 0),
+      expected_turn_version: number(view.turn_version, 0)
+    };
+    var paid = 0;
+    var target = ownBet;
+    var usesWholeStack = false;
+
+    if (action === "raise_to") {
+      var input = byId("raise-amount");
+      var amount = Number(input && input.value);
+      var min = number(input && input.min, 0);
+      var max = number(input && input.max, 0);
+      if (!Number.isInteger(amount) || amount < min || amount > max) {
+        showNotice("Choose a whole-chip bet or raise total within the displayed range.", "error", false);
+        return null;
+      }
+      payload.action = currentBet > 0 ? "raise" : "bet";
+      payload.amount = amount;
+      paid = amount - ownBet;
+      target = amount;
+      usesWholeStack = stack > 0 && paid === stack && amount === number(viewer.max_raise_to, ownBet + stack);
+    } else {
+      payload.action = action;
+      if (action === "call") {
+        paid = Math.min(toCall, stack);
+        target = ownBet + paid;
+        usesWholeStack = stack > 0 && paid === stack;
+      } else if (action === "all_in") {
+        paid = stack;
+        target = ownBet + stack;
+        usesWholeStack = stack > 0;
+      }
+    }
+
+    var description;
+    var successMessage;
+    if (action === "fold") {
+      description = "fold";
+      successMessage = "Fold recorded.";
+    } else if (action === "check") {
+      description = "check";
+      successMessage = "Check recorded.";
+    } else if (action === "call") {
+      description = "call for " + chips(paid) + " chips" + (usesWholeStack ? " · all-in" : "");
+      successMessage = "Call recorded: " + chips(paid) + " chips" + (usesWholeStack ? " · all-in." : ".");
+    } else if (action === "all_in") {
+      if (target > currentBet) {
+        var allInVerb = currentBet > 0 ? "raise" : "bet";
+        description = "all-in " + allInVerb + " to " + chips(target) + " chips";
+        successMessage = "All-in " + allInVerb + " recorded: " + chips(paid) + " chips added to reach " + chips(target) + " total.";
+      } else {
+        description = "all-in call for " + chips(paid) + " chips";
+        successMessage = "All-in call recorded: " + chips(paid) + " chips.";
+      }
+    } else {
+      var raiseVerb = payload.action === "raise" ? "raise" : "bet";
+      description = raiseVerb + " to " + chips(target) + " total (adds " + chips(paid) + " chips)";
+      successMessage = (payload.action === "raise" ? "Raise" : "Bet") + " recorded: " + chips(paid) + " chips added to reach " + chips(target) + " total.";
+    }
+
+    var confirmationMessage = "";
+    if (usesWholeStack) {
+      if (action === "call") {
+        confirmationMessage = "Calling " + chips(paid) + " chips uses your entire remaining stack. Continue with the all-in call?";
+      } else if (action === "all_in" && target > currentBet) {
+        confirmationMessage = "This all-in " + (currentBet > 0 ? "raise" : "bet") + " adds " + chips(paid) + " chips to reach " + chips(target) + " total on this street. It uses your entire remaining stack. Continue?";
+      } else if (action === "all_in") {
+        confirmationMessage = "This call puts all " + chips(paid) + " chips left in your stack into the pot. Continue with the all-in call?";
+      } else {
+        confirmationMessage = "This " + (payload.action === "raise" ? "raise" : "bet") + " adds " + chips(paid) + " chips to reach " + chips(target) + " total on this street. It uses your entire remaining stack. Continue with the all-in?";
+      }
+    }
+
+    return {
+      tableId: state.activeTableId,
+      payload: payload,
+      action: action,
+      paid: paid,
+      target: target,
+      wholeStackAmount: stack,
+      usesWholeStack: usesWholeStack,
+      confirmationMessage: confirmationMessage,
+      pendingMessage: "Submitting " + description + "…",
+      successMessage: successMessage,
+      trigger: trigger
+    };
+  }
+
+  async function submitActionIntent(intent) {
+    if (state.actionPending) return;
+    if (!actionIntentIsCurrent(intent)) {
+      showNotice("That turn changed before the action was sent. Review the refreshed table.", "info", false);
+      try { await refreshSelected(); } catch (err) {}
+      return;
+    }
+
+    state.actionPending = intent;
+    renderActions(state.tableView);
+    showNotice(intent.pendingMessage, "info", true);
+    try {
+      await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/action", intent.payload);
+      intent.accepted = true;
+      showNotice(intent.successMessage, "success", false);
+      try {
+        await refreshSelected();
+      } catch (refreshError) {
+        if (refreshError.status !== 401) {
+          showNotice(intent.successMessage + " The table is waiting for its next refresh.", "success", true);
+        }
+      }
+      try { await refreshAll(true); } catch (refreshError) {}
+    } catch (err) {
+      if (err.status === 409) {
+        showNotice("The hand or turn changed before that action arrived. Review the refreshed table.", "info", false);
+      } else {
+        showNotice(err.message, "error", false);
+      }
+      try { await refreshSelected(); } catch (refreshError) {}
+      try { await refreshAll(true); } catch (refreshError) {}
+    } finally {
+      if (state.actionPending === intent) {
+        state.actionPending = null;
+        if (state.tableView) renderActions(state.tableView);
+      }
+    }
+  }
+
+  function beginActionIntent(intent) {
+    if (!intent || state.actionPending || state.actionConfirmation) return;
+    if (!actionIntentIsCurrent(intent)) {
+      showNotice("That turn changed before the action was sent. Review the refreshed table.", "info", false);
+      refreshSelected().catch(function () {});
+      return;
+    }
+    if (!intent.usesWholeStack) {
+      submitActionIntent(intent);
+      return;
+    }
+    state.actionConfirmation = intent;
+    byId("allInConfirmDescription").textContent = intent.confirmationMessage;
+    byId("confirm-all-in-button").textContent = "Commit " + chips(intent.wholeStackAmount) + " chips";
+    var dialog = byId("allInConfirm");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    renderActions(state.tableView);
+    byId("cancel-all-in-button").focus();
   }
 
   byId("login-form").addEventListener("submit", async function (event) {
@@ -1112,51 +1797,58 @@
     }
   });
 
-  byId("action-controls").addEventListener("click", async function (event) {
+  byId("action-controls").addEventListener("input", function (event) {
+    if (event.target && event.target.id === "raise-amount") {
+      state.raiseDraftKey = actionTokenKey(state.tableView || {});
+      state.raiseDraftValue = event.target.value;
+      updateRaisePreview();
+    }
+  });
+
+  byId("action-controls").addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && event.target && event.target.id === "raise-amount") {
+      event.preventDefault();
+      var raiseButton = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
+      if (raiseButton && !raiseButton.disabled) raiseButton.click();
+    }
+  });
+
+  byId("action-controls").addEventListener("click", function (event) {
     var button = event.target.closest("[data-poker-action]");
-    if (!button || button.disabled) return;
-    var action = button.getAttribute("data-poker-action");
+    if (!button || button.disabled || state.actionPending || state.actionConfirmation) return;
     var view = state.tableView;
-    if (!view || !view.viewer) return;
-    var payload = {
-      expected_hand: number(view.hand_no, 0),
-      expected_turn_version: number(view.turn_version, 0)
-    };
+    if (!view || !view.viewer || !view.viewer.can_act) return;
+    var intent = actionIntentFor(button.getAttribute("data-poker-action"), view, button);
+    if (intent) beginActionIntent(intent);
+  });
 
-    if (action === "raise_to") {
-      var input = byId("raise-amount");
-      var amount = number(input && input.value, 0);
-      var min = number(input && input.min, 0);
-      var max = number(input && input.max, 0);
-      if (!Number.isInteger(amount) || amount < min || amount > max) {
-        showNotice("Choose a bet or raise amount within the displayed range.", "error", false);
-        return;
-      }
-      payload.action = number(view.current_bet, 0) > 0 ? "raise" : "bet";
-      payload.amount = amount;
-    } else {
-      payload.action = action;
+  byId("allInConfirm").addEventListener("click", function (event) {
+    var button = event.target.closest("[data-action]");
+    if (!button) return;
+    var action = button.getAttribute("data-action");
+    var intent = state.actionConfirmation;
+    if (action === "cancel-all-in") {
+      dismissAllInConfirmation(false);
+      if (state.tableView) renderActions(state.tableView);
+      if (intent && intent.trigger && intent.trigger.isConnected && !intent.trigger.disabled) intent.trigger.focus();
+      return;
     }
+    if (action !== "confirm-all-in" || !intent || state.actionPending) return;
+    if (!actionIntentIsCurrent(intent)) {
+      dismissAllInConfirmation(true);
+      showNotice("That turn changed, so the all-in was canceled. Review the refreshed action.", "info", false);
+      refreshSelected().catch(function () {});
+      return;
+    }
+    dismissAllInConfirmation(false);
+    submitActionIntent(intent);
+  });
 
-    var controls = byId("action-controls").querySelectorAll("button");
-    controls.forEach(function (control) { control.disabled = true; });
-    try {
-      await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/action", payload);
-      clearNotice();
-      await refreshSelected();
-      await refreshAll(true);
-    } catch (err) {
-      if (err.status === 409) {
-        showNotice("The hand moved on before that action arrived. The table has been refreshed.", "info", false);
-        try { await refreshSelected(); } catch (refreshError) {}
-        try { await refreshAll(true); } catch (refreshError) {}
-      } else {
-        showNotice(err.message, "error", false);
-        try { await refreshSelected(); } catch (refreshError) {}
-      }
-    } finally {
-      controls.forEach(function (control) { control.disabled = false; });
-    }
+  byId("allInConfirm").addEventListener("cancel", function () {
+    var intent = state.actionConfirmation;
+    state.actionConfirmation = null;
+    if (state.tableView) renderActions(state.tableView);
+    if (intent && intent.trigger && intent.trigger.isConnected && !intent.trigger.disabled) intent.trigger.focus();
   });
 
   window.addEventListener("resize", function () {

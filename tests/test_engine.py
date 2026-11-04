@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import engine
 
@@ -32,15 +33,63 @@ def heads_up(now=100.0, starting_stack=1000):
 class EngineTests(unittest.TestCase):
     def test_lobby_host_seated_and_heads_up_blinds(self):
         state = heads_up()
+        hand = state["hand"]
         self.assertEqual(state["status"], "playing")
         self.assertEqual(state["hand_no"], 1)
-        self.assertEqual(state["hand"]["button_id"], "p1")
-        self.assertEqual(state["hand"]["small_blind_id"], "p1")
-        self.assertEqual(state["hand"]["big_blind_id"], "p2")
-        self.assertEqual(state["hand"]["bets"], {"p1": 5, "p2": 10})
-        self.assertEqual(state["hand"]["to_act"], "p1")
-        self.assertEqual(state["seats"][0]["stack"], 995)
-        self.assertEqual(state["seats"][1]["stack"], 990)
+        self.assertEqual(hand["button_id"], hand["small_blind_id"])
+        self.assertEqual({hand["button_id"], hand["big_blind_id"]}, {"p1", "p2"})
+        self.assertEqual(hand["bets"], {hand["small_blind_id"]: 5, hand["big_blind_id"]: 10})
+        self.assertEqual(hand["to_act"], hand["button_id"])
+        seats = {seat["player_id"]: seat for seat in state["seats"]}
+        self.assertEqual(seats[hand["small_blind_id"]]["stack"], 995)
+        self.assertEqual(seats[hand["big_blind_id"]]["stack"], 990)
+        seat_numbers = sorted(seat["seat_no"] for seat in state["seats"])
+        self.assertIn(seat_numbers, ([0, 2], [1, 3]))
+
+    def test_start_randomizes_players_across_ring_and_draws_button_independently(self):
+        state = engine.create_lobby(
+            "random-seat", "p1", "Ada", config(max_seats=9), now=1
+        )
+        engine.join(state, "p2", "Bea", now=2, seat_no=4)
+        engine.join(state, "p3", "Cy", now=3, seat_no=8)
+
+        def reverse(values):
+            values.reverse()
+
+        with patch.object(engine.random.SystemRandom, "shuffle", side_effect=reverse):
+            with patch.object(engine.random.SystemRandom, "randrange", return_value=2):
+                with patch.object(
+                    engine.random.SystemRandom,
+                    "choice",
+                    side_effect=lambda seats: next(seat for seat in seats if seat["player_id"] == "p2"),
+                ):
+                    engine.start(state, "p1", now=4)
+
+        seat_numbers = {seat["player_id"]: seat["seat_no"] for seat in state["seats"]}
+        self.assertEqual(sorted(seat_numbers.values()), [2, 5, 8])
+        self.assertEqual(seat_numbers, {"p1": 8, "p2": 5, "p3": 2})
+        self.assertEqual(state["hand"]["button_id"], "p2")
+        self.assertEqual(state["config"]["max_seats"], 9)
+
+    def test_freezeout_start_accepts_every_field_size_from_two_to_nine(self):
+        for player_count in range(2, 10):
+            with self.subTest(player_count=player_count):
+                state = engine.create_lobby(
+                    "field-%d" % player_count,
+                    "p1",
+                    "Ada",
+                    config(max_seats=9),
+                    now=player_count,
+                )
+                for index in range(2, player_count + 1):
+                    engine.join(state, "p%d" % index, "P%d" % index, now=player_count + index)
+                engine.start(state, "p1", now=player_count + 20)
+                self.assertEqual(state["status"], "playing")
+                self.assertEqual(len(state["hand"]["holes"]), player_count)
+                self.assertEqual(len(state["seats"]), player_count)
+                seat_numbers = [seat["seat_no"] for seat in state["seats"]]
+                self.assertEqual(len(set(seat_numbers)), player_count)
+                self.assertTrue(all(0 <= seat_no < 9 for seat_no in seat_numbers))
 
     def test_join_is_idempotent_and_lobby_limits_are_enforced(self):
         state = engine.create_lobby(
@@ -59,19 +108,21 @@ class EngineTests(unittest.TestCase):
         state = heads_up()
         turn_version = state["turn_version"]
         hand_no = state["hand_no"]
+        actor = state["hand"]["to_act"]
+        opponent = "p2" if actor == "p1" else "p1"
         engine.apply_action(
-            state, "p1", "call", None, hand_no, turn_version, now=104
+            state, actor, "call", None, hand_no, turn_version, now=104
         )
-        self.assertEqual(state["hand"]["to_act"], "p2")
+        self.assertEqual(state["hand"]["to_act"], opponent)
         with self.assertRaises(engine.GameError) as caught:
             engine.apply_action(
-                state, "p1", "call", None, hand_no, turn_version, now=105
+                state, actor, "call", None, hand_no, turn_version, now=105
             )
         self.assertEqual(caught.exception.code, "stale_turn")
         self.assertEqual(caught.exception.status, 409)
         engine.apply_action(
             state,
-            "p2",
+            opponent,
             "check",
             None,
             state["hand_no"],
@@ -79,36 +130,39 @@ class EngineTests(unittest.TestCase):
             now=106,
         )
         self.assertEqual(state["hand"]["street"], "flop")
-        self.assertEqual(state["hand"]["to_act"], "p2")
+        self.assertEqual(state["hand"]["to_act"], opponent)
 
     def test_raise_to_rules_and_short_all_in(self):
         state = heads_up(starting_stack=100)
         hand = state["hand"]
+        small_id = hand["small_blind_id"]
+        big_id = hand["big_blind_id"]
         with self.assertRaises(engine.GameError) as caught:
             engine.apply_action(
-                state, "p1", "raise", 15, state["hand_no"], state["turn_version"], now=104
+                state, small_id, "raise", 15, state["hand_no"], state["turn_version"], now=104
             )
         self.assertEqual(caught.exception.code, "raise_too_small")
-        self.assertEqual(hand["to_act"], "p1")
+        self.assertEqual(hand["to_act"], small_id)
 
-        # SB has 95 chips after posting 5, so raising to 100 is a legal all-in
-        # even though it exceeds the normal minimum raise-to amount.
+        # The SB has 95 chips after posting 5, so raising to 100 is a legal all-in.
         engine.apply_action(
-            state, "p1", "raise", 100, state["hand_no"], state["turn_version"], now=105
+            state, small_id, "raise", 100, state["hand_no"], state["turn_version"], now=105
         )
         self.assertEqual(hand["current_bet"], 100)
         self.assertEqual(hand["min_raise"], 90)
-        self.assertEqual(hand["to_act"], "p2")
-        self.assertEqual(state["seats"][0]["stack"], 0)
+        self.assertEqual(hand["to_act"], big_id)
+        self.assertEqual(engine._seat_by_id(state, small_id)["stack"], 0)
 
     def test_fold_awards_pot_without_showing_hole_cards(self):
         state = heads_up()
         before_total = sum(seat["stack"] for seat in state["seats"]) + sum(
             state["hand"]["contrib"].values()
         )
+        folder = state["hand"]["to_act"]
+        winner = "p2" if folder == "p1" else "p1"
         engine.apply_action(
             state,
-            "p1",
+            folder,
             "fold",
             None,
             state["hand_no"],
@@ -117,7 +171,7 @@ class EngineTests(unittest.TestCase):
         )
         self.assertEqual(state["hand"]["street"], "showdown")
         self.assertEqual(state["hand"]["showdown"], [])
-        self.assertEqual(state["hand"]["payouts"]["p2"], 15)
+        self.assertEqual(state["hand"]["payouts"][winner], 15)
         after_total = sum(seat["stack"] for seat in state["seats"])
         self.assertEqual(after_total, before_total)
         self.assertTrue(any("wins 15 without showdown" in item["text"] for item in state["action_log"]))
@@ -135,13 +189,205 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("holes", view)
         self.assertEqual(len(p2_cards), 2)
 
+    def test_all_in_runout_reveals_live_cards_then_deals_one_street_per_tick(self):
+        state = engine.create_lobby(
+            "runout", "p1", "Ada", config(starting_stack=100), now=100
+        )
+        engine.join(state, "p2", "Bea", now=101)
+        engine._seat_by_id(state, "p2")["stack"] = 10
+        with patch.object(
+            engine.random.SystemRandom,
+            "choice",
+            side_effect=lambda seats: next(seat for seat in seats if seat["player_id"] == "p1"),
+        ):
+            engine.start(state, "p1", now=102)
+
+        engine.apply_action(
+            state, "p1", "call", None,
+            state["hand_no"], state["turn_version"], now=105,
+        )
+        hand = state["hand"]
+        self.assertEqual(hand["board"], [])
+        self.assertEqual(hand["street"], "preflop")
+        self.assertEqual(hand["runout_at"], 105 + engine.RUNOUT_SECONDS)
+        self.assertEqual({item["player_id"] for item in hand["revealed"]}, {"p1", "p2"})
+        view = engine.public_view(state, "p1")
+        self.assertTrue(all("cards" in seat for seat in view["seats"]))
+
+        first_due = hand["runout_at"]
+        engine.advance(state, now=first_due - 0.01)
+        self.assertEqual(hand["board"], [])
+        engine.advance(state, now=first_due)
+        self.assertEqual(hand["street"], "flop")
+        self.assertEqual(len(hand["board"]), 3)
+        self.assertEqual(hand["runout_at"], first_due + engine.RUNOUT_SECONDS)
+        engine.advance(state, now=hand["runout_at"])
+        self.assertEqual(hand["street"], "turn")
+        self.assertEqual(len(hand["board"]), 4)
+        engine.advance(state, now=hand["runout_at"])
+        self.assertEqual(hand["street"], "showdown")
+        self.assertEqual(len(hand["board"]), 5)
+
+    def test_all_in_does_not_reveal_or_run_out_while_two_players_can_make_side_pot(self):
+        state = engine.create_lobby(
+            "side-pot-privacy", "p1", "Ada", config(max_seats=3), now=1
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        hand = state["hand"]
+        all_in_id = "p1"
+        for seat in state["seats"]:
+            seat["stack"] = 0 if seat["player_id"] == all_in_id else 100
+        hand["street"] = "flop"
+        hand["board"] = [engine._take_card(hand) for _ in range(3)]
+        hand["bets"] = {player_id: 0 for player_id in hand["holes"]}
+        hand["contrib"] = {player_id: 0 for player_id in hand["holes"]}
+        hand["current_bet"] = 0
+        hand["acted"] = []
+        hand["acted_at_bet"] = {}
+        hand["to_act"] = None
+        hand["turn_deadline"] = None
+        engine._set_next_actor(state, hand["button_id"], now=5)
+
+        first_actor = hand["to_act"]
+        second_actor = next(
+            player_id for player_id in ("p1", "p2", "p3")
+            if player_id != all_in_id and player_id != first_actor
+        )
+        self.assertNotEqual(first_actor, all_in_id)
+        engine.apply_action(
+            state, first_actor, "bet", 20,
+            state["hand_no"], state["turn_version"], now=6,
+        )
+        self.assertEqual(hand["to_act"], second_actor)
+        engine.apply_action(
+            state, second_actor, "call", None,
+            state["hand_no"], state["turn_version"], now=7,
+        )
+
+        self.assertEqual(hand["street"], "turn")
+        self.assertIsNone(hand["runout_at"])
+        self.assertEqual(hand["revealed"], [])
+        view = engine.public_view(state, second_actor)
+        other = next(seat for seat in view["seats"] if seat["id"] == all_in_id)
+        self.assertNotIn("cards", other)
+        self.assertFalse(any(event["type"] == "reveal" for event in view["events"]))
+        self.assertEqual(
+            [(event["action"], event["street"]) for event in view["events"] if event["type"] == "action" and event.get("street") == "flop"],
+            [("bet", "flop"), ("call", "flop")],
+        )
+
+    def test_all_in_reveal_excludes_folded_players(self):
+        state = engine.create_lobby(
+            "reveal-live-only", "p1", "Ada", config(max_seats=3), now=1
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        hand = state["hand"]
+        hand["street"] = "flop"
+        hand["board"] = [engine._take_card(hand) for _ in range(3)]
+        hand["folded"] = ["p3"]
+        for seat in state["seats"]:
+            seat["stack"] = 0 if seat["player_id"] == "p1" else 100
+        engine._advance_street(state, now=5)
+
+        self.assertEqual(
+            {item["player_id"] for item in hand["revealed"]},
+            {"p1", "p2"},
+        )
+        reveal = next(event for event in hand["events"] if event["type"] == "reveal")
+        self.assertEqual({item["player_id"] for item in reveal["hands"]}, {"p1", "p2"})
+        view = engine.public_view(state, "p2")
+        p3 = next(seat for seat in view["seats"] if seat["id"] == "p3")
+        self.assertNotIn("cards", p3)
+
+    def test_event_history_is_ordered_bounded_and_has_real_payout_rows(self):
+        state = heads_up()
+        view = engine.public_view(state, "p1")
+        events = view["events"]
+        self.assertEqual([event["seq"] for event in events], [1, 2])
+        self.assertEqual(events[0]["action"], "small_blind")
+        self.assertEqual(events[1]["action"], "big_blind")
+        self.assertEqual(events[0]["actor_label"], engine._seat_by_id(state, events[0]["actor"])["name"])
+        self.assertIn("street_contribution", events[0])
+
+        actor = state["hand"]["to_act"]
+        opponent = "p2" if actor == "p1" else "p1"
+        engine.apply_action(state, actor, "call", None, state["hand_no"], state["turn_version"], now=104)
+        engine.apply_action(state, opponent, "check", None, state["hand_no"], state["turn_version"], now=105)
+        events = engine.public_view(state, actor)["events"]
+        types = [event["type"] for event in events]
+        self.assertLess(types.index("action", 2), types.index("sweep"))
+        self.assertLess(types.index("sweep"), types.index("street"))
+        last_action = next(event for event in events if event.get("actor") == actor and event.get("action") == "call")
+        self.assertEqual(last_action["amount"], 5)
+        self.assertEqual(last_action["street_contribution"], 10)
+        self.assertEqual(last_action["contribution"], 10)
+
+        for _ in range(engine.MAX_HAND_EVENTS + 2):
+            engine._record_event(state, state["hand"], "marker", street=state["hand"]["street"])
+        view = engine.public_view(state, actor)
+        self.assertEqual(len(view["events"]), engine.MAX_HAND_EVENTS)
+        self.assertEqual(view["event_base_seq"], view["events"][0]["seq"])
+        self.assertGreater(view["event_base_seq"], 1)
+
+        folder = state["hand"]["to_act"]
+        engine.apply_action(state, folder, "fold", None, state["hand_no"], state["turn_version"], now=106)
+        payout = next(event for event in reversed(state["hand"]["events"]) if event["type"] == "payout")
+        self.assertEqual(len(payout["winners"]), 1)
+        self.assertEqual(payout["winners"][0]["amount"], 20)
+        self.assertEqual(sum(payout["payouts"].values()), 20)
+
+    def test_legacy_runout_recovers_without_redealing_an_existing_flop(self):
+        state = heads_up()
+        hand = state["hand"]
+        for seat in state["seats"]:
+            seat["stack"] = 0 if seat["player_id"] == "p1" else 100
+        hand["street"] = "flop"
+        hand["board"] = [engine._take_card(hand) for _ in range(3)]
+        hand["to_act"] = None
+        hand["turn_deadline"] = None
+        for key in ("runout_at", "runout_swept_street", "events", "event_seq", "event_base_seq", "hand_id", "revealed"):
+            hand.pop(key, None)
+
+        engine.advance(state, now=200)
+        self.assertEqual(hand["street"], "flop")
+        self.assertEqual(len(hand["board"]), 3)
+        self.assertEqual(hand["runout_at"], 200 + engine.RUNOUT_SECONDS)
+        self.assertEqual(len(hand["revealed"]), 2)
+        engine.advance(state, now=hand["runout_at"])
+        self.assertEqual(hand["street"], "turn")
+        self.assertEqual(len(hand["board"]), 4)
+        view = engine.public_view(state, "p2")
+        self.assertEqual(view["hand_id"], "table-1:1")
+        self.assertTrue(view["events"])
+
+    def test_all_in_on_river_reveals_and_settles_without_a_ticker(self):
+        state = heads_up()
+        hand = state["hand"]
+        hand["street"] = "river"
+        hand["board"] = [engine._take_card(hand) for _ in range(5)]
+        hand["to_act"] = None
+        for seat in state["seats"]:
+            seat["stack"] = 0 if seat["player_id"] == "p1" else 100
+
+        engine._advance_street(state, now=200)
+        self.assertEqual(hand["street"], "showdown")
+        self.assertEqual(len(hand["board"]), 5)
+        self.assertIsNone(hand["runout_at"])
+        self.assertEqual({item["player_id"] for item in hand["revealed"]}, {"p1", "p2"})
+        event_types = [event["type"] for event in hand["events"]]
+        self.assertLess(event_types.index("reveal"), event_types.index("showdown_result"))
+
     def test_timeout_folds_when_facing_a_bet(self):
         state = heads_up(now=100)
         actor = state["hand"]["to_act"]
         deadline = state["hand"]["turn_deadline"]
-        self.assertEqual(actor, "p1")
+        self.assertIn(actor, ("p1", "p2"))
         engine.advance(state, now=deadline + 0.1)
-        self.assertIn("p1", state["hand"]["folded"])
+        self.assertIn(actor, state["hand"]["folded"])
         self.assertEqual(state["hand"]["street"], "showdown")
         self.assertTrue(any("timed out and folded" in item["text"] for item in state["action_log"]))
 
@@ -212,6 +458,15 @@ class EngineTests(unittest.TestCase):
             {item["player_id"]: item["rank"] for item in state["hand"]["showdown"]},
             {"p1": "Straight flush, A high", "p2": "Two pair"},
         )
+        result = next(
+            event for event in state["hand"]["events"]
+            if event["type"] == "showdown_result"
+        )
+        self.assertEqual(result["payouts"], {"p1": 300, "p2": 200, "p3": 0})
+        self.assertEqual(
+            {item["player_id"]: item["amount"] for item in result["winners"]},
+            {"p1": 300, "p2": 200},
+        )
 
     def test_tied_pot_odd_chip_goes_left_of_button(self):
         state = engine.create_lobby(
@@ -249,9 +504,16 @@ class EngineTests(unittest.TestCase):
             "short-bb", "p1", "Ada", config(), now=1
         )
         engine.join(state, "p2", "Bea", now=2)
-        state["seats"][1]["stack"] = 3
-        engine.start(state, "p1", now=3)
+        engine._seat_by_id(state, "p2")["stack"] = 3
+        with patch.object(
+            engine.random.SystemRandom,
+            "choice",
+            side_effect=lambda seats: next(seat for seat in seats if seat["player_id"] == "p1"),
+        ):
+            engine.start(state, "p1", now=3)
         hand = state["hand"]
+        self.assertEqual(hand["small_blind_id"], "p1")
+        self.assertEqual(hand["big_blind_id"], "p2")
         self.assertEqual(hand["bets"], {"p1": 5, "p2": 3})
         self.assertEqual(hand["current_bet"], 10)
         self.assertEqual(hand["to_act"], "p1")
@@ -262,8 +524,13 @@ class EngineTests(unittest.TestCase):
             "dry-side", "p1", "Ada", config(starting_stack=100), now=100
         )
         engine.join(state, "p2", "Bea", now=101)
-        state["seats"][1]["stack"] = 10
-        engine.start(state, "p1", now=102)
+        engine._seat_by_id(state, "p2")["stack"] = 10
+        with patch.object(
+            engine.random.SystemRandom,
+            "choice",
+            side_effect=lambda seats: next(seat for seat in seats if seat["player_id"] == "p1"),
+        ):
+            engine.start(state, "p1", now=102)
         view = engine.public_view(state, "p1")
         self.assertTrue(view["viewer"]["can_act"])
         self.assertFalse(view["viewer"]["raise_rights"])
@@ -279,7 +546,14 @@ class EngineTests(unittest.TestCase):
             state, "p1", "call", None,
             state["hand_no"], state["turn_version"], now=105
         )
-        self.assertEqual(state["hand"]["street"], "showdown")
+        self.assertEqual(state["hand"]["street"], "preflop")
+        self.assertEqual(state["hand"]["board"], [])
+        self.assertIsNone(state["hand"]["to_act"])
+        self.assertEqual(state["hand"]["runout_at"], 107.5)
+        revealed = {item["player_id"] for item in state["hand"]["revealed"]}
+        self.assertEqual(revealed, {"p1", "p2"})
+        while state["hand"]["street"] != "showdown":
+            engine.advance(state, now=state["hand"]["runout_at"])
         self.assertEqual(len(state["hand"]["board"]), 5)
         self.assertIsNone(state["hand"]["to_act"])
         self.assertIn(state["status"], ("playing", "completed"))
@@ -291,41 +565,44 @@ class EngineTests(unittest.TestCase):
         engine.join(state, "p2", "Bea", now=2)
         engine.join(state, "p3", "Cy", now=3)
         engine.start(state, "p1", now=4)
+        button = state["hand"]["button_id"]
+        small = state["hand"]["small_blind_id"]
+        big = state["hand"]["big_blind_id"]
 
-        # Complete preflop betting to reach the flop.
+        # Complete preflop betting in the actual randomized order.
         for player_id, action, amount in (
-            ("p1", "call", None),
-            ("p2", "call", None),
-            ("p3", "check", None),
+            (button, "call", None),
+            (small, "call", None),
+            (big, "check", None),
         ):
             engine.apply_action(
                 state, player_id, action, amount,
                 state["hand_no"], state["turn_version"], now=5
             )
         self.assertEqual(state["hand"]["street"], "flop")
-        self.assertEqual(state["hand"]["to_act"], "p2")
+        self.assertEqual(state["hand"]["to_act"], small)
 
-        # Bea checks, then Cy can only wager five chips, below the ten-chip
-        # minimum opening bet. Bea must still be allowed to raise to a full bet.
+        # The small blind checks, then the big blind can only wager five chips,
+        # below the ten-chip minimum opening bet. The button must still raise.
         engine.apply_action(
-            state, "p2", "check", None,
+            state, small, "check", None,
             state["hand_no"], state["turn_version"], now=6
         )
-        state["seats"][2]["stack"] = 5
+        engine._seat_by_id(state, big)["stack"] = 5
         engine.apply_action(
-            state, "p3", "all_in", None,
+            state, big, "all_in", None,
             state["hand_no"], state["turn_version"], now=7
         )
         engine.apply_action(
-            state, "p1", "call", None,
+            state, button, "call", None,
             state["hand_no"], state["turn_version"], now=8
         )
-        self.assertEqual(state["hand"]["to_act"], "p2")
-        view = engine.public_view(state, "p2")
+        self.assertEqual(state["hand"]["to_act"], small)
+        view = engine.public_view(state, small)
         self.assertTrue(view["viewer"]["raise_rights"])
         self.assertEqual(view["viewer"]["min_raise_to"], 15)
         engine.apply_action(
-            state, "p2", "raise", 15,
+            state, small, "raise", 15,
             state["hand_no"], state["turn_version"], now=9
         )
         self.assertEqual(state["hand"]["current_bet"], 15)
@@ -349,18 +626,20 @@ class EngineTests(unittest.TestCase):
         engine.join(state, "p3", "Cy", now=3)
         engine.start(state, "p1", now=4)
         old_hand = state["hand"]
-        self.assertEqual(old_hand["button_id"], "p1")
-        self.assertEqual(old_hand["big_blind_id"], "p3")
-        state["seats"][0]["stack"] = 0
+        old_button = old_hand["button_id"]
+        old_big_blind = old_hand["big_blind_id"]
+        self.assertIn(old_button, {"p1", "p2", "p3"})
+        self.assertIn(old_big_blind, {"p1", "p2", "p3"})
+        engine._seat_by_id(state, old_button)["stack"] = 0
         old_hand["street"] = "showdown"
         old_hand["to_act"] = None
         old_hand["turn_deadline"] = None
         old_hand["next_hand_at"] = 10
         engine.advance(state, now=11)
         self.assertEqual(state["hand_no"], 2)
-        self.assertEqual(state["hand"]["button_id"], "p3")
-        self.assertEqual(state["hand"]["small_blind_id"], "p3")
-        self.assertEqual(state["hand"]["big_blind_id"], "p2")
+        self.assertEqual(state["hand"]["button_id"], old_big_blind)
+        self.assertEqual(state["hand"]["small_blind_id"], old_big_blind)
+        self.assertNotEqual(state["hand"]["big_blind_id"], old_button)
 
     def test_simultaneous_bust_orders_larger_stack_higher(self):
         state = engine.create_lobby(
@@ -371,9 +650,9 @@ class EngineTests(unittest.TestCase):
         engine.start(state, "p1", now=4)
         hand = state["hand"]
         hand["stack_before"] = {"p1": 100, "p2": 200, "p3": 300}
-        state["seats"][0]["stack"] = 0
-        state["seats"][1]["stack"] = 0
-        state["seats"][2]["stack"] = 300
+        engine._seat_by_id(state, "p1")["stack"] = 0
+        engine._seat_by_id(state, "p2")["stack"] = 0
+        engine._seat_by_id(state, "p3")["stack"] = 300
         engine._record_eliminations(state, hand, now=10)
         places = {item["player_id"]: item["place"] for item in state["elimination_order"]}
         self.assertEqual(places, {"p1": 3, "p2": 2})
@@ -431,6 +710,9 @@ class EngineTests(unittest.TestCase):
             hand = state["hand"]
             if hand["street"] == "showdown":
                 now = max(now + 1, hand["next_hand_at"] or now + 1)
+                engine.advance(state, now=now)
+            elif hand.get("runout_at") is not None:
+                now = max(now + 0.01, hand["runout_at"])
                 engine.advance(state, now=now)
             else:
                 actor = hand["to_act"]
@@ -560,11 +842,12 @@ class EngineTests(unittest.TestCase):
             seat.pop("is_bot", None)
         state["hand"].pop("bot_action_at", None)
 
-        view = engine.public_view(state, "p1")
-        self.assertFalse(next(seat for seat in view["seats"] if seat["id"] == "p1")["is_bot"])
+        actor = state["hand"]["to_act"]
+        view = engine.public_view(state, actor)
+        self.assertFalse(next(seat for seat in view["seats"] if seat["id"] == actor)["is_bot"])
         engine.advance(state, now=104)
         self.assertEqual(state["status"], "playing")
-        self.assertEqual(state["hand"]["to_act"], "p1")
+        self.assertEqual(state["hand"]["to_act"], actor)
 
     def test_host_leave_hands_off_only_to_a_human_not_a_bot(self):
         state = engine.create_lobby("handoff", "p1", "Ada", config(), now=1)
@@ -600,6 +883,9 @@ class EngineTests(unittest.TestCase):
                 hand = state["hand"]
                 if hand["street"] == "showdown":
                     now = max(now + 0.01, hand["next_hand_at"] or now + 0.01)
+                    engine.advance(state, now=now)
+                elif hand.get("runout_at") is not None:
+                    now = max(now + 0.01, hand["runout_at"])
                     engine.advance(state, now=now)
                 else:
                     actor_id = hand["to_act"]

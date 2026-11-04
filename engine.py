@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 TURN_SECONDS = 30
 MAX_SEATS = 9
 MAX_LOG_ENTRIES = 40
+MAX_HAND_EVENTS = 128
+RUNOUT_SECONDS = 2.5
 MAX_CHIPS = 1_000_000_000
 LOBBY_IDLE_SECONDS = 4 * 60 * 60
 SUITS = ("s", "h", "d", "c")
@@ -145,6 +147,72 @@ def _log(state: Dict[str, Any], text: str, now: float) -> None:
     state["action_log"].append({"text": text, "time": int(now)})
     if len(state["action_log"]) > MAX_LOG_ENTRIES:
         del state["action_log"][:-MAX_LOG_ENTRIES]
+
+
+def _hand_id(state: Dict[str, Any], hand: Dict[str, Any]) -> str:
+    return str(hand.get("hand_id") or "%s:%s" % (state["id"], hand.get("number", state["hand_no"])))
+
+
+def _record_event(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+    event_type: str,
+    **fields: Any,
+) -> Dict[str, Any]:
+    seq = int(hand.get("event_seq", 0)) + 1
+    hand["event_seq"] = seq
+    hand_id = _hand_id(state, hand)
+    event = {"id": "%s:%d" % (hand_id, seq), "hand_id": hand_id, "seq": seq, "type": event_type}
+    event.update(fields)
+    events = hand.setdefault("events", [])
+    events.append(event)
+    if len(events) > MAX_HAND_EVENTS:
+        del events[:-MAX_HAND_EVENTS]
+    hand["event_base_seq"] = events[0]["seq"] if events else seq + 1
+    hand["hand_id"] = hand_id
+    return event
+
+
+def _record_action_event(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+    player_id: str,
+    action: str,
+    amount: int,
+    **fields: Any,
+) -> None:
+    seat = _seat_by_id(state, player_id)
+    label = seat["name"] if seat is not None else "Player"
+    event_action = "all-in" if action == "all_in" else action
+    _record_event(
+        state,
+        hand,
+        "action",
+        actor=player_id,
+        actor_id=player_id,
+        actor_label=label,
+        seat_no=seat["seat_no"] if seat is not None else None,
+        action=event_action,
+        amount=amount,
+        street_contribution=hand.get("bets", {}).get(player_id, 0),
+        contribution=hand.get("contrib", {}).get(player_id, 0),
+        pot=sum(hand.get("contrib", {}).values()),
+        street=hand.get("street"),
+        **fields,
+    )
+
+
+def _record_sweep(state: Dict[str, Any], hand: Dict[str, Any]) -> None:
+    amount = sum(hand.get("bets", {}).values())
+    _record_event(
+        state,
+        hand,
+        "sweep",
+        street=hand.get("street"),
+        amount=amount,
+        swept_amount=amount,
+        pot=sum(hand.get("contrib", {}).values()),
+    )
 
 
 def _bump(state: Dict[str, Any]) -> None:
@@ -422,10 +490,26 @@ def start(
     state["last_activity_at"] = timestamp
     state["blinds"]["started_at"] = timestamp
     state["blinds"]["next_level_at"] = timestamp + state["config"]["level_minutes"] * 60
+    _randomize_starting_seats(state)
     _log(state, "Tournament started at level 1.", timestamp)
     _start_hand(state, timestamp, first=True)
     _bump(state)
     return state
+
+
+def _randomize_starting_seats(state: Dict[str, Any]) -> None:
+    """Deal entrants around the configured ring with a randomized offset."""
+    seats = list(state["seats"])
+    capacity = state["config"]["max_seats"]
+    random.SystemRandom().shuffle(seats)
+    offset = random.SystemRandom().randrange(capacity)
+    positions = [
+        (offset + (index * capacity) // len(seats)) % capacity
+        for index in range(len(seats))
+    ]
+    for seat_no, seat in zip(positions, seats):
+        seat["seat_no"] = seat_no
+    state["seats"] = sorted(seats, key=lambda seat: seat["seat_no"])
 
 
 def _deck() -> List[str]:
@@ -457,7 +541,7 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
     previous_hand = state.get("hand")
     alive_ids = {seat["player_id"] for seat in alive}
     if first or state["button_id"] is None:
-        button = alive[0]["player_id"]
+        button = random.SystemRandom().choice(alive)["player_id"]
     elif (
         len(alive) == 2
         and previous_hand is not None
@@ -486,6 +570,10 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
     hole_cards: Dict[str, List[str]] = {seat["player_id"]: [] for seat in alive}
     hand: Dict[str, Any] = {
         "number": state["hand_no"],
+        "hand_id": "%s:%d" % (state["id"], state["hand_no"]),
+        "event_seq": 0,
+        "event_base_seq": 1,
+        "events": [],
         "street": "preflop",
         "board": [],
         "deck": _deck(),
@@ -505,8 +593,11 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "turn_deadline": None,
         "stack_before": {seat["player_id"]: seat["stack"] for seat in alive},
         "showdown": [],
+        "revealed": [],
         "payouts": {},
         "next_hand_at": None,
+        "runout_at": None,
+        "runout_swept_street": None,
         "bot_action_at": None,
         "small_blind": state["blinds"]["small"],
         "big_blind": state["blinds"]["big"],
@@ -519,7 +610,9 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
             hole_cards[player_id].append(_take_card(hand))
 
     small_paid = _post_blind(state, hand, small_id, hand["small_blind"])
+    _record_action_event(state, hand, small_id, "small_blind", small_paid, blind="small")
     big_paid = _post_blind(state, hand, big_id, hand["big_blind"])
+    _record_action_event(state, hand, big_id, "big_blind", big_paid, blind="big")
     # The nominal big blind establishes the preflop bring-in even when the
     # actual big blind stack was too short to post it in full.
     hand["current_bet"] = max(hand["big_blind"], small_paid, big_paid)
@@ -610,48 +703,144 @@ def _round_complete(state: Dict[str, Any], hand: Dict[str, Any]) -> bool:
     return True
 
 
+def _has_live_all_in(state: Dict[str, Any], hand: Dict[str, Any]) -> bool:
+    if len(_hand_live_ids(hand)) < 2:
+        return False
+    for player_id in _hand_live_ids(hand):
+        seat = _seat_by_id(state, player_id)
+        if seat is not None and seat["stack"] <= 0:
+            return True
+    return False
+
+
+def _has_all_in(state: Dict[str, Any], hand: Dict[str, Any]) -> bool:
+    """Only run out once no more than one live player can build a side pot."""
+    return _has_live_all_in(state, hand) and len(_players_able_to_act(state, hand)) <= 1
+
+
+def _reveal_live_hands(state: Dict[str, Any], hand: Dict[str, Any]) -> None:
+    if hand.get("revealed"):
+        return
+    revealed = []
+    for player_id in _hand_live_ids(hand):
+        seat = _seat_by_id(state, player_id)
+        revealed.append({
+            "player_id": player_id,
+            "actor_label": seat["name"] if seat is not None else "Player",
+            "seat_no": seat["seat_no"] if seat is not None else None,
+            "cards": list(hand["holes"].get(player_id, [])),
+        })
+    hand["revealed"] = revealed
+    _record_event(state, hand, "reveal", street=hand.get("street"), hands=revealed)
+
+
+def _deal_next_street(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> bool:
+    previous_street = hand.get("street")
+    previous_board = list(hand.get("board", []))
+    board = hand.setdefault("board", [])
+    if len(board) == 0:
+        _take_card(hand)  # burn
+        board.extend([_take_card(hand) for _ in range(3)])
+        hand["street"] = "flop"
+    elif len(board) == 3:
+        _take_card(hand)
+        board.append(_take_card(hand))
+        hand["street"] = "turn"
+    elif len(board) == 4:
+        _take_card(hand)
+        board.append(_take_card(hand))
+        hand["street"] = "river"
+    else:
+        return False
+
+    hand["bets"] = {player_id: 0 for player_id in hand["holes"]}
+    hand["current_bet"] = 0
+    hand["min_raise"] = hand["big_blind"]
+    hand["acted"] = []
+    hand["acted_at_bet"] = {}
+    hand["short_opening"] = False
+    hand["runout_swept_street"] = None
+    _log(state, "%s dealt." % hand["street"].capitalize(), now)
+    _record_event(
+        state,
+        hand,
+        "street",
+        from_street=previous_street,
+        street=hand["street"],
+        board=list(board),
+        new_cards=board[len(previous_board):],
+    )
+    return True
+
+
+def _begin_runout(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> None:
+    _record_sweep(state, hand)
+    hand["runout_swept_street"] = hand.get("street")
+    _reveal_live_hands(state, hand)
+    hand["to_act"] = None
+    hand["turn_deadline"] = None
+    hand["bot_action_at"] = None
+    hand["bets"] = {player_id: 0 for player_id in hand.get("holes", {})}
+    hand["current_bet"] = 0
+    hand["acted"] = []
+    hand["acted_at_bet"] = {}
+    if hand.get("street") == "river" or len(hand.get("board", [])) >= 5:
+        hand["runout_at"] = None
+        _settle_showdown(state, now)
+        return
+    hand["runout_at"] = now + RUNOUT_SECONDS
+
+
+def _advance_runout(state: Dict[str, Any], now: float) -> None:
+    hand = state["hand"]
+    assert hand is not None
+    if hand.get("runout_swept_street") != hand.get("street"):
+        _record_sweep(state, hand)
+        hand["runout_swept_street"] = hand.get("street")
+    if not _deal_next_street(state, hand, now):
+        hand["runout_at"] = None
+        _settle_showdown(state, now)
+        return
+    if hand.get("street") == "river":
+        _record_sweep(state, hand)
+        hand["runout_swept_street"] = "river"
+        hand["runout_at"] = None
+        _settle_showdown(state, now)
+        return
+    hand["runout_at"] = now + RUNOUT_SECONDS
+
+
 def _advance_street(state: Dict[str, Any], now: float) -> None:
     hand = state["hand"]
     assert hand is not None
-    while True:
-        live = _hand_live_ids(hand)
-        if len(live) <= 1:
-            _award_without_showdown(state, live[0] if live else None, now)
-            return
+    live = _hand_live_ids(hand)
+    if len(live) <= 1:
+        _award_without_showdown(state, live[0] if live else None, now)
+        return
 
-        if hand["street"] == "river":
-            _settle_showdown(state, now)
-            return
+    if hand.get("street") == "river" or len(hand.get("board", [])) >= 5:
+        _record_sweep(state, hand)
+        if _has_live_all_in(state, hand):
+            _reveal_live_hands(state, hand)
+        _settle_showdown(state, now)
+        return
 
-        if hand["street"] == "preflop":
-            _take_card(hand)  # burn
-            hand["board"].extend([_take_card(hand) for _ in range(3)])
-            hand["street"] = "flop"
-        elif hand["street"] == "flop":
-            _take_card(hand)
-            hand["board"].append(_take_card(hand))
-            hand["street"] = "turn"
-        elif hand["street"] == "turn":
-            _take_card(hand)
-            hand["board"].append(_take_card(hand))
-            hand["street"] = "river"
+    if _has_all_in(state, hand):
+        _begin_runout(state, hand, now)
+        return
+
+    _record_sweep(state, hand)
+
+    _deal_next_street(state, hand, now)
+    if not _players_able_to_act(state, hand):
+        # This is normally an all-in runout. The guard keeps malformed or legacy
+        # persisted states progressing without dealing duplicate board cards.
+        if _has_all_in(state, hand):
+            _begin_runout(state, hand, now)
         else:
             _settle_showdown(state, now)
-            return
-
-        hand["bets"] = {player_id: 0 for player_id in hand["holes"]}
-        hand["current_bet"] = 0
-        hand["min_raise"] = hand["big_blind"]
-        hand["acted"] = []
-        hand["acted_at_bet"] = {}
-        hand["short_opening"] = False
-        _log(state, "%s dealt." % hand["street"].capitalize(), now)
-
-        if not _players_able_to_act(state, hand):
-            continue
-
-        _set_next_actor(state, hand["button_id"], now)
         return
+    _set_next_actor(state, hand["button_id"], now)
 
 
 def _contribute(state: Dict[str, Any], hand: Dict[str, Any], player_id: str, amount: int) -> None:
@@ -802,6 +991,9 @@ def _perform_action(
             "checked" if action == "check" else "folded",
         )
     _log(state, text, now)
+    _record_action_event(
+        state, hand, actor_id, action, paid, target=target, timed_out=timed_out,
+    )
 
     live = _hand_live_ids(hand)
     if len(live) <= 1:
@@ -888,15 +1080,29 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
         changed = True
 
     hand = state["hand"]
-    if hand is not None and hand["street"] == "showdown":
+    if hand is not None and hand.get("street") == "showdown":
         if (
             state["status"] == "playing"
-            and hand["next_hand_at"] is not None
+            and hand.get("next_hand_at") is not None
             and timestamp >= hand["next_hand_at"]
         ):
             _start_hand(state, timestamp)
             changed = True
-    elif hand is not None and hand["to_act"] is not None:
+    elif hand is not None and hand.get("runout_at") is not None:
+        if timestamp >= hand["runout_at"]:
+            _advance_runout(state, timestamp)
+            changed = True
+    elif (
+        hand is not None
+        and hand.get("to_act") is None
+        and hand.get("street") != "showdown"
+        and _has_all_in(state, hand)
+    ):
+        # Recover old persisted hands that had already closed their betting
+        # round before the runout ticker was added.
+        _advance_street(state, timestamp)
+        changed = True
+    elif hand is not None and hand.get("to_act") is not None:
         actor_id = hand["to_act"]
         actor_seat = _seat_by_id(state, actor_id)
         if actor_seat is not None and actor_seat.get("is_bot", False):
@@ -1113,6 +1319,9 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
         if seat is not None:
             seat["stack"] += amount
     hand["payouts"] = payouts
+    hand["bets"] = {player_id: 0 for player_id in hand.get("holes", {})}
+    hand["current_bet"] = 0
+    hand["runout_at"] = None
     _record_eliminations(state, hand, now)
     remaining = [seat for seat in _seats_in_order(state) if seat["stack"] > 0]
     hand["street"] = "showdown"
@@ -1138,6 +1347,20 @@ def _award_without_showdown(
         payouts[winner_id] = pot
         seat = _seat_by_id(state, winner_id)
         _log(state, "%s wins %d without showdown." % (seat["name"], pot), now)
+    _record_sweep(state, hand)
+    winners = []
+    for player_id, amount in payouts.items():
+        if amount > 0:
+            seat = _seat_by_id(state, player_id)
+            winners.append({
+                "player_id": player_id,
+                "actor_label": seat["name"] if seat is not None else "Player",
+                "amount": amount,
+            })
+    _record_event(
+        state, hand, "payout", street=hand.get("street"),
+        payouts=dict(payouts), winners=winners,
+    )
     _finish_hand(state, payouts, now)
 
 
@@ -1174,6 +1397,24 @@ def _settle_showdown(state: Dict[str, Any], now: float) -> None:
             }
         )
     hand["showdown"] = showdown
+    _record_event(
+        state,
+        hand,
+        "showdown_result",
+        street=hand.get("street"),
+        board=list(hand.get("board", [])),
+        payouts=dict(payouts),
+        winners=[
+            {
+                "player_id": player_id,
+                "actor_label": next((item["name"] for item in showdown if item["player_id"] == player_id), "Player"),
+                "amount": amount,
+                "rank": next((item["rank"] for item in showdown if item["player_id"] == player_id), None),
+            }
+            for player_id, amount in payouts.items() if amount > 0
+        ],
+        showdown=list(showdown),
+    )
 
     for player_id, amount in payouts.items():
         if amount > 0:
@@ -1193,6 +1434,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             item["player_id"]: list(item["cards"])
             for item in hand.get("showdown", [])
         }
+        for item in hand.get("revealed", []):
+            showdown_cards[item["player_id"]] = list(item["cards"])
 
     seats = []
     for seat in _seats_in_order(state):
@@ -1272,6 +1515,10 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "seconds_to_next": seconds_to_next,
         },
         "hand_no": state["hand_no"],
+        "hand_id": _hand_id(state, hand) if hand else None,
+        "event_seq": int(hand.get("event_seq", 0)) if hand else 0,
+        "event_base_seq": int(hand.get("event_base_seq", 1)) if hand else 1,
+        "events": [dict(event) for event in hand.get("events", [])] if hand else [],
         "street": hand["street"] if hand else "lobby",
         "board": list(hand["board"]) if hand else [],
         "pot": 0 if not hand or hand["street"] == "showdown" else sum(hand["contrib"].values()),
@@ -1296,7 +1543,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "action_log": list(state["action_log"]),
         "results": list(state["results"]),
         "showdown": list(hand.get("showdown", [])) if hand else [],
-        "next_hand_at": hand["next_hand_at"] if hand else None,
+        "next_hand_at": hand.get("next_hand_at") if hand else None,
+        "runout_at": hand.get("runout_at") if hand else None,
     }
     return view
 

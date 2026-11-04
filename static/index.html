@@ -30,6 +30,17 @@
 
     <main>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <dialog id="allInConfirm" class="all-in-confirm" aria-labelledby="allInConfirmTitle" aria-describedby="allInConfirmDescription">
+        <div class="all-in-confirm-content">
+          <div class="panel-kicker">WHOLE STACK ACTION</div>
+          <h2 id="allInConfirmTitle">Confirm all-in</h2>
+          <p id="allInConfirmDescription"></p>
+          <div class="all-in-confirm-actions">
+            <button id="cancel-all-in-button" class="button button-quiet" type="button" data-action="cancel-all-in">Cancel</button>
+            <button id="confirm-all-in-button" class="button button-danger" type="button" data-action="confirm-all-in">Commit full stack</button>
+          </div>
+        </div>
+      </dialog>
 
       <section id="login-panel" class="login-layout" aria-labelledby="login-title" hidden>
         <div class="login-story">
@@ -187,9 +198,11 @@
                   <div class="board-center">
                     <div class="board-caption" id="board-caption">COMMUNITY CARDS</div>
                     <div id="board-cards" class="board-cards"></div>
-                    <div class="pot-display"><span class="pot-icon" aria-hidden="true">◈</span><span id="pot-label">Pot</span> <strong id="pot-amount">0</strong></div>
+                    <div id="pot-display" class="pot-display"><span class="pot-icon" aria-hidden="true">◈</span><span id="pot-label">Pot</span> <strong id="pot-amount">0</strong></div>
                     <div id="street-label" class="street-label"></div>
+                    <div id="hand-result" class="hand-result" aria-live="polite" hidden></div>
                   </div>
+                  <div id="chip-layer" class="chip-layer" aria-hidden="true"></div>
                 </div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
@@ -202,6 +215,7 @@
                   <div class="panel-kicker">TAKE A SEAT OR WATCH</div>
                   <h3 id="seat-status-title">Watching the table</h3>
                   <p id="seat-status-description" class="muted">Choose an open seat to join, or keep watching as a guest.</p>
+                  <p class="lobby-deal-note">Start redraws the seats and places the first dealer button.</p>
                 </div>
                 <div class="lobby-seat-controls">
                   <div id="seat-controls" class="seat-controls" aria-label="Available seats and test bots"></div>
@@ -261,7 +275,7 @@
                 </div>
               </form>
 
-              <section id="action-panel" class="action-panel panel" aria-labelledby="action-title" hidden>
+              <section id="action-panel" class="action-panel panel" aria-labelledby="action-title" aria-describedby="action-guidance" hidden>
                 <div class="action-head">
                   <div>
                     <div class="panel-kicker">YOUR TURN</div>
@@ -269,6 +283,7 @@
                   </div>
                   <div id="turn-clock" class="turn-clock"></div>
                 </div>
+                <p id="action-guidance" class="action-guidance"></p>
                 <div id="action-controls" class="action-controls"></div>
               </section>
 

@@ -5,6 +5,7 @@ import threading
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import server
 
@@ -388,8 +389,11 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 200, started)
         self.assertEqual(started["table"]["status"], "playing")
 
+        host_seat_no = next(
+            seat["seat_no"] for seat in started["table"]["seats"] if seat["id"] == host["id"]
+        )
         for method, suffix, payload in (
-            ("POST", "/seat", {"seat_no": 1}),
+            ("POST", "/seat", {"seat_no": (host_seat_no + 1) % 3}),
             ("POST", "/stand", {}),
             ("POST", "/settings", {"name": "Too late"}),
             ("POST", "/bots", {"seat_no": 1}),
@@ -462,10 +466,15 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 200, with_bot)
         bot_id = next(seat["id"] for seat in with_bot["table"]["seats"] if seat["is_bot"])
 
-        status, _, started = self.request(
-            "POST", path + "/start", {},
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-        )
+        with patch.object(
+            server.engine.random.SystemRandom,
+            "choice",
+            side_effect=lambda seats: next(seat for seat in seats if seat["player_id"] == host["id"]),
+        ):
+            status, _, started = self.request(
+                "POST", path + "/start", {},
+                cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+            )
         self.assertEqual(status, 200, started)
         self.assertEqual(started["table"]["actor_id"], host["id"])
         status, _, acted = self.request(
