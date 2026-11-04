@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PYTHONNOUSERSITE</key>
+		<string>1</string>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>net.personal.sitngo</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/sandbox-exec</string>
+		<string>-f</string>
+		<string>/home/poker/Library/Application Support/SitNGo/service.sb</string>
+		<string>/opt/homebrew/bin/python3</string>
+		<string>-B</string>
+		<string>/home/poker/services/sitngo/server.py</string>
+		<string>--port</string>
+		<string>18943</string>
+		<string>--data-dir</string>
+		<string>/home/poker/Library/Application Support/SitNGo/data</string>
+		<string>--password-file</string>
+		<string>/home/poker/Library/Application Support/SitNGo/password</string>
+		<string>--public-origin</string>
+		<string>https://poker.example.com:8443</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/home/poker/Library/Application Support/SitNGo/service.log</string>
+	<key>StandardOutPath</key>
+	<string>/home/poker/Library/Application Support/SitNGo/service.log</string>
+	<key>ThrottleInterval</key>
+	<integer>15</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>WorkingDirectory</key>
+	<string>/home/poker/services/sitngo</string>
+</dict>
+</plist>
