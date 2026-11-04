@@ -46,6 +46,10 @@ async function makePage() {
       if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description || reply.exceptionDetails.text);
       return reply.result.value;
     },
+    async clickAt(x, y) {
+      await send('Input.dispatchMouseEvent', {type:'mousePressed', x, y, button:'left', clickCount:1});
+      await send('Input.dispatchMouseEvent', {type:'mouseReleased', x, y, button:'left', clickCount:1});
+    },
     async screenshot(name) {
       if(!process.env.QA_SCREEN_DIR) return;
       const {data} = await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});

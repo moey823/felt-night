@@ -56,8 +56,18 @@ export default async function game([one, two], sleep) {
     if(!pass) throw Error(action+' must be the leftmost play action');
   }
   const pre='[data-preaction="check-fold"]';
+  async function clickPre(p) {
+    await wait(p, visible, pre);
+    const [x,y] = await ev(p, q => {
+      const button = document.querySelector(q);
+      button.scrollIntoView({block:'center'});
+      const rect = button.getBoundingClientRect();
+      return [rect.left + rect.width/2, rect.top + rect.height/2];
+    }, pre);
+    await p.clickAt(x,y);
+  }
   async function togglePre(p,selected) {
-    await click(p,pre);
+    await clickPre(p);
     await wait(p,(q,v)=>{const e=document.querySelector(q);return e && !e.disabled && e.getAttribute('aria-pressed')===String(v);},pre,selected);
   }
   async function confirm(p) {
@@ -199,8 +209,22 @@ export default async function game([one, two], sleep) {
   for (const p of pages) {await click(p,'#close-table-button'); await wait(p,visible,'#table-list');}
   await create('Advance action '+Date.now());
   const small=await actor(), big=small===one?two:one;
-  await togglePre(big,true);
+  // Hold the off-turn click in transit until the call makes the big blind the actor.
+  await ev(big, () => {
+    const original = window.fetch;
+    window.fetch = async function(url, ...args) {
+      if (String(url).endsWith('/preaction')) {
+        window.fetch = original;
+        await new Promise(resolve => {window.releaseCheckFold = resolve;});
+      }
+      return original.call(this,url,...args);
+    };
+  });
+  await clickPre(big);
+  await wait(big, () => typeof window.releaseCheckFold === 'function');
   await click(small,'[data-poker-action="call"]');
+  await wait(big,visible,'[data-poker-action="check"]');
+  await ev(big, () => window.releaseCheckFold());
   await wait(big,()=>document.querySelector('#street-label').textContent==='FLOP');
   await wait(big,visible,'[data-poker-action="raise_to"]');
   await togglePre(small,true);

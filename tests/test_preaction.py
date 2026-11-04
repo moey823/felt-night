@@ -156,6 +156,48 @@ class PreactionEngineTests(unittest.TestCase):
         self.assertEqual(state["hand"]["street"], "showdown")
         self.assertEqual(state["hand"]["preactions"], {})
 
+    def test_opponents_can_act_while_selection_and_cancellation_are_in_flight(self):
+        state = start_table(("p1", "p2", "p3", "p4"))
+        hand = state["hand"]
+        waiting = hand["big_blind_id"]
+        observed = state["turn_version"]
+        number = state["hand_no"]
+        engine.apply_action(state, hand["to_act"], "call", None, number, observed, now=111)
+        engine.set_preaction(state, waiting, True, number, observed, expected_revision=0)
+        engine.apply_action(state, hand["to_act"], "call", None, number, state["turn_version"], now=112)
+        engine.set_preaction(state, waiting, False, number, observed, expected_revision=1)
+        with self.assertRaises(engine.GameError):
+            engine.set_preaction(state, waiting, True, number, observed, expected_revision=0)
+        engine.apply_action(state, hand["to_act"], "call", None, number, state["turn_version"], now=113)
+        self.assertEqual(hand["to_act"], waiting)
+        self.assertNotIn(waiting, hand["preactions"])
+
+    def test_unused_selection_follows_the_next_decision_across_a_street(self):
+        state = start_table()
+        hand = state["hand"]
+        small, big = hand["small_blind_id"], hand["big_blind_id"]
+        number = state["hand_no"]
+        engine.apply_action(state, small, "call", None, number, state["turn_version"], now=111)
+        observed = state["turn_version"]
+        engine.set_preaction(state, small, True, number, observed, expected_revision=0)
+        engine.apply_action(state, big, "check", None, number, observed, now=112)
+        self.assertTrue(engine.public_view(state, small)["viewer"]["check_fold_selected"])
+        engine.apply_action(state, big, "bet", 20, number, state["turn_version"], now=113)
+        self.assertEqual(actions(state)[-1]["action"], "fold")
+        self.assertEqual(actions(state)[-1]["actor_id"], small)
+
+    def test_late_request_after_manual_action_cannot_fold_a_later_turn(self):
+        state = start_table(("p1", "p2", "p3"))
+        hand = state["hand"]
+        number, observed = state["hand_no"], state["turn_version"]
+        small = hand["small_blind_id"]
+        for _ in range(2):
+            engine.apply_action(state, hand["to_act"], "call", None, number, state["turn_version"], now=111)
+        with self.assertRaises(engine.GameError) as error:
+            engine.set_preaction(state, small, True, number, observed, expected_revision=0)
+        self.assertEqual(error.exception.code, "stale_turn")
+        self.assertNotIn(small, hand["preactions"])
+
     def test_toggle_can_be_cleared_and_rejects_current_actor_and_stale_turn(self):
         state = start_table()
         hand = state["hand"]

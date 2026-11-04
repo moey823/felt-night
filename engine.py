@@ -756,7 +756,6 @@ def _set_next_actor(state: Dict[str, Any], after_id: Optional[str], now: float) 
                 if (
                     isinstance(selection, dict)
                     and selection.get("hand_no") == hand.get("number")
-                    and selection.get("street") == hand.get("street")
                     and not seat.get("is_bot", False)
                 ):
                     # Consume before acting: _perform_action may recursively select
@@ -843,7 +842,6 @@ def _deal_next_street(state: Dict[str, Any], hand: Dict[str, Any], now: float) -
     else:
         return False
 
-    _clear_preactions(hand)
     hand["bets"] = {player_id: 0 for player_id in hand["holes"]}
     hand["current_bet"] = 0
     hand["min_raise"] = hand["big_blind"]
@@ -1125,6 +1123,7 @@ def _perform_action(
     else:
         raise GameError("invalid_action", "Choose fold, check, call, bet, raise, or all-in.")
 
+    hand.setdefault("last_action_turn", {})[actor_id] = state["turn_version"]
     if actor_id not in hand["acted"]:
         hand["acted"].append(actor_id)
     hand.setdefault("acted_at_bet", {})[actor_id] = hand["current_bet"]
@@ -1176,16 +1175,26 @@ def set_preaction(
     selected: bool,
     expected_hand: int,
     expected_turn_version: int,
+    *, expected_revision: Optional[int] = None, now: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Arm or clear a private one-shot check/fold for the current street."""
+    """Arm or clear Check/Fold for this player’s next decision in this hand."""
     if isinstance(expected_hand, bool) or not isinstance(expected_hand, int) or expected_hand != state["hand_no"]:
         raise GameError("stale_hand", "That hand has moved on. Refresh the table.", 409)
-    if isinstance(expected_turn_version, bool) or not isinstance(expected_turn_version, int) or expected_turn_version != state["turn_version"]:
+    hand = state.get("hand")
+    turn = state["turn_version"]
+    if type(expected_turn_version) is not int or not 0 < expected_turn_version <= turn:
         raise GameError("stale_turn", "That turn has moved on. Refresh the table.", 409)
+    if expected_revision is None:
+        # Older clients target an exact table turn.
+        if expected_turn_version != turn:
+            raise GameError("stale_turn", "That turn has moved on. Refresh the table.", 409)
+    elif (not hand or type(expected_revision) is not int
+          or expected_revision != hand.get("preaction_revisions", {}).get(player_id, 0)
+          or hand.get("last_action_turn", {}).get(player_id, 0) >= expected_turn_version):
+        raise GameError("stale_turn", "Your action or selection has already changed.", 409)
     if type(selected) is not bool:
         raise GameError("invalid_preaction", "Choose whether to arm or clear check/fold.")
 
-    hand = state.get("hand")
     seat = _seat_by_id(state, player_id)
     if (
         state.get("status") != "playing"
@@ -1198,7 +1207,7 @@ def set_preaction(
         or seat is None
         or seat.get("is_bot", False)
         or seat.get("stack", 0) <= 0
-        or hand.get("to_act") == player_id
+        or (hand.get("to_act") == player_id and expected_turn_version == turn)
     ):
         raise GameError(
             "preaction_unavailable",
@@ -1208,8 +1217,15 @@ def set_preaction(
 
     preactions = hand.setdefault("preactions", {})
     current = preactions.get(player_id)
+    if selected and hand["to_act"] == player_id:
+        # Their next turn began while the original off-turn click was in flight.
+        _bump_preaction_revision(hand, player_id)
+        action = "check" if _to_call(hand, player_id) == 0 else "fold"
+        _perform_action(state, player_id, action, None, _now(now))
+        _bump(state)
+        return state
     if selected:
-        desired = {"hand_no": hand["number"], "street": hand["street"]}
+        desired = {"hand_no": hand["number"]}
         if current != desired:
             preactions[player_id] = desired
             _bump_preaction_revision(hand, player_id)
@@ -2172,7 +2188,6 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         and not viewer_seat.get("is_bot", False)
         and viewer_seat.get("stack", 0) > 0
         and preaction.get("hand_no") == hand.get("number")
-        and preaction.get("street") == hand.get("street")
     )
 
     blinds = state["blinds"]

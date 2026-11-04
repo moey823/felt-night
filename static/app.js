@@ -1347,7 +1347,7 @@
   function checkFoldPendingForCurrentView(view) {
     return Boolean(state.preActionPending && view &&
       String(state.preActionPending.tableId) === String(state.activeTableId) &&
-      state.preActionPending.key === actionTokenKey(view));
+      state.preActionPending.payload.expected_hand === view.hand_no && checkFoldEligible(view));
   }
 
   function dismissAllInConfirmation(restoreFocus) {
@@ -1446,7 +1446,7 @@
     var minRaise = viewer.min_raise_to == null
       ? currentBet + number(view.min_raise, 0)
       : number(viewer.min_raise_to, currentBet + number(view.min_raise, 0));
-    var hasRaiseSlider = stack > 0 && canRaise && maxRaise > currentBet;
+    var hasRaiseSlider = canAct && stack > 0 && canRaise && maxRaise > currentBet;
     var shortAllInRaise = hasRaiseSlider && minRaise > maxRaise;
     var rangeMin = shortAllInRaise ? maxRaise : Math.max(currentBet + 1, minRaise);
     var draftKey = actionTokenKey(view);
@@ -1481,7 +1481,7 @@
           (preflop ? "" : " after calling") + (adjusted ? "; adjusted to the legal range" : "")
       };
     });
-    var actionKey = JSON.stringify([
+    var actionKey = canPreAct ? "waiting:" + view.id + ":" + view.hand_no : JSON.stringify([
       state.activeTableId, canAct, canPreAct, number(view.hand_no, 0), number(view.turn_version, 0),
       street, number(view.pot, 0), bigBlind, presetSpecs.map(function (preset) { return preset.target; }),
       toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
@@ -1535,7 +1535,7 @@
         if (newInput) newInput.focus({ preventScroll: true });
       }
     }
-    var blocked = Boolean(state.actionPending || state.actionConfirmation || preActionPendingForCurrentView);
+    var blocked = Boolean(state.actionPending || state.actionConfirmation);
     byId("action-controls").querySelectorAll("button[data-poker-action], button[data-raise-preset]").forEach(function (button) {
       if (button.getAttribute("data-poker-action") !== "raise_to") button.disabled = blocked;
     });
@@ -1548,7 +1548,7 @@
         ? "Check/Fold on. Automatically check when free and fold facing a bet."
         : "Check/Fold off. Turn on to automatically check when free and fold facing a bet.");
       preActionToggle.disabled = preActionPendingForCurrentView;
-      if (stateLabel) stateLabel.textContent = selected ? "On" : "Off";
+      if (stateLabel) stateLabel.textContent = preActionPendingForCurrentView ? "Saving…" : (selected ? "On" : "Off");
     }
     var raiseInput = byId("raise-amount");
     if (raiseInput) raiseInput.disabled = blocked;
@@ -2033,6 +2033,7 @@
       key: actionTokenKey(view),
       payload: {
         selected: !Boolean(view.viewer && view.viewer.check_fold_selected),
+        expected_revision: number(view.viewer.check_fold_revision, 0),
         expected_hand: number(view.hand_no, 0),
         expected_turn_version: number(view.turn_version, 0)
       }
@@ -2048,7 +2049,7 @@
     try {
       var data = await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/preaction", intent.payload);
       if (String(state.activeTableId) !== intent.tableId || !state.tableView ||
-          actionTokenKey(state.tableView) !== intent.key) {
+          state.tableView.hand_no !== intent.payload.expected_hand) {
         try { await refreshSelected(); } catch (refreshError) {}
         return;
       }

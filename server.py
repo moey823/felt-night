@@ -1070,11 +1070,14 @@ class Handler(BaseHTTPRequestHandler):
                 expected_turn_version = self._integer(
                     body.get("expected_turn_version"), "expected_turn_version", 0, 2**63 - 1,
                 )
+                revision = body.get("expected_revision")
+                if "expected_revision" in body:
+                    revision = self._integer(revision, "expected_revision", 0, 2**63 - 1)
                 state = self.app.store.mutate_table(
                     table_id,
                     lambda value: engine.set_preaction(
                         value, player["id"], selected, expected_hand,
-                        expected_turn_version,
+                        expected_turn_version, expected_revision=revision, now=now,
                     ),
                     now,
                 )
