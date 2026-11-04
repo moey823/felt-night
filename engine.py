@@ -59,12 +59,58 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return value
 
 
+def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+    if not isinstance(config, dict):
+        raise GameError("invalid_config", "Table settings are required.")
+    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds"}
+    unknown = set(config) - allowed
+    if unknown:
+        raise GameError("invalid_config", "Unknown table setting: %s." % sorted(unknown)[0])
+    values = dict(base or {
+        "max_seats": 9, "starting_stack": 1500, "small_blind": 10,
+        "big_blind": 20, "level_minutes": 10, "turn_seconds": TURN_SECONDS,
+    })
+    values.update(config)
+    result = {
+        "max_seats": _integer(values["max_seats"], "Seat count", 2, MAX_SEATS),
+        "starting_stack": _integer(values["starting_stack"], "Starting stack", 100, MAX_CHIPS),
+        "small_blind": _integer(values["small_blind"], "Small blind", 1, MAX_CHIPS),
+        "big_blind": _integer(values["big_blind"], "Big blind", 2, MAX_CHIPS),
+        "level_minutes": _integer(values["level_minutes"], "Blind level length", 1, 60),
+        "turn_seconds": _integer(values["turn_seconds"], "Turn length", 10, 120),
+    }
+    if result["big_blind"] < result["small_blind"]:
+        raise GameError("invalid_config", "The big blind must be at least the small blind.")
+    if result["big_blind"] > result["starting_stack"]:
+        raise GameError("invalid_config", "The starting stack must cover the big blind.")
+    return result
+
+
+def _validate_seat_no(seat_no: Any, max_seats: int) -> int:
+    if isinstance(seat_no, bool) or not isinstance(seat_no, int):
+        raise GameError("invalid_seat", "Choose a valid seat number.")
+    if seat_no < 0 or seat_no >= max_seats:
+        raise GameError("invalid_seat", "Choose a seat within this table's capacity.")
+    return seat_no
+
+
 def _valid_name(name: Any) -> str:
     if not isinstance(name, str):
         raise GameError("invalid_name", "Enter a player name.")
     cleaned = name.strip()
     if not cleaned or len(cleaned) > 32 or any(ord(char) < 32 or ord(char) == 127 for char in cleaned):
         raise GameError("invalid_name", "Player names must be 1–32 printable characters.")
+    return cleaned
+
+
+def _valid_table_name(name: Any) -> str:
+    if not isinstance(name, str):
+        raise GameError("invalid_table_name", "Choose a table name.")
+    cleaned = " ".join(name.strip().split())
+    if not cleaned or len(cleaned) > 48 or any(not char.isprintable() for char in cleaned) or any(
+        char in "<>" for char in cleaned
+    ):
+        raise GameError("invalid_table_name", "Table names must be 1 to 48 printable characters.")
     return cleaned
 
 
@@ -113,18 +159,13 @@ def create_lobby(
     now: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Create a lobby and seat its host."""
-    if not isinstance(config, dict):
-        raise GameError("invalid_config", "Table settings are required.")
-    max_seats = _integer(config.get("max_seats", 9), "Seat count", 2, MAX_SEATS)
-    starting_stack = _integer(config.get("starting_stack", 1500), "Starting stack", 100, MAX_CHIPS)
-    small_blind = _integer(config.get("small_blind", 10), "Small blind", 1, MAX_CHIPS)
-    big_blind = _integer(config.get("big_blind", 20), "Big blind", 2, MAX_CHIPS)
-    level_minutes = _integer(config.get("level_minutes", 10), "Blind level length", 1, 60)
-    turn_seconds = _integer(config.get("turn_seconds", TURN_SECONDS), "Turn length", 10, 120)
-    if big_blind < small_blind:
-        raise GameError("invalid_config", "The big blind must be at least the small blind.")
-    if big_blind > starting_stack:
-        raise GameError("invalid_config", "The starting stack must cover the big blind.")
+    validated = _validated_config(config)
+    max_seats = validated["max_seats"]
+    starting_stack = validated["starting_stack"]
+    small_blind = validated["small_blind"]
+    big_blind = validated["big_blind"]
+    level_minutes = validated["level_minutes"]
+    turn_seconds = validated["turn_seconds"]
 
     timestamp = _now(now)
     host_name = _valid_name(host_name)
@@ -148,6 +189,7 @@ def create_lobby(
                 "name": host_name,
                 "seat_no": 0,
                 "stack": starting_stack,
+                "is_bot": False,
             }
         ],
         "created_at": timestamp,
@@ -176,29 +218,44 @@ def join(
     player_id: str,
     name: str,
     now: Optional[float] = None,
+    seat_no: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Seat a player in a lobby. Repeating a join for the same identity is safe."""
-    if _seat_by_id(state, player_id):
+    """Seat or move a player in a lobby. Repeating the same join is safe."""
+    existing = _seat_by_id(state, player_id)
+    requested = _validate_seat_no(seat_no, state["config"]["max_seats"]) if seat_no is not None else None
+    if existing is not None and (requested is None or requested == existing["seat_no"]):
         return state
     if state["status"] != "lobby":
         raise GameError("table_started", "This table has already started.", 409)
+    if requested is not None and any(
+        seat["seat_no"] == requested and seat["player_id"] != player_id for seat in state["seats"]
+    ):
+        raise GameError("seat_taken", "That seat is already occupied.", 409)
+    if existing is not None:
+        old_no = existing["seat_no"]
+        existing["seat_no"] = requested
+        state["seats"].sort(key=lambda item: item["seat_no"])
+        timestamp = _now(now)
+        state["last_activity_at"] = timestamp
+        _log(state, "%s moved from seat %d to seat %d." % (existing["name"], old_no + 1, requested + 1), timestamp)
+        _bump(state)
+        return state
     if len(state["seats"]) >= state["config"]["max_seats"]:
         raise GameError("table_full", "This table has no open seats.", 409)
     player_name = _valid_name(name)
     used = {seat["seat_no"] for seat in state["seats"]}
-    seat_no = next(index for index in range(state["config"]["max_seats"]) if index not in used)
-    state["seats"].append(
-        {
-            "player_id": str(player_id),
-            "name": player_name,
-            "seat_no": seat_no,
-            "stack": state["config"]["starting_stack"],
-        }
-    )
+    if requested is None:
+        requested = next((i for i in range(state["config"]["max_seats"]) if i not in used), None)
+        if requested is None:
+            raise GameError("table_full", "This table has no open seats.", 409)
+    state["seats"].append({
+        "player_id": str(player_id), "name": player_name, "seat_no": requested,
+        "stack": state["config"]["starting_stack"], "is_bot": False,
+    })
     state["seats"].sort(key=lambda item: item["seat_no"])
     timestamp = _now(now)
     state["last_activity_at"] = timestamp
-    _log(state, "%s joined the table." % player_name, timestamp)
+    _log(state, "%s joined the table in seat %d." % (player_name, requested + 1), timestamp)
     _bump(state)
     return state
 
@@ -208,28 +265,120 @@ def leave(
     actor_id: str,
     now: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Let a seated player leave a lobby; reassign the host if needed."""
+    """Let a seated player leave; a departing host hands off only to a human."""
     if state["status"] != "lobby":
         raise GameError("table_started", "Players cannot leave after the tournament starts.", 409)
     seat = _seat_by_id(state, actor_id)
     if seat is None:
         raise GameError("not_seated", "You do not have a seat at this table.", 409)
     timestamp = _now(now)
-    player_name = seat["name"]
     state["seats"].remove(seat)
-    _log(state, "%s left the lobby." % player_name, timestamp)
+    _log(state, "%s left the lobby." % seat["name"], timestamp)
     state["last_activity_at"] = timestamp
-    if not state["seats"]:
-        state["status"] = "cancelled"
-        state["cancelled_at"] = timestamp
-        state["cancellation_reason"] = "empty"
-        _log(state, "Lobby closed because it is empty.", timestamp)
-    elif actor_id == state["host_id"]:
-        replacement = min(state["seats"], key=lambda item: item["seat_no"])
-        state["host_id"] = replacement["player_id"]
-        state["host_name"] = replacement["name"]
-        state["name"] = " ".join(replacement["name"].split()) + "'s table"
-        _log(state, "%s is now the host." % replacement["name"], timestamp)
+    if actor_id == state["host_id"]:
+        humans = [item for item in state["seats"] if not item.get("is_bot", False)]
+        if humans:
+            replacement = min(humans, key=lambda item: item["seat_no"])
+            state["host_id"] = replacement["player_id"]
+            state["host_name"] = replacement["name"]
+            state["name"] = " ".join(replacement["name"].split()) + "'s table"
+            _log(state, "%s is now the host." % replacement["name"], timestamp)
+        else:
+            state["status"] = "cancelled"
+            state["cancelled_at"] = timestamp
+            state["cancellation_reason"] = "empty" if not state["seats"] else "host_left"
+            _log(state, "Lobby closed because the host left.", timestamp)
+    _bump(state)
+    return state
+
+
+def stand(state: Dict[str, Any], actor_id: str, now: Optional[float] = None) -> Dict[str, Any]:
+    """Remove a player's lobby seat without changing table ownership or closing it."""
+    if state["status"] != "lobby":
+        raise GameError("table_started", "Players cannot stand after the tournament starts.", 409)
+    seat = _seat_by_id(state, actor_id)
+    if seat is None:
+        raise GameError("not_seated", "You do not have a seat at this table.", 409)
+    timestamp = _now(now)
+    state["seats"].remove(seat)
+    state["last_activity_at"] = timestamp
+    _log(state, "%s is watching from the rail." % seat["name"], timestamp)
+    _bump(state)
+    return state
+
+
+def update_settings(
+    state: Dict[str, Any],
+    actor_id: str,
+    settings: Dict[str, Any],
+    now: Optional[float] = None,
+    name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update pregame settings; all unplayed stacks follow the starting stack."""
+    if actor_id != state["host_id"]:
+        raise GameError("host_only", "Only the table host can update settings.", 403)
+    if state["status"] != "lobby":
+        raise GameError("table_started", "Table settings cannot change after the tournament starts.", 409)
+    updated = _validated_config(settings, state["config"])
+    if len(state["seats"]) > updated["max_seats"] or any(
+        seat["seat_no"] >= updated["max_seats"] for seat in state["seats"]
+    ):
+        raise GameError("seats_occupied", "Table capacity cannot be reduced below an occupied seat.", 409)
+    table_name = _valid_table_name(name) if name is not None else state["name"]
+    timestamp = _now(now)
+    state["config"] = updated
+    state["name"] = table_name
+    for seat in state["seats"]:
+        seat["stack"] = updated["starting_stack"]
+    state["blinds"]["small"] = updated["small_blind"]
+    state["blinds"]["big"] = updated["big_blind"]
+    state["blinds"]["level"] = 1
+    state["blinds"]["started_at"] = None
+    state["blinds"]["next_level_at"] = None
+    state["last_activity_at"] = timestamp
+    _log(state, "The host updated table settings.", timestamp)
+    _bump(state)
+    return state
+
+
+def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None) -> Dict[str, Any]:
+    """Add an automated player at an open seat in the lobby."""
+    if actor_id != state["host_id"]:
+        raise GameError("host_only", "Only the table host can add bots.", 403)
+    if state["status"] != "lobby":
+        raise GameError("table_started", "Bots can only be added before the tournament starts.", 409)
+    requested = _validate_seat_no(seat_no, state["config"]["max_seats"])
+    if any(seat["seat_no"] == requested for seat in state["seats"]):
+        raise GameError("seat_taken", "That seat is already occupied.", 409)
+    if len(state["seats"]) >= state["config"]["max_seats"]:
+        raise GameError("table_full", "This table has no open seats.", 409)
+    bot_id = "bot:%s:%d" % (state["id"], requested)
+    state["seats"].append({
+        "player_id": bot_id, "name": "Bot %d" % (requested + 1),
+        "seat_no": requested, "stack": state["config"]["starting_stack"], "is_bot": True,
+    })
+    state["seats"].sort(key=lambda item: item["seat_no"])
+    timestamp = _now(now)
+    state["last_activity_at"] = timestamp
+    _log(state, "%s joined the table." % _seat_by_id(state, bot_id)["name"], timestamp)
+    _bump(state)
+    return state
+
+
+def remove_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None) -> Dict[str, Any]:
+    """Remove a bot from a lobby seat as its host."""
+    if actor_id != state["host_id"]:
+        raise GameError("host_only", "Only the table host can remove bots.", 403)
+    if state["status"] != "lobby":
+        raise GameError("table_started", "Bots cannot be removed after the tournament starts.", 409)
+    requested = _validate_seat_no(seat_no, state["config"]["max_seats"])
+    seat = next((item for item in state["seats"] if item["seat_no"] == requested), None)
+    if seat is None or not seat.get("is_bot", False):
+        raise GameError("not_bot", "There is no bot in that seat.", 409)
+    state["seats"].remove(seat)
+    timestamp = _now(now)
+    state["last_activity_at"] = timestamp
+    _log(state, "%s left the table." % seat["name"], timestamp)
     _bump(state)
     return state
 
@@ -358,6 +507,7 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "showdown": [],
         "payouts": {},
         "next_hand_at": None,
+        "bot_action_at": None,
         "small_blind": state["blinds"]["small"],
         "big_blind": state["blinds"]["big"],
     }
@@ -415,6 +565,11 @@ def _arm_turn(state: Dict[str, Any], hand: Dict[str, Any], player_id: str, now: 
     state["turn_version"] += 1
     hand["to_act"] = player_id
     hand["turn_deadline"] = now + state["config"]["turn_seconds"]
+    seat = _seat_by_id(state, player_id)
+    hand["bot_action_at"] = (
+        now + random.SystemRandom().uniform(0.8, 1.4)
+        if seat is not None and seat.get("is_bot", False) else None
+    )
 
 
 def _set_next_actor(state: Dict[str, Any], after_id: Optional[str], now: float) -> None:
@@ -679,6 +834,29 @@ def apply_action(
     return state
 
 
+def _choose_bot_action(state: Dict[str, Any], hand: Dict[str, Any], player_id: str) -> Tuple[str, Optional[int]]:
+    """Choose uniformly from legal action types without hand-strength strategy."""
+    seat = _seat_by_id(state, player_id)
+    if seat is None:
+        raise GameError("cannot_act", "The bot no longer has a seat.", 409)
+    current = hand["current_bet"]
+    player_bet = hand["bets"].get(player_id, 0)
+    to_call = max(0, current - player_bet)
+    max_total = player_bet + seat["stack"]
+    choices: List[Tuple[str, Optional[int]]] = [
+        ("fold", None), ("check", None) if to_call == 0 else ("call", None),
+    ]
+    may_raise = _has_raise_right(hand, player_id) and _has_raise_opponent(state, hand, player_id)
+    if may_raise and max_total > current:
+        minimum = current + hand["min_raise"] if current else hand["min_raise"]
+        if minimum <= max_total:
+            choices.append(("raise" if current else "bet", minimum))
+        choices.append(("all_in", None))
+    elif to_call > 0 and max_total <= current:
+        choices.append(("all_in", None))
+    return random.SystemRandom().choice(choices)
+
+
 def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
     """Advance blind clocks, turn timeouts, and the short showdown pause."""
     timestamp = _now(now)
@@ -718,14 +896,21 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
         ):
             _start_hand(state, timestamp)
             changed = True
-    elif (
-        hand is not None
-        and hand["to_act"] is not None
-        and hand["turn_deadline"] is not None
-        and timestamp >= hand["turn_deadline"]
-    ):
-        _perform_action(state, hand["to_act"], "check", None, timestamp, timed_out=True)
-        changed = True
+    elif hand is not None and hand["to_act"] is not None:
+        actor_id = hand["to_act"]
+        actor_seat = _seat_by_id(state, actor_id)
+        if actor_seat is not None and actor_seat.get("is_bot", False):
+            due = hand.get("bot_action_at")
+            if due is None:
+                hand["bot_action_at"] = timestamp + random.SystemRandom().uniform(0.8, 1.4)
+                changed = True
+            elif timestamp >= due:
+                action, amount = _choose_bot_action(state, hand, actor_id)
+                _perform_action(state, actor_id, action, amount, timestamp)
+                changed = True
+        elif hand["turn_deadline"] is not None and timestamp >= hand["turn_deadline"]:
+            _perform_action(state, actor_id, "check", None, timestamp, timed_out=True)
+            changed = True
 
     if changed:
         _bump(state)
@@ -933,6 +1118,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["street"] = "showdown"
     hand["to_act"] = None
     hand["turn_deadline"] = None
+    hand["bot_action_at"] = None
     hand["next_hand_at"] = now + 5
     if len(remaining) <= 1:
         _set_results(state, remaining[0]["player_id"] if remaining else None, now)
@@ -1018,6 +1204,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "name": seat["name"],
             "seat_no": seat["seat_no"],
             "stack": seat["stack"],
+            "is_bot": bool(seat.get("is_bot", False)),
             "folded": folded,
             "all_in": bool(in_hand and seat["stack"] == 0 and not folded),
             "bet": hand["bets"].get(player_id, 0) if hand else 0,

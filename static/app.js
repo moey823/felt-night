@@ -17,7 +17,10 @@
     refreshPending: false,
     inviteCopiedFor: "",
     inviteResetTimer: 0,
-    noticeTimer: 0
+    noticeTimer: 0,
+    settingsTableId: "",
+    settingsDirty: false,
+    settingsSaving: false
   };
 
   function byId(id) {
@@ -296,43 +299,62 @@
     return Array.isArray(value) ? value : [];
   }
 
-  function renderSeats(view) {
-    var seats = Array.isArray(view.seats) ? view.seats.slice() : [];
-    var max = number(view.config && view.config.max_seats, number(view.max_seats, seats.length));
+  function seatLayout(view) {
+    var seats = Array.isArray(view.seats) ? view.seats : [];
+    var configuredMax = number(view.config && view.config.max_seats, number(view.max_seats, seats.length || 2));
+    var max = Math.max(2, Math.min(9, Math.floor(configuredMax)));
     var bySeat = {};
     seats.forEach(function (seat, index) {
-      var seatNo = number(seat.seat_no, index + 1);
+      var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
+      var seatNo = Math.floor(number(rawSeatNo, index));
       bySeat[seatNo] = seat;
     });
+    return { seats: seats, max: max, bySeat: bySeat };
+  }
 
+  function isBotSeat(seat) {
+    if (!seat) return false;
+    var id = String(seat.id || seat.player_id || "");
+    return Boolean(seat.is_bot || seat.bot || seat.kind === "bot" || id.indexOf("bot:") === 0);
+  }
+
+  function renderSeats(view) {
+    var layout = seatLayout(view);
+    var max = layout.max;
+    var bySeat = layout.bySeat;
     var viewer = view.viewer || {};
     var viewerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    var ownSeat = layout.seats.find(function (seat) {
+      return String(seat.id || seat.player_id || "") === viewerId;
+    });
+    var hostId = String(view.host_id || "");
+    var anchorSeat = ownSeat || layout.seats.find(function (seat) {
+      return String(seat.id || seat.player_id || "") === hostId;
+    }) || layout.seats[0] || null;
+    var anchorRawSeatNo = anchorSeat && anchorSeat.seat_no != null ? anchorSeat.seat_no : layout.seats.indexOf(anchorSeat);
+    var anchorSeatNo = anchorSeat ? Math.floor(number(anchorRawSeatNo, 0)) : 0;
     var actorId = String(view.actor_id || view.to_act_id || "");
     var buttonId = String(view.button_id || "");
     var currentHand = view.status === "playing";
     var html = "";
 
-    for (var i = 1; i <= max; i += 1) {
+    for (var i = 0; i < max; i += 1) {
       var seat = bySeat[i];
+      var relativeIndex = (i - anchorSeatNo + max) % max;
       if (!seat) {
-        html += '<div class="seat-card seat-empty"><span>Seat ' + i + ' · open</span></div>';
+        html += '<div class="seat-card seat-empty" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true"><span>Seat ' + (i + 1) + '</span><span>Open</span></div>';
         continue;
       }
 
       var id = String(seat.id || seat.player_id || "");
       var isMe = id && id === viewerId;
+      var bot = isBotSeat(seat);
       var folded = Boolean(seat.folded || seat.is_folded);
       var allIn = Boolean(seat.all_in || seat.is_all_in);
       var acting = actorId && id === actorId;
       var dealer = buttonId && id === buttonId;
-      var host = String(view.host_id || "") === id;
-      var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") + (folded ? " is-folded" : "");
-      var tags = "";
-      if (dealer) tags += '<span class="position-chip" title="Dealer button">D</span>';
-      if (host) tags += '<span class="seat-label">HOST</span>';
-      if (isMe) tags += '<span class="seat-label">YOU</span>';
-      if (acting) tags += '<span class="seat-label">ACTING</span>';
-
+      var host = hostId === id;
+      var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") + (folded ? " is-folded" : "") + (bot ? " is-bot" : "");
       var label = folded ? "Folded" : (allIn ? "All in" : "");
       var seatBet = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
       var stack = number(seat.stack, 0);
@@ -353,17 +375,62 @@
         cardHtml = '<div class="seat-cards">' + hiddenCardHTML(true, false) + hiddenCardHTML(true, false) + '</div>';
       }
 
-      html += '<div class="' + classes + '">' +
+      var tags = (host ? '<span class="seat-label">HOST</span>' : '') +
+        (isMe ? '<span class="seat-label">YOU</span>' : '') +
+        (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '') +
+        (acting ? '<span class="seat-label">TURN</span>' : '');
+      var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
+      html += '<div class="' + classes + '" data-seat-no="' + Math.floor(number(rawSeatNo, i)) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap">' + (dealer ? '<span class="position-chip" title="Dealer button">D</span>' : '') +
-        '<span class="seat-name">' + esc(seat.name || "Player") + '</span><span class="seat-number">#' + i + '</span></span>' +
-        '<span class="seat-tags">' + (host ? '<span class="seat-label">HOST</span>' : '') + (isMe ? '<span class="seat-label">YOU</span>' : '') +
-        (acting ? '<span class="seat-label">TURN</span>' : '') + '</span></div>' +
+        '<span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
+        '<div class="seat-tags">' + tags + '</div>' +
         '<div class="seat-stack">' + chips(stack) + ' <span class="seat-number">chips</span></div>' +
         '<div class="seat-detail"><span>' + esc(label) + '</span><span>' + (seatBet ? "Bet " + chips(seatBet) : "") + '</span></div>' +
         cardHtml +
       '</div>';
     }
-    byId("seat-grid").innerHTML = html;
+    var grid = byId("seat-grid");
+    var felt = byId("felt");
+    grid.innerHTML = html;
+    var compact = window.innerWidth <= 820 || grid.clientWidth < 500;
+    var portraitSeats = {
+      2: [[50, 91], [50, 9]],
+      3: [[50, 91], [8, 18], [92, 18]],
+      4: [[50, 91], [7, 74], [50, 10], [93, 74]],
+      5: [[50, 91], [28, 73], [6, 24], [94, 24], [72, 73]],
+      6: [[50, 91], [31, 73], [5, 24], [50, 10], [95, 24], [69, 73]],
+      7: [[50, 91], [30, 73], [0, 90], [0, 28], [50, 10], [100, 28], [70, 73]],
+      8: [[50, 91], [30, 73], [0, 90], [0, 28], [28, 10], [72, 10], [100, 28], [70, 73]],
+      9: [[50, 91], [30, 73], [0, 90], [0, 28], [28, 10], [72, 10], [100, 28], [100, 90], [70, 73]]
+    };
+    felt.dataset.compactLayout = compact ? "true" : "false";
+    felt.classList.toggle("is-crowded", max >= 7);
+    grid.querySelectorAll(".seat-card").forEach(function (node) {
+      var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
+      var x;
+      var y;
+      if (compact && portraitSeats[max]) {
+        x = portraitSeats[max][relativeIndex][0];
+        y = portraitSeats[max][relativeIndex][1];
+      } else {
+        var angle = (90 + relativeIndex * 360 / max) * Math.PI / 180;
+        x = 50 + 50 * Math.cos(angle);
+        y = 50 + 40 * Math.sin(angle);
+      }
+      var gridRect = grid.getBoundingClientRect();
+      var halfWidth = node.offsetWidth / 2;
+      if (compact && gridRect.width > 0) {
+        var insetPercent = halfWidth / gridRect.width * 100;
+        x = Math.max(insetPercent, Math.min(100 - insetPercent, x));
+      }
+      var pageX = gridRect.left + x * gridRect.width / 100;
+      var viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      pageX = Math.max(halfWidth, Math.min(viewportWidth - halfWidth, pageX));
+      var halfHeightPercent = grid.clientHeight ? (node.offsetHeight / 2) / grid.clientHeight * 100 : 0;
+      y = Math.max(halfHeightPercent, Math.min(100 - halfHeightPercent, y));
+      node.style.left = ((pageX - gridRect.left) / gridRect.width * 100).toFixed(2) + "%";
+      node.style.top = y.toFixed(2) + "%";
+    });
   }
 
   function renderBoard(view) {
@@ -454,11 +521,7 @@
     panel.hidden = !canAct;
     waitPanel.hidden = !playing || canAct;
 
-    if (!playing) {
-      byId("join-panel").hidden = true;
-      byId("host-panel").hidden = true;
-      return;
-    }
+    if (!playing) return;
 
     var actorId = String(view.actor_id || view.to_act_id || "");
     var actor = (view.seats || []).find(function (seat) {
@@ -528,20 +591,122 @@
     }
   }
 
+
+  function renderLobbyControls(view, host, ownSeat, isSeated, layout) {
+    var panel = byId("lobby-seat-panel");
+    var controls = byId("seat-controls");
+    var standButton = byId("stand-button");
+    var statusTitle = byId("seat-status-title");
+    var statusDescription = byId("seat-status-description");
+    var visible = view.status === "lobby";
+    panel.hidden = !visible;
+    if (!visible) return;
+
+    var viewer = view.viewer || {};
+    if (isSeated) {
+      statusTitle.textContent = host ? "You’re seated and hosting." : "You’re seated at the table.";
+      statusDescription.textContent = host ? "Your host controls stay with you if you stand up." : "Stand up any time to watch without a seat.";
+    } else if (host) {
+      statusTitle.textContent = "You’re hosting from the rail.";
+      statusDescription.textContent = "Your host controls stay yours. Choose a seat, or let guests watch.";
+    } else {
+      statusTitle.textContent = "You’re watching the table.";
+      statusDescription.textContent = "Choose an open seat to join, or keep watching as a guest.";
+    }
+
+    standButton.hidden = !isSeated;
+    var rows = [];
+    for (var i = 0; i < layout.max; i += 1) {
+      var occupant = layout.bySeat[i];
+      var actions = "";
+      if (!occupant && !isSeated) {
+        actions += '<button class="button button-outline button-small" type="button" id="take-seat-' + i + '" data-take-seat="' + i + '">Take seat</button>';
+      }
+      if (host && !occupant) {
+        actions += '<button class="button button-quiet button-small" type="button" id="add-bot-' + i + '" data-add-bot-seat="' + i + '">Add test bot</button>';
+      } else if (host && occupant && isBotSeat(occupant)) {
+        actions += '<button class="button button-quiet button-small" type="button" id="remove-bot-' + i + '" data-remove-bot-seat="' + i + '">Remove bot</button>';
+      }
+      if (!actions) continue;
+      var label = occupant && isBotSeat(occupant) ? (occupant.name || "Test bot") : (occupant ? occupant.name || "Occupied" : "Open");
+      rows.push('<div class="seat-choice' + (occupant ? ' has-bot' : '') + '"><span class="seat-choice-label">Seat ' + (i + 1) + (occupant ? ' · ' + esc(label) : ' · Open') + '</span><span class="seat-choice-actions">' + actions + '</span></div>');
+    }
+    controls.innerHTML = rows.length ? rows.join("") : '<p class="seat-controls-empty">' + (isSeated ? "No host seat changes are available right now." : "All seats are occupied. You can keep watching as a guest.") + '</p>';
+  }
+
+  function loadSettingsForm(view) {
+    var config = view.config || {};
+    byId("settings-table-name").value = view.name || "";
+    byId("settings-max-seats").value = String(number(config.max_seats, number(view.max_seats, 6)));
+    byId("settings-starting-stack").value = String(number(config.starting_stack, number(view.starting_stack, 1000)));
+    byId("settings-small-blind").value = String(number(config.small_blind, number(view.small_blind, 10)));
+    byId("settings-big-blind").value = String(number(config.big_blind, number(view.big_blind, 20)));
+    byId("settings-level-minutes").value = String(number(config.level_minutes, number(view.level_minutes, 5)));
+  }
+
+  function renderSettingsPanel(view, host) {
+    var panel = byId("table-settings-form");
+    var visible = host && view.status === "lobby";
+    panel.hidden = !visible;
+    if (!host || !visible) return;
+
+    var tableId = String(view.id || state.activeTableId || "");
+    if (state.settingsTableId !== tableId) {
+      state.settingsTableId = tableId;
+      state.settingsDirty = false;
+      loadSettingsForm(view);
+    } else if (!state.settingsDirty) {
+      loadSettingsForm(view);
+    }
+
+    var locked = view.status !== "lobby";
+    var inputs = panel.querySelectorAll("input, select");
+    inputs.forEach(function (input) {
+      input.disabled = locked || state.settingsSaving;
+    });
+    byId("save-settings-button").disabled = locked || state.settingsSaving || !state.settingsDirty;
+    byId("settings-lock-note").textContent = locked ? "Settings lock when the first hand starts." : (state.settingsSaving ? "Saving table settings…" : (state.settingsDirty ? "Save changes before starting the freezeout." : "You can adjust this lobby until the first hand starts."));
+  }
+
+  function updateHostReadiness(view, host) {
+    var hostPanel = byId("host-panel");
+    var visible = host && view.status === "lobby";
+    hostPanel.hidden = !visible;
+    if (!visible) return;
+
+    var count = Array.isArray(view.seats) ? view.seats.length : 0;
+    var startButton = byId("start-button");
+    startButton.disabled = count < 2 || state.settingsDirty || state.settingsSaving;
+    if (count < 2) {
+      byId("host-hint").textContent = "Add or invite one more player before dealing.";
+    } else if (state.settingsDirty || state.settingsSaving) {
+      byId("host-hint").textContent = "Save your settings before dealing.";
+    } else {
+      byId("host-hint").textContent = "Everyone is seated. Start the freezeout when you’re ready.";
+    }
+  }
+
   function renderTable() {
     var view = state.tableView;
     var hasTable = Boolean(view);
     byId("empty-state").hidden = hasTable;
     byId("table-view").hidden = !hasTable;
-    if (!view) return;
+    byId("app-panel").classList.toggle("has-active-table", hasTable);
+    if (!view) {
+      byId("lobby-seat-panel").hidden = true;
+      byId("host-panel").hidden = true;
+      byId("table-settings-form").hidden = true;
+      return;
+    }
 
     var status = view.status || "lobby";
     var statusNode = byId("view-status");
     statusNode.textContent = statusName(status);
     statusNode.className = "status-pill" + (status === "playing" ? " playing" : (status === "completed" ? " completed" : ""));
     byId("view-table-name").textContent = view.name || "Sit-and-go";
-    var seats = Array.isArray(view.seats) ? view.seats : [];
-    var max = number(view.config && view.config.max_seats, number(view.max_seats, seats.length));
+    var layout = seatLayout(view);
+    var seats = layout.seats;
+    var max = layout.max;
     var hostName = view.host_name || "Host";
     byId("view-table-subtitle").textContent = "Hosted by " + hostName + " · " + seats.length + " of " + max + " seats";
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
@@ -558,14 +723,14 @@
 
     var viewer = view.viewer || {};
     var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var seated = Boolean(viewer.seated);
+    var ownSeat = seats.find(function (seat) {
+      return String(seat.id || seat.player_id || "") === playerId;
+    }) || null;
+    var seated = Boolean(viewer.seated || ownSeat);
     var host = String(view.host_id || "") === playerId;
-    byId("join-panel").hidden = status !== "lobby" || seated;
-    byId("lobby-seat-panel").hidden = status !== "lobby" || !seated || host;
-    byId("host-panel").hidden = status !== "lobby" || !host;
-    var count = seats.length;
-    byId("start-button").disabled = count < 2;
-    byId("host-hint").textContent = count < 2 ? "Invite at least one more player before dealing." : "Everyone is seated. Start the freezeout when you’re ready.";
+    renderLobbyControls(view, host, ownSeat, seated, layout);
+    renderSettingsPanel(view, host);
+    updateHostReadiness(view, host);
   }
 
   function enterApp(player, csrf, sessionProof) {
@@ -657,8 +822,53 @@
     }
   }
 
-  async function mutate(path, body) {
-    return request(path, { method: "POST", body: body || {}, mutate: true });
+  async function mutate(path, body, method) {
+    return request(path, { method: method || "POST", body: body, mutate: true });
+  }
+
+  function settingsPayload() {
+    return {
+      name: byId("settings-table-name").value.trim(),
+      max_seats: number(byId("settings-max-seats").value, 0),
+      starting_stack: number(byId("settings-starting-stack").value, 0),
+      small_blind: number(byId("settings-small-blind").value, 0),
+      big_blind: number(byId("settings-big-blind").value, 0),
+      level_minutes: number(byId("settings-level-minutes").value, 0)
+    };
+  }
+
+  async function saveSettings() {
+    if (!state.activeTableId || !state.tableView || state.settingsSaving) return;
+    var payload = settingsPayload();
+    var form = byId("table-settings-form");
+    if (!form.checkValidity() || !payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
+        payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind ||
+        [3, 5, 8, 10, 15].indexOf(payload.level_minutes) === -1) {
+      showNotice("Check the table name, seat count, stack, blinds, and level length.", "error", false);
+      return;
+    }
+    var currentSeats = Array.isArray(state.tableView.seats) ? state.tableView.seats.length : 0;
+    if (payload.max_seats < currentSeats) {
+      showNotice("The table needs at least as many seats as the players already seated.", "error", false);
+      return;
+    }
+
+    state.settingsSaving = true;
+    renderSettingsPanel(state.tableView, true);
+    updateHostReadiness(state.tableView, true);
+    try {
+      var data = await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/settings", payload);
+      state.settingsDirty = false;
+      state.tableView = data.table || data;
+      await refreshSelected();
+      await refreshAll(true);
+      showNotice("Table settings saved.", "success", false);
+    } catch (err) {
+      showNotice(err.message, "error", false);
+    } finally {
+      state.settingsSaving = false;
+      renderTable();
+    }
   }
 
   async function refreshSelected() {
@@ -740,15 +950,45 @@
     }
   });
 
-  byId("join-button").addEventListener("click", async function () {
-    if (!state.activeTableId) return;
-    var button = byId("join-button");
+  byId("seat-controls").addEventListener("click", async function (event) {
+    var button = event.target.closest("[data-take-seat], [data-add-bot-seat], [data-remove-bot-seat]");
+    if (!button || button.disabled || !state.activeTableId) return;
+    var rawSeatNo = button.hasAttribute("data-take-seat") ? button.getAttribute("data-take-seat") :
+      (button.hasAttribute("data-add-bot-seat") ? button.getAttribute("data-add-bot-seat") : button.getAttribute("data-remove-bot-seat"));
+    var seatNo = number(rawSeatNo, -1);
+    if (seatNo < 0) return;
     button.disabled = true;
     try {
-      await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/join", {});
+      var message;
+      if (button.hasAttribute("data-take-seat")) {
+        await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/seat", { seat_no: seatNo });
+        message = "You took Seat " + (seatNo + 1) + ".";
+      } else if (button.hasAttribute("data-add-bot-seat")) {
+        await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/bots", { seat_no: seatNo });
+        message = "A test bot joined Seat " + (seatNo + 1) + ".";
+      } else {
+        await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/bots/" + seatNo, undefined, "DELETE");
+        message = "The test bot left Seat " + (seatNo + 1) + ".";
+      }
       await refreshSelected();
       await refreshAll(true);
-      showNotice("You’re in. The host can deal when everyone has joined.", "success", false);
+      showNotice(message, "success", false);
+    } catch (err) {
+      showNotice(err.message, "error", false);
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  });
+
+  byId("stand-button").addEventListener("click", async function () {
+    if (!state.activeTableId) return;
+    var button = byId("stand-button");
+    button.disabled = true;
+    try {
+      await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/stand", {});
+      await refreshSelected();
+      await refreshAll(true);
+      showNotice("You stood up and can keep watching as a guest.", "success", false);
     } catch (err) {
       showNotice(err.message, "error", false);
     } finally {
@@ -756,20 +996,23 @@
     }
   });
 
-  byId("leave-button").addEventListener("click", async function () {
-    if (!state.activeTableId) return;
-    var button = byId("leave-button");
-    button.disabled = true;
-    try {
-      await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/leave", {});
-      await refreshSelected();
-      await refreshAll(true);
-      showNotice("You left the lobby.", "success", false);
-    } catch (err) {
-      showNotice(err.message, "error", false);
-    } finally {
-      button.disabled = false;
-    }
+  byId("table-settings-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    await saveSettings();
+  });
+
+  byId("table-settings-form").addEventListener("input", function (event) {
+    if (event.target.disabled) return;
+    state.settingsDirty = true;
+    renderSettingsPanel(state.tableView, true);
+    updateHostReadiness(state.tableView, true);
+  });
+
+  byId("table-settings-form").addEventListener("change", function (event) {
+    if (event.target.disabled) return;
+    state.settingsDirty = true;
+    renderSettingsPanel(state.tableView, true);
+    updateHostReadiness(state.tableView, true);
   });
 
   byId("cancel-button").addEventListener("click", async function () {
@@ -914,6 +1157,10 @@
     } finally {
       controls.forEach(function (control) { control.disabled = false; });
     }
+  });
+
+  window.addEventListener("resize", function () {
+    if (state.tableView) renderSeats(state.tableView);
   });
 
   document.addEventListener("visibilitychange", function () {

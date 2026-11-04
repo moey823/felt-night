@@ -667,7 +667,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(201, {"table": engine.public_view(state, player["id"])})
                 return
 
-            match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/(join|start|action|leave|cancel)", path)
+            match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots)",
+                path,
+            )
             if not match:
                 self._error(404, "not_found", "Not found.")
                 return
@@ -675,6 +678,57 @@ class Handler(BaseHTTPRequestHandler):
             if operation == "join":
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.join(value, player["id"], player["name"], now), now)
+            elif operation == "seat":
+                seat_no = self._integer(body.get("seat_no"), "seat_no", 0, 8)
+                state = self.app.store.mutate_table(
+                    table_id,
+                    lambda value: engine.join(
+                        value, player["id"], player["name"], now, seat_no=seat_no),
+                    now,
+                )
+            elif operation == "stand":
+                state = self.app.store.mutate_table(
+                    table_id, lambda value: engine.stand(value, player["id"], now), now)
+            elif operation == "settings":
+                field_ranges = {
+                    "max_seats": (2, 9),
+                    "starting_stack": (100, 1_000_000_000),
+                    "small_blind": (1, 1_000_000_000),
+                    "big_blind": (2, 1_000_000_000),
+                    "level_minutes": (1, 60),
+                }
+                settings = {
+                    field: self._integer(body[field], field, minimum, maximum)
+                    for field, (minimum, maximum) in field_ranges.items()
+                    if field in body
+                }
+                table_name = None
+                if "name" in body:
+                    table_name = body["name"]
+                    if not isinstance(table_name, str):
+                        raise AppError(400, "invalid_table_name", "Choose a table name.")
+                    table_name = " ".join(table_name.strip().split())
+                    if (not table_name or len(table_name) > 48 or
+                            any(not ch.isprintable() for ch in table_name) or
+                            any(ch in "<>" for ch in table_name)):
+                        raise AppError(400, "invalid_table_name",
+                                       "Table names must be 1 to 48 printable characters.")
+                if not settings and table_name is None:
+                    raise AppError(400, "invalid_settings",
+                                   "Choose at least one table setting to update.")
+                state = self.app.store.mutate_table(
+                    table_id,
+                    lambda value: engine.update_settings(
+                        value, player["id"], settings, now, name=table_name),
+                    now,
+                )
+            elif operation == "bots":
+                seat_no = self._integer(body.get("seat_no"), "seat_no", 0, 8)
+                state = self.app.store.mutate_table(
+                    table_id,
+                    lambda value: engine.add_bot(value, player["id"], seat_no, now),
+                    now,
+                )
             elif operation == "start":
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.start(value, player["id"], now), now)
@@ -717,7 +771,38 @@ class Handler(BaseHTTPRequestHandler):
         self._error(405, "method_not_allowed", "Method not allowed.")
 
     def do_DELETE(self):
-        self._error(405, "method_not_allowed", "Method not allowed.")
+        try:
+            path = self._headers()
+            self._require_origin()
+            player, token = self._require_player()
+            self._require_csrf(token)
+            match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/bots/(\d+)", path)
+            if not match:
+                self._error(404, "not_found", "Not found.")
+                return
+            table_id, raw_seat_no = match.groups()
+            try:
+                seat_no = int(raw_seat_no)
+            except ValueError:
+                raise AppError(400, "invalid_seat_no", "Invalid seat number.")
+            if not 0 <= seat_no <= 8:
+                raise AppError(400, "invalid_seat_no", "Invalid seat number.")
+            now = time.time()
+            state = self.app.store.mutate_table(
+                table_id,
+                lambda value: engine.remove_bot(value, player["id"], seat_no, now),
+                now,
+            )
+            self._json(200, {"table": engine.public_view(state, player["id"])})
+        except AppError as exc:
+            self._error(exc.status, exc.code, exc.message)
+        except engine.GameError as exc:
+            self._error(exc.status, exc.code, exc.message)
+        except (FileNotFoundError, OSError):
+            self._error(503, "unavailable", "The requested resource is unavailable.")
+        except Exception:
+            self._error(500, "internal_error", "The request could not be completed.")
 
     def do_PATCH(self):
         self._error(405, "method_not_allowed", "Method not allowed.")

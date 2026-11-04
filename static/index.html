@@ -197,15 +197,17 @@
                 </div>
               </div>
 
-              <div id="join-panel" class="panel join-panel" hidden>
-                <div><div class="panel-kicker">TAKE YOUR SEAT</div><h3>This table is waiting for players.</h3><p class="muted">The host starts once at least two players have joined.</p></div>
-                <button id="join-button" class="button button-primary" type="button">Join this table <span aria-hidden="true">↗</span></button>
-              </div>
-
-              <div id="lobby-seat-panel" class="panel host-panel" hidden>
-                <div><div class="panel-kicker">YOUR SEAT</div><h3>You’re in.</h3><p class="muted">The host will deal once the table is ready.</p></div>
-                <button id="leave-button" class="button button-danger" type="button">Leave lobby</button>
-              </div>
+              <section id="lobby-seat-panel" class="panel lobby-panel" aria-labelledby="seat-status-title" hidden>
+                <div class="lobby-panel-copy">
+                  <div class="panel-kicker">TAKE A SEAT OR WATCH</div>
+                  <h3 id="seat-status-title">Watching the table</h3>
+                  <p id="seat-status-description" class="muted">Choose an open seat to join, or keep watching as a guest.</p>
+                </div>
+                <div class="lobby-seat-controls">
+                  <div id="seat-controls" class="seat-controls" aria-label="Available seats and test bots"></div>
+                  <button id="stand-button" class="button button-danger button-small" type="button" hidden>Stand up</button>
+                </div>
+              </section>
 
               <div id="host-panel" class="panel host-panel" hidden>
                 <div><div class="panel-kicker">HOST CONTROLS</div><h3>Ready to deal?</h3><p id="host-hint" class="muted">Wait for at least two seats, then start the freezeout.</p></div>
@@ -214,6 +216,50 @@
                   <button id="cancel-button" class="button button-danger button-small" type="button">Cancel table</button>
                 </div>
               </div>
+
+              <form id="table-settings-form" class="panel settings-panel" hidden>
+                <div class="section-heading settings-heading">
+                  <div><div class="panel-kicker">HOST SETTINGS</div><h3>Before you deal</h3></div>
+                  <span class="settings-lock-icon" aria-hidden="true">⚙</span>
+                </div>
+                <div class="settings-grid">
+                  <div class="settings-field settings-name-field">
+                    <label for="settings-table-name">Table name</label>
+                    <input id="settings-table-name" type="text" maxlength="40" required>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-max-seats">Seats</label>
+                    <select id="settings-max-seats">
+                      <option value="2">2 players</option><option value="3">3 players</option><option value="4">4 players</option>
+                      <option value="5">5 players</option><option value="6">6 players</option><option value="7">7 players</option>
+                      <option value="8">8 players</option><option value="9">9 players</option>
+                    </select>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-starting-stack">Starting stack</label>
+                    <input id="settings-starting-stack" type="number" min="100" max="1000000" step="100" required>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-small-blind">Small blind</label>
+                    <input id="settings-small-blind" type="number" min="1" max="100000" step="1" required>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-big-blind">Big blind</label>
+                    <input id="settings-big-blind" type="number" min="2" max="200000" step="1" required>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-level-minutes">Blind level length</label>
+                    <select id="settings-level-minutes">
+                      <option value="3">3 minutes</option><option value="5">5 minutes</option><option value="8">8 minutes</option>
+                      <option value="10">10 minutes</option><option value="15">15 minutes</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="settings-footer">
+                  <p id="settings-lock-note" class="muted">Save changes before starting the freezeout.</p>
+                  <button id="save-settings-button" class="button button-outline button-small" type="submit">Save settings</button>
+                </div>
+              </form>
 
               <section id="action-panel" class="action-panel panel" aria-labelledby="action-title" hidden>
                 <div class="action-head">

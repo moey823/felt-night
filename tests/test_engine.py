@@ -462,6 +462,174 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(state["results"]), 4)
 
 
+    def test_host_can_stand_watch_and_retake_a_selected_seat(self):
+        state = engine.create_lobby("stand", "p1", "Ada", config(), now=1)
+        engine.join(state, "p2", "Bea", now=2, seat_no=3)
+
+        engine.stand(state, "p1", now=3)
+        self.assertEqual(state["status"], "lobby")
+        self.assertEqual(state["host_id"], "p1")
+        self.assertIsNone(engine._seat_by_id(state, "p1"))
+        self.assertFalse(engine.public_view(state, "p1")["viewer"]["seated"])
+        engine.stand(state, "p2", now=3.5)
+        self.assertEqual(state["seats"], [])
+        self.assertEqual(state["status"], "lobby")
+        self.assertEqual(state["host_id"], "p1")
+
+        engine.join(state, "p1", "Ada", now=4, seat_no=1)
+        self.assertEqual(engine._seat_by_id(state, "p1")["seat_no"], 1)
+        self.assertEqual(state["host_id"], "p1")
+        self.assertEqual(state["status"], "lobby")
+
+    def test_join_moves_host_and_rejects_an_occupied_or_invalid_seat(self):
+        state = engine.create_lobby("seat-choice", "p1", "Ada", config(), now=1)
+        engine.join(state, "p2", "Bea", now=2, seat_no=3)
+        engine.join(state, "p1", "Ada", now=3, seat_no=2)
+        self.assertEqual(engine._seat_by_id(state, "p1")["seat_no"], 2)
+
+        with self.assertRaises(engine.GameError) as caught:
+            engine.join(state, "p3", "Cy", now=4, seat_no=3)
+        self.assertEqual(caught.exception.code, "seat_taken")
+        with self.assertRaises(engine.GameError) as caught:
+            engine.join(state, "p3", "Cy", now=5, seat_no=True)
+        self.assertEqual(caught.exception.code, "invalid_seat")
+
+    def test_lobby_settings_are_host_only_reset_stacks_and_lock_capacity(self):
+        state = engine.create_lobby("settings", "p1", "Ada", config(), now=1)
+        engine.join(state, "p2", "Bea", now=2, seat_no=2)
+        engine.join(state, "p3", "Cy", now=3, seat_no=3)
+        engine.add_bot(state, "p1", 1, now=3.5)
+
+        with self.assertRaises(engine.GameError) as caught:
+            engine.update_settings(state, "p2", {"starting_stack": 2000}, now=4)
+        self.assertEqual(caught.exception.code, "host_only")
+
+        engine.update_settings(
+            state, "p1",
+            {"starting_stack": 2000, "small_blind": 10, "big_blind": 20},
+            now=5, name="A" * 40,
+        )
+        self.assertEqual(state["name"], "A" * 40)
+        self.assertEqual([seat["stack"] for seat in state["seats"]], [2000, 2000, 2000, 2000])
+        self.assertEqual(state["blinds"]["small"], 10)
+        self.assertEqual(state["blinds"]["big"], 20)
+
+        with self.assertRaises(engine.GameError) as caught:
+            engine.update_settings(state, "p1", {"max_seats": 2}, now=6)
+        self.assertEqual(caught.exception.code, "seats_occupied")
+        with self.assertRaises(engine.GameError) as caught:
+            engine.update_settings(
+                state, "p1", {"small_blind": 30, "big_blind": 20}, now=7,
+            )
+        self.assertEqual(caught.exception.code, "invalid_config")
+
+        engine.start(state, "p1", now=8)
+        with self.assertRaises(engine.GameError) as caught:
+            engine.update_settings(state, "p1", {"starting_stack": 3000}, now=9)
+        self.assertEqual(caught.exception.code, "table_started")
+
+    def test_bot_seats_are_public_host_managed_and_frozen_at_start(self):
+        state = engine.create_lobby("bots", "p1", "Ada", config(), now=1)
+        engine.add_bot(state, "p1", 1, now=2)
+        bot = engine._seat_by_id(state, "bot:bots:1")
+        self.assertTrue(bot["is_bot"])
+        public_seats = engine.public_view(state, "p1")["seats"]
+        self.assertTrue(next(seat for seat in public_seats if seat["id"] == bot["player_id"])["is_bot"])
+
+        with self.assertRaises(engine.GameError) as caught:
+            engine.add_bot(state, "p2", 2, now=3)
+        self.assertEqual(caught.exception.code, "host_only")
+        with self.assertRaises(engine.GameError) as caught:
+            engine.remove_bot(state, "p2", 1, now=4)
+        self.assertEqual(caught.exception.code, "host_only")
+        with self.assertRaises(engine.GameError) as caught:
+            engine.add_bot(state, "p1", 1, now=5)
+        self.assertEqual(caught.exception.code, "seat_taken")
+
+        engine.start(state, "p1", now=6)
+        with self.assertRaises(engine.GameError) as caught:
+            engine.remove_bot(state, "p1", 1, now=7)
+        self.assertEqual(caught.exception.code, "table_started")
+        with self.assertRaises(engine.GameError) as caught:
+            engine.add_bot(state, "p1", 2, now=8)
+        self.assertEqual(caught.exception.code, "table_started")
+
+    def test_old_state_without_bot_fields_remains_readable(self):
+        state = heads_up(now=100)
+        for seat in state["seats"]:
+            seat.pop("is_bot", None)
+        state["hand"].pop("bot_action_at", None)
+
+        view = engine.public_view(state, "p1")
+        self.assertFalse(next(seat for seat in view["seats"] if seat["id"] == "p1")["is_bot"])
+        engine.advance(state, now=104)
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(state["hand"]["to_act"], "p1")
+
+    def test_host_leave_hands_off_only_to_a_human_not_a_bot(self):
+        state = engine.create_lobby("handoff", "p1", "Ada", config(), now=1)
+        engine.add_bot(state, "p1", 1, now=2)
+        engine.join(state, "p2", "Bea", now=3, seat_no=2)
+        engine.leave(state, "p1", now=4)
+        self.assertEqual(state["host_id"], "p2")
+        self.assertNotEqual(state["host_id"], "bot:handoff:1")
+
+    def test_bot_turns_wait_then_make_legal_progress_across_hands(self):
+        from unittest.mock import patch
+
+        state = engine.create_lobby(
+            "bot-game", "host", "Host",
+            config(max_seats=3, starting_stack=100, small_blind=5, big_blind=10),
+            now=100,
+        )
+        engine.add_bot(state, "host", 1, now=101)
+        engine.add_bot(state, "host", 2, now=102)
+        engine.stand(state, "host", now=103)
+        engine.start(state, "host", now=104)
+        initial_chips = 200
+        now = 104.0
+        checked_delay = False
+
+        def passive_legal_action(options):
+            return next((item for item in options if item[0] in ("check", "call")), options[0])
+
+        with patch.object(engine.random.SystemRandom, "choice", side_effect=passive_legal_action):
+            for _ in range(3000):
+                if state["status"] != "playing":
+                    break
+                hand = state["hand"]
+                if hand["street"] == "showdown":
+                    now = max(now + 0.01, hand["next_hand_at"] or now + 0.01)
+                    engine.advance(state, now=now)
+                else:
+                    actor_id = hand["to_act"]
+                    self.assertIsNotNone(actor_id)
+                    self.assertTrue(engine._seat_by_id(state, actor_id)["is_bot"])
+                    due = hand["bot_action_at"]
+                    self.assertIsNotNone(due)
+                    if not checked_delay:
+                        version = state["version"]
+                        engine.advance(state, now=due - 0.01)
+                        self.assertEqual(state["version"], version)
+                        self.assertEqual(state["hand"]["to_act"], actor_id)
+                        self.assertGreaterEqual(due - now, 0.8)
+                        self.assertLessEqual(due - now, 1.4)
+                        checked_delay = True
+                    now = max(now + 0.01, due)
+                    engine.advance(state, now=now)
+
+                if state["status"] == "playing" and state["hand"]["street"] != "showdown":
+                    total = sum(seat["stack"] for seat in state["seats"]) + sum(state["hand"]["contrib"].values())
+                else:
+                    total = sum(seat["stack"] for seat in state["seats"])
+                self.assertEqual(total, initial_chips)
+
+        self.assertTrue(checked_delay)
+        self.assertGreaterEqual(state["hand_no"], 2)
+        self.assertIn(state["status"], ("playing", "completed"))
+        self.assertTrue(any(item["text"].startswith("Bot ") for item in state["action_log"]))
+
+
 if __name__ == "__main__":
     unittest.main()
 

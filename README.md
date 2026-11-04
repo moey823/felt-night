@@ -22,7 +22,7 @@ For loopback browser QA, set `--public-origin http://localhost:18943` and open `
 
 ## Play
 
-Sign in with the shared `example-room-invite` app gate and choose a display name. Create a table, then share the private site with the other players. The host is seated automatically. Tables have 2–9 seats and can start with at least two players. Defaults are a 1,000-chip stack, 10/20 blinds, and 5-minute blind levels. Blinds double at each level. A hand continues until one player remains; players who run out of chips are eliminated.
+Sign in with the shared `example-room-invite` app gate and choose a display name. Create a table, then share the private site with the other players. The host is seated automatically, and players can choose an open seat or stand while the table is still a lobby. The host keeps control of the table while standing. Tables have 2–9 seats and can start with at least two seated players. Defaults are a 1,000-chip stack, 10/20 blinds, and 5-minute blind levels. The host can edit table settings and add or remove test bots in specific seats before starting, including while people are seated. Bots take their turns automatically after the game starts. Blinds double at each level. A hand continues until one player remains; players who run out of chips are eliminated.
 
 An unstarted lobby expires after four hours without activity. Players may leave a lobby; its host may cancel it. The action deadline is 30 seconds. If a player times out, the server checks when possible and otherwise folds. Bet and raise amounts are target street contributions (raise-to values). Each action carries the current hand and turn version so retries cannot act on a later turn.
 
@@ -34,10 +34,12 @@ An unstarted lobby expires after four hours without activity. Players may leave 
 - `GET /poker/api/tables`: table summaries.
 - `POST /poker/api/tables`: creates a table and seats its host.
 - `GET /poker/api/tables/{id}`: table state scoped to the current player.
-- `POST /poker/api/tables/{id}/join` and `/start`.
+- `POST /poker/api/tables/{id}/join`, `/seat` with `{ "seat_no": n }`, `/stand`, and `/start`.
+- `POST /poker/api/tables/{id}/settings`: optional `name` and any of `max_seats`, `starting_stack`, `small_blind`, `big_blind`, and `level_minutes`. The host may update settings only before the tournament starts; changes to the starting stack also update seated stacks.
+- `POST /poker/api/tables/{id}/bots`: `{ "seat_no": n }`; `DELETE /poker/api/tables/{id}/bots/{seat_no}`. Only the host may add or remove test bots in an unstarted lobby.
 - `POST /poker/api/tables/{id}/action`: `{ "expected_hand": n, "expected_turn_version": n, "action": "...", "amount": n }`.
 
-After login, every mutation needs the `X-SitNgo-CSRF` header returned by `/poker/api/me` or the login response. Errors use `{ "error": { "code": "...", "message": "..." } }`; stale actions return HTTP 409.
+Seat numbers in requests are zero-based. After login, every mutation needs the `X-SitNgo-CSRF` header returned by `/poker/api/me` or the login response, including bot deletion. Lobby settings and bot management are host-only. Errors use `{ "error": { "code": "...", "message": "..." } }`; stale actions return HTTP 409.
 
 ## Security and data
 
