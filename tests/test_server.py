@@ -334,6 +334,45 @@ class ServerAuthTests(unittest.TestCase):
                 self.assertEqual(status, 403, body)
                 self.assertEqual(body["error"]["code"], "host_only")
 
+    def test_host_can_create_and_edit_arbitrary_tournament_timers(self):
+        cookie, proof, csrf, _ = self.login("Host")
+        auth = dict(cookie=cookie, proof=proof, csrf=csrf)
+        cfg = dict(name="Custom pace", max_seats=2, starting_stack=1000,
+                   small_blind=10, big_blind=20, level_minutes=97,
+                   turn_seconds=19, runout_seconds=1.5)
+        status, _, created = self.request("POST", "/poker/api/tables", cfg, **auth)
+        self.assertEqual(status, 201, created)
+        table = created["table"]
+        for field in ("level_minutes", "turn_seconds", "runout_seconds"):
+            self.assertEqual(table["config"][field], cfg[field])
+        path = "/poker/api/tables/" + table["id"]
+        for field, bad in (("level_minutes", 0), ("level_minutes", "3"),
+                           ("turn_seconds", 0.5), ("turn_seconds", True),
+                           ("runout_seconds", None), ("runout_seconds", 3601)):
+            with self.subTest(field=field, bad=bad):
+                status, _, _ = self.request("POST", "/poker/api/tables",
+                                            dict(cfg, **{field: bad}), **auth)
+                self.assertEqual(status, 400)
+        status, _, _ = self.request("POST", path + "/bots", {"seat_no": 1}, **auth)
+        self.assertEqual(status, 200)
+        updated = dict(level_minutes=72.5, turn_seconds=7, runout_seconds=3.25)
+        status, _, result = self.request("POST", path + "/settings", updated, **auth)
+        self.assertEqual(status, 200, result)
+        for field, value in updated.items():
+            self.assertEqual(result["table"]["config"][field], value)
+        for field in updated:
+            status, _, _ = self.request("POST", path + "/settings", {field: 0}, **auth)
+            self.assertEqual(status, 400, field)
+        status, _, result = self.request("POST", path + "/start", {}, **auth)
+        self.assertEqual(status, 200, result)
+        view = result["table"]
+        self.assertGreater(view["turn_deadline"] - view["server_now"], 6)
+        self.assertLessEqual(view["turn_deadline"] - view["server_now"], 7)
+        self.assertEqual(view["config"]["runout_seconds"], 3.25)
+        self.assertAlmostEqual(view["blinds"]["seconds_to_next"], 72.5 * 60, delta=1)
+        status, _, _ = self.request("POST", path + "/settings", dict(turn_seconds=9), **auth)
+        self.assertEqual(status, 409)
+
     def test_bot_seats_are_explicit_bounded_and_locked_after_start(self):
         host_cookie, host_proof, host_csrf, host = self.login("Host")
         status, _, created = self.create_table(

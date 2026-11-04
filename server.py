@@ -34,7 +34,6 @@ MAX_ACTIVE_TABLES = 32
 MAX_SESSIONS = 256
 GLOBAL_LOGIN_LIMIT = 50
 MAX_WORKERS = 32
-TURN_SECONDS = 30
 OPERATOR_PASSWORD = "example-room-invite"
 
 
@@ -658,8 +657,9 @@ class Handler(BaseHTTPRequestHandler):
                     "starting_stack": self._integer(body.get("starting_stack"), "starting_stack", 100, 1_000_000_000),
                     "small_blind": self._integer(body.get("small_blind"), "small_blind", 1, 1_000_000_000),
                     "big_blind": self._integer(body.get("big_blind"), "big_blind", 2, 1_000_000_000),
-                    "level_minutes": self._integer(body.get("level_minutes"), "level_minutes", 1, 60),
-                    "turn_seconds": TURN_SECONDS,
+                    "level_minutes": body.get("level_minutes"),
+                    "turn_seconds": self._integer(body.get("turn_seconds", engine.TURN_SECONDS), "turn_seconds", 1, engine.MAX_TIMER_SECONDS),
+                    "runout_seconds": body.get("runout_seconds", engine.RUNOUT_SECONDS),
                 }
                 if config["small_blind"] >= config["big_blind"] or config["big_blind"] > config["starting_stack"]:
                     raise AppError(400, "invalid_blinds", "Blinds must increase and the big blind must fit the starting stack.")
@@ -695,13 +695,16 @@ class Handler(BaseHTTPRequestHandler):
                     "starting_stack": (100, 1_000_000_000),
                     "small_blind": (1, 1_000_000_000),
                     "big_blind": (2, 1_000_000_000),
-                    "level_minutes": (1, 60),
+                    "turn_seconds": (1, engine.MAX_TIMER_SECONDS),
                 }
                 settings = {
                     field: self._integer(body[field], field, minimum, maximum)
                     for field, (minimum, maximum) in field_ranges.items()
                     if field in body
                 }
+                for duration in ("level_minutes", "runout_seconds"):
+                    if duration in body:
+                        settings[duration] = body[duration]  # Numeric ranges are validated by the engine.
                 table_name = None
                 if "name" in body:
                     table_name = body["name"]

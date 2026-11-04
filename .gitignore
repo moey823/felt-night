@@ -1,1 +1,6 @@
-__pycache__/\n*.py[cod]\n*.sqlite3\n*.sqlite3-*\n*.db\n*.db-*\n
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*

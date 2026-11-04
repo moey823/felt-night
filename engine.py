@@ -6,18 +6,24 @@ transaction). Chip values are integer play-money units only.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 import math
 import random
 import time
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 TURN_SECONDS = 30
+MAX_LEVEL_MINUTES = 2**31 - 1
+MAX_TIMER_SECONDS = 3600
 MAX_SEATS = 9
 MAX_LOG_ENTRIES = 40
 MAX_HAND_EVENTS = 128
 RUNOUT_SECONDS = 2.5
+RUNOUT_EXACT_LIMIT = 10000
+RUNOUT_SAMPLE_COUNT = 10000
 MAX_CHIPS = 1_000_000_000
 LOBBY_IDLE_SECONDS = 4 * 60 * 60
 SUITS = ("s", "h", "d", "c")
@@ -61,10 +67,10 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
     return value
 
 
-def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise GameError("invalid_config", "Table settings are required.")
-    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds"}
+    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds"}
     unknown = set(config) - allowed
     if unknown:
         raise GameError("invalid_config", "Unknown table setting: %s." % sorted(unknown)[0])
@@ -72,14 +78,22 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
         "max_seats": 9, "starting_stack": 1500, "small_blind": 10,
         "big_blind": 20, "level_minutes": 10, "turn_seconds": TURN_SECONDS,
     })
+    values.setdefault("runout_seconds", RUNOUT_SECONDS)  # Lobbies saved before customizable pacing.
     values.update(config)
+    minutes = values["level_minutes"]
+    if type(minutes) not in (int, float) or not 0.01 <= minutes <= MAX_LEVEL_MINUTES:
+        raise GameError("invalid_config", "Blind level length must be at least 0.01 minutes and within range.")
+    delay = values["runout_seconds"]
+    if type(delay) not in (float, int) or not 1 <= delay <= MAX_TIMER_SECONDS:
+        raise GameError("invalid_config", "Time between all-in cards must be 1 to 3600 seconds.")
     result = {
         "max_seats": _integer(values["max_seats"], "Seat count", 2, MAX_SEATS),
         "starting_stack": _integer(values["starting_stack"], "Starting stack", 100, MAX_CHIPS),
         "small_blind": _integer(values["small_blind"], "Small blind", 1, MAX_CHIPS),
         "big_blind": _integer(values["big_blind"], "Big blind", 2, MAX_CHIPS),
-        "level_minutes": _integer(values["level_minutes"], "Blind level length", 1, 60),
-        "turn_seconds": _integer(values["turn_seconds"], "Turn length", 10, 120),
+        "level_minutes": minutes,
+        "turn_seconds": _integer(values["turn_seconds"], "Shot clock", 1, MAX_TIMER_SECONDS),
+        "runout_seconds": delay,
     }
     if result["big_blind"] < result["small_blind"]:
         raise GameError("invalid_config", "The big blind must be at least the small blind.")
@@ -250,6 +264,7 @@ def create_lobby(
             "big_blind": big_blind,
             "level_minutes": level_minutes,
             "turn_seconds": turn_seconds,
+            "runout_seconds": validated["runout_seconds"],
         },
         "seats": [
             {
@@ -595,6 +610,14 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "showdown": [],
         "revealed": [],
         "payouts": {},
+        "pot_winnings": {},
+        "pots": [],
+        "returns": [],
+        "runout_odds": [],
+        "runout_odds_street": None,
+        "runout_odds_board": [],
+        "runout_odds_exact": None,
+        "runout_odds_samples": 0,
         "next_hand_at": None,
         "runout_at": None,
         "runout_swept_street": None,
@@ -731,7 +754,15 @@ def _reveal_live_hands(state: Dict[str, Any], hand: Dict[str, Any]) -> None:
             "cards": list(hand["holes"].get(player_id, [])),
         })
     hand["revealed"] = revealed
-    _record_event(state, hand, "reveal", street=hand.get("street"), hands=revealed)
+    odds = _refresh_runout_odds(state, hand)
+    _record_event(
+        state, hand, "reveal", street=hand.get("street"), hands=revealed,
+        runout_odds=odds,
+        odds_street=hand.get("runout_odds_street"),
+        odds_board=list(hand.get("runout_odds_board", [])),
+        odds_exact=hand.get("runout_odds_exact"),
+        odds_samples=hand.get("runout_odds_samples", 0),
+    )
 
 
 def _deal_next_street(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> bool:
@@ -761,6 +792,7 @@ def _deal_next_street(state: Dict[str, Any], hand: Dict[str, Any], now: float) -
     hand["short_opening"] = False
     hand["runout_swept_street"] = None
     _log(state, "%s dealt." % hand["street"].capitalize(), now)
+    odds = _refresh_runout_odds(state, hand)
     _record_event(
         state,
         hand,
@@ -769,6 +801,11 @@ def _deal_next_street(state: Dict[str, Any], hand: Dict[str, Any], now: float) -
         street=hand["street"],
         board=list(board),
         new_cards=board[len(previous_board):],
+        runout_odds=odds,
+        odds_street=hand.get("runout_odds_street"),
+        odds_board=list(hand.get("runout_odds_board", [])),
+        odds_exact=hand.get("runout_odds_exact"),
+        odds_samples=hand.get("runout_odds_samples", 0),
     )
     return True
 
@@ -788,26 +825,69 @@ def _begin_runout(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> No
         hand["runout_at"] = None
         _settle_showdown(state, now)
         return
-    hand["runout_at"] = now + RUNOUT_SECONDS
+    delay = state["config"].get("runout_seconds", RUNOUT_SECONDS)
+    hand["runout_at"] = now + delay
+
+
+def _deal_runout_card(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+    now: float,
+) -> bool:
+    """Expose one board card; burn once before the flop, turn, and river."""
+    previous_street = hand.get("street")
+    previous_board = list(hand.get("board", []))
+    board = hand.setdefault("board", [])
+    count = len(board)
+    if count == 0:
+        _take_card(hand)
+        hand["street"] = "flop"
+    elif count in (1, 2):
+        hand["street"] = "flop"
+    elif count == 3:
+        _take_card(hand)
+        hand["street"] = "turn"
+    elif count == 4:
+        _take_card(hand)
+        hand["street"] = "river"
+    else:
+        return False
+
+    board.append(_take_card(hand))
+    _log(state, "%s card dealt." % hand["street"].capitalize(), now)
+    odds = _refresh_runout_odds(state, hand)
+    _record_event(
+        state,
+        hand,
+        "street",
+        from_street=previous_street,
+        street=hand["street"],
+        board=list(board),
+        new_cards=board[len(previous_board):],
+        runout_card_index=len(board),
+        runout_card_total=5,
+        runout_odds=odds,
+        odds_street=hand.get("runout_odds_street"),
+        odds_board=list(hand.get("runout_odds_board", [])),
+        odds_exact=hand.get("runout_odds_exact"),
+        odds_samples=hand.get("runout_odds_samples", 0),
+    )
+    return True
 
 
 def _advance_runout(state: Dict[str, Any], now: float) -> None:
     hand = state["hand"]
     assert hand is not None
-    if hand.get("runout_swept_street") != hand.get("street"):
-        _record_sweep(state, hand)
-        hand["runout_swept_street"] = hand.get("street")
-    if not _deal_next_street(state, hand, now):
+    if not _deal_runout_card(state, hand, now):
         hand["runout_at"] = None
         _settle_showdown(state, now)
         return
-    if hand.get("street") == "river":
-        _record_sweep(state, hand)
-        hand["runout_swept_street"] = "river"
+    if len(hand.get("board", [])) >= 5:
         hand["runout_at"] = None
         _settle_showdown(state, now)
         return
-    hand["runout_at"] = now + RUNOUT_SECONDS
+    delay = state["config"].get("runout_seconds", RUNOUT_SECONDS)
+    hand["runout_at"] = now + delay
 
 
 def _advance_street(state: Dict[str, Any], now: float) -> None:
@@ -919,6 +999,8 @@ def _perform_action(
         action = "check" if to_call == 0 else "fold"
 
     if action == "fold":
+        if to_call == 0:
+            raise GameError("cannot_fold", "Check is free.", 400)
         hand["folded"].append(actor_id)
         paid = 0
         target = player_bet
@@ -1035,9 +1117,10 @@ def _choose_bot_action(state: Dict[str, Any], hand: Dict[str, Any], player_id: s
     player_bet = hand["bets"].get(player_id, 0)
     to_call = max(0, current - player_bet)
     max_total = player_bet + seat["stack"]
-    choices: List[Tuple[str, Optional[int]]] = [
-        ("fold", None), ("check", None) if to_call == 0 else ("call", None),
-    ]
+    choices: List[Tuple[str, Optional[int]]] = (
+        [("check", None)] if to_call == 0
+        else [("fold", None), ("call", None)]
+    )
     may_raise = _has_raise_right(hand, player_id) and _has_raise_opponent(state, hand, player_id)
     if may_raise and max_total > current:
         minimum = current + hand["min_raise"] if current else hand["min_raise"]
@@ -1067,11 +1150,14 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
 
     blinds = state["blinds"]
     level_seconds = state["config"]["level_minutes"] * 60
-    while blinds["next_level_at"] is not None and timestamp >= blinds["next_level_at"]:
-        blinds["level"] += 1
-        blinds["small"] = min(MAX_CHIPS, blinds["small"] * 2)
-        blinds["big"] = min(MAX_CHIPS, blinds["big"] * 2)
-        blinds["next_level_at"] += level_seconds
+    if blinds["next_level_at"] is not None and timestamp >= blinds["next_level_at"]:
+        # Catch up after sleep/restart without replaying every missed level.
+        passed = 1 + int((timestamp - blinds["next_level_at"]) // level_seconds)
+        blinds["level"] += passed
+        growth = 1 << min(passed, MAX_CHIPS.bit_length())
+        blinds["small"] = min(MAX_CHIPS, blinds["small"] * growth)
+        blinds["big"] = min(MAX_CHIPS, blinds["big"] * growth)
+        blinds["next_level_at"] += passed * level_seconds
         _log(
             state,
             "Blind level %d: %d/%d." % (blinds["level"], blinds["small"], blinds["big"]),
@@ -1188,6 +1274,174 @@ def rank_seven(cards: Sequence[str]) -> Tuple[int, ...]:
     return max(rank_five(combo) for combo in itertools.combinations(cards, 5))
 
 
+def _rank_seven_fast(cards: Sequence[str]) -> Tuple[int, ...]:
+    """Rank five to seven cards without enumerating all five-card subsets."""
+    if len(cards) < 5 or len(cards) > 7:
+        raise ValueError("rank_seven_fast requires five to seven cards")
+    counts: Dict[int, int] = {}
+    suited: Dict[str, List[int]] = {suit: [] for suit in SUITS}
+    for card in cards:
+        rank = RANK_VALUES[card[0]]
+        counts[rank] = counts.get(rank, 0) + 1
+        suited[card[1]].append(rank)
+
+    ranks = sorted(counts, reverse=True)
+    for suit_ranks in suited.values():
+        if len(suit_ranks) >= 5:
+            straight_flush = _straight_high(suit_ranks)
+            if straight_flush is not None:
+                return (8, straight_flush)
+
+    quads = [rank for rank, count in counts.items() if count == 4]
+    if quads:
+        quad = max(quads)
+        kicker = max(rank for rank in ranks if rank != quad)
+        return (7, quad, kicker)
+
+    trips = sorted((rank for rank, count in counts.items() if count >= 3), reverse=True)
+    pairs = sorted((rank for rank, count in counts.items() if count >= 2), reverse=True)
+    if trips:
+        pair = next((rank for rank in pairs if rank != trips[0]), None)
+        if pair is not None:
+            return (6, trips[0], pair)
+
+    for suit_ranks in suited.values():
+        if len(suit_ranks) >= 5:
+            return (5,) + tuple(sorted(suit_ranks, reverse=True)[:5])
+
+    straight = _straight_high(ranks)
+    if straight is not None:
+        return (4, straight)
+    if trips:
+        trip = trips[0]
+        kickers = [rank for rank in ranks if rank != trip][:2]
+        return (3, trip) + tuple(kickers)
+    if len(pairs) >= 2:
+        first, second = pairs[:2]
+        kicker = max(rank for rank in ranks if rank not in (first, second))
+        return (2, first, second, kicker)
+    if pairs:
+        pair = pairs[0]
+        kickers = [rank for rank in ranks if rank != pair][:3]
+        return (1, pair) + tuple(kickers)
+    return (0,) + tuple(ranks[:5])
+
+
+@lru_cache(maxsize=256)
+def _calculate_runout_odds(
+    holes: Tuple[Tuple[str, Tuple[str, ...]], ...],
+    board: Tuple[str, ...],
+) -> Tuple[Tuple[str, float, float, float, bool, int], ...]:
+    """Return sole-win, shared-best, and equal-share pot percentages.
+
+    tie_pct counts outcomes where a player shares the best hand with one or
+    more opponents. equity_pct gives each tied player an equal pot share;
+    it is an all-live-hand estimate and does not model side-pot eligibility or
+    odd-chip assignment. Large preflop spaces use deterministic sampling.
+    """
+    players = tuple(player_id for player_id, _ in holes)
+    known_cards = {card for _, cards in holes for card in cards}
+    known_cards.update(board)
+    deck = tuple(
+        rank + suit
+        for rank in RANK_CHARS
+        for suit in SUITS
+        if rank + suit not in known_cards
+    )
+    missing = 5 - len(board)
+    if missing < 0:
+        return ()
+    outcome_count = math.comb(len(deck), missing)
+    exact = outcome_count <= RUNOUT_EXACT_LIMIT
+    samples = outcome_count if exact else RUNOUT_SAMPLE_COUNT
+    wins = {player_id: 0 for player_id in players}
+    ties = {player_id: 0 for player_id in players}
+    shares = {player_id: 0.0 for player_id in players}
+
+    if exact:
+        runouts: Iterable[Sequence[str]] = itertools.combinations(deck, missing)
+    else:
+        seed_data = repr((holes, board)).encode("utf-8")
+        seed = int.from_bytes(hashlib.sha256(seed_data).digest()[:8], "big")
+        rng = random.Random(seed)
+        runouts = (rng.sample(deck, missing) for _ in range(samples))
+
+    for runout in runouts:
+        complete_board = board + tuple(runout)
+        ranks = {
+            player_id: _rank_seven_fast(cards + complete_board)
+            for player_id, cards in holes
+        }
+        best = max(ranks.values())
+        winners = [player_id for player_id, rank in ranks.items() if rank == best]
+        if len(winners) == 1:
+            wins[winners[0]] += 1
+        else:
+            for player_id in winners:
+                ties[player_id] += 1
+        share = 1.0 / len(winners)
+        for player_id in winners:
+            shares[player_id] += share
+
+    total = samples or 1
+    return tuple(
+        (
+            player_id,
+            round(wins[player_id] * 100.0 / total, 1),
+            round(ties[player_id] * 100.0 / total, 1),
+            round(shares[player_id] * 100.0 / total, 1),
+            exact,
+            samples,
+        )
+        for player_id in players
+    )
+
+
+def _refresh_runout_odds(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    revealed_ids = {
+        item["player_id"]
+        for item in hand.get("revealed", [])
+        if item.get("player_id") in hand.get("holes", {})
+    }
+    live_ids = [
+        seat["player_id"]
+        for seat in _seats_in_order(state)
+        if seat["player_id"] in revealed_ids
+        and seat["player_id"] not in set(hand.get("folded", []))
+    ]
+    hand["runout_odds_street"] = hand.get("street")
+    hand["runout_odds_board"] = list(hand.get("board", []))
+    if len(live_ids) < 2 or len(hand.get("board", [])) > 5:
+        hand["runout_odds"] = []
+        hand["runout_odds_exact"] = None
+        hand["runout_odds_samples"] = 0
+        return []
+
+    holes = tuple(
+        (player_id, tuple(hand["holes"][player_id]))
+        for player_id in live_ids
+    )
+    cached_rows = _calculate_runout_odds(holes, tuple(hand.get("board", [])))
+    rows = [
+        {
+            "player_id": player_id,
+            "win_pct": win_pct,
+            "tie_pct": tie_pct,
+            "equity_pct": equity_pct,
+            "exact": exact,
+            "samples": samples,
+        }
+        for player_id, win_pct, tie_pct, equity_pct, exact, samples in cached_rows
+    ]
+    hand["runout_odds"] = rows
+    hand["runout_odds_exact"] = bool(rows[0]["exact"]) if rows else None
+    hand["runout_odds_samples"] = int(rows[0]["samples"]) if rows else 0
+    return rows
+
+
 def _rank_description(rank: Tuple[int, ...]) -> str:
     category = HAND_NAMES[rank[0]]
     high = rank[1] if len(rank) > 1 else 0
@@ -1198,49 +1452,156 @@ def _rank_description(rank: Tuple[int, ...]) -> str:
     return category
 
 
+def _allocate_pots(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+    ranks: Optional[Dict[str, Tuple[int, ...]]] = None,
+) -> Tuple[Dict[str, int], Dict[str, int], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Allocate merged contested pots and return unmatched single-player layers."""
+    contributions = hand["contrib"]
+    folded = set(hand["folded"])
+    payouts = {player_id: 0 for player_id in contributions}
+    pot_winnings = {player_id: 0 for player_id in contributions}
+    levels = sorted(set(amount for amount in contributions.values() if amount > 0))
+    layers: List[Dict[str, Any]] = []
+    returns: List[Dict[str, Any]] = []
+    previous = 0
+
+    for level in levels:
+        contributors = [
+            player_id for player_id, total in contributions.items()
+            if total >= level
+        ]
+        layer_amount = (level - previous) * len(contributors)
+        previous = level
+        if layer_amount <= 0:
+            continue
+
+        # A layer with one contributor is an unmatched bet, not a pot won.
+        if len(contributors) == 1:
+            player_id = contributors[0]
+            if player_id in folded:
+                raise GameError("invalid_pot", "An unmatched bet cannot be returned to a folded player.", 500)
+            seat = _seat_by_id(state, player_id)
+            payouts[player_id] += layer_amount
+            returns.append({
+                "player_id": player_id,
+                "actor_label": seat["name"] if seat is not None else "Player",
+                "amount": layer_amount,
+            })
+            continue
+
+        eligible = [player_id for player_id in contributors if player_id not in folded]
+        if not eligible:
+            raise GameError("invalid_pot", "No active player can claim a pot.", 500)
+        eligible_key = frozenset(eligible)
+        if layers and layers[-1]["eligible_key"] == eligible_key:
+            layers[-1]["amount"] += layer_amount
+            layers[-1]["cap"] = level
+        else:
+            layers.append({
+                "amount": layer_amount,
+                "cap": level,
+                "eligible": eligible,
+                "eligible_key": eligible_key,
+            })
+
+    clockwise = [seat["player_id"] for seat in _clockwise_after(state, hand["button_id"])]
+    pots: List[Dict[str, Any]] = []
+    for layer in layers:
+        eligible = layer["eligible"]
+        if len(eligible) == 1:
+            winners = eligible
+        elif ranks is None:
+            raise GameError("invalid_pot", "More than one player is eligible for an unshown pot.", 500)
+        else:
+            best = max(ranks[player_id] for player_id in eligible)
+            winners = [player_id for player_id in eligible if ranks[player_id] == best]
+
+        share, odd = divmod(layer["amount"], len(winners))
+        recipient_amounts = {player_id: share for player_id in winners}
+        ordered_winners = [player_id for player_id in clockwise if player_id in winners]
+        for player_id in ordered_winners[:odd]:
+            recipient_amounts[player_id] += 1
+
+        recipients = []
+        for player_id in clockwise:
+            amount = recipient_amounts.get(player_id, 0)
+            if amount <= 0:
+                continue
+            seat = _seat_by_id(state, player_id)
+            recipient = {
+                "player_id": player_id,
+                "actor_label": seat["name"] if seat is not None else "Player",
+                "amount": amount,
+                "rank": _rank_description(ranks[player_id]) if ranks is not None else None,
+            }
+            recipients.append(recipient)
+            payouts[player_id] += amount
+            pot_winnings[player_id] += amount
+
+        pot_index = len(pots)
+        pots.append({
+            "pot_index": pot_index,
+            "label": "Main pot" if pot_index == 0 else "Side pot %d" % pot_index,
+            "amount": layer["amount"],
+            "cap": layer["cap"],
+            "eligible_player_ids": [
+                player_id for player_id in clockwise if player_id in layer["eligible_key"]
+            ],
+            "recipients": recipients,
+        })
+
+    if sum(payouts.values()) != sum(contributions.values()):
+        raise GameError("invalid_pot", "Pot allocation did not conserve all contributed chips.", 500)
+    return payouts, pot_winnings, pots, returns
+
+
 def _split_side_pots(
     state: Dict[str, Any],
     hand: Dict[str, Any],
     now: float,
 ) -> Dict[str, int]:
-    contributions = hand["contrib"]
-    folded = set(hand["folded"])
-    levels = sorted(set(amount for amount in contributions.values() if amount > 0))
-    payouts = {player_id: 0 for player_id in contributions}
-    previous = 0
-    ranks: Dict[str, Tuple[int, ...]] = {}
-    for player_id in hand["holes"]:
-        if player_id not in folded:
-            ranks[player_id] = rank_seven(hand["holes"][player_id] + hand["board"])
-
-    for level in levels:
-        contributors = [player_id for player_id, total in contributions.items() if total >= level]
-        pot_amount = (level - previous) * len(contributors)
-        previous = level
-        eligible = [player_id for player_id in contributors if player_id not in folded]
-        if pot_amount <= 0:
-            continue
-        if not eligible:
-            # The action rules prevent this; keeping the chips in play is safer
-            # than silently assigning a pot to a folded player.
-            raise GameError("invalid_pot", "No active player can claim a pot.", 500)
-        if len(eligible) == 1:
-            payouts[eligible[0]] += pot_amount
-            continue
-        best = max(ranks[player_id] for player_id in eligible)
-        winners = [player_id for player_id in eligible if ranks[player_id] == best]
-        share, odd = divmod(pot_amount, len(winners))
-        for player_id in winners:
-            payouts[player_id] += share
-        if odd:
-            order = [seat["player_id"] for seat in _clockwise_after(state, hand["button_id"])]
-            ordered_winners = [player_id for player_id in order if player_id in winners]
-            for player_id in ordered_winners[:odd]:
-                payouts[player_id] += 1
+    """Return each player's total credits, including any uncalled return."""
+    payouts, _, _, _ = _allocate_pots(state, hand, _showdown_ranks(hand))
     return payouts
 
 
-def _record_eliminations(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> None:
+def _showdown_ranks(hand: Dict[str, Any]) -> Dict[str, Tuple[int, ...]]:
+    folded = set(hand["folded"])
+    return {
+        player_id: rank_seven(hand["holes"][player_id] + hand["board"])
+        for player_id in hand["holes"]
+        if player_id not in folded
+    }
+
+
+def _winner_rows(
+    state: Dict[str, Any],
+    amounts: Dict[str, int],
+    ranks: Optional[Dict[str, Tuple[int, ...]]] = None,
+) -> List[Dict[str, Any]]:
+    rows = []
+    for seat in _seats_in_order(state):
+        amount = amounts.get(seat["player_id"], 0)
+        if amount <= 0:
+            continue
+        row = {
+            "player_id": seat["player_id"],
+            "actor_label": seat["name"],
+            "amount": amount,
+        }
+        if ranks is not None and seat["player_id"] in ranks:
+            row["rank"] = _rank_description(ranks[seat["player_id"]])
+        rows.append(row)
+    return rows
+
+
+def _record_eliminations(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+    now: float,
+) -> List[Dict[str, Any]]:
     already = {item["player_id"] for item in state["elimination_order"]}
     newly_out = [
         seat
@@ -1256,16 +1617,105 @@ def _record_eliminations(state: Dict[str, Any], hand: Dict[str, Any], now: float
         )
     )
     total = len(state["seats"])
-    for seat in newly_out:
-        place = total - len(state["elimination_order"])
-        item = {
+    newly_recorded: List[Dict[str, Any]] = []
+    cursor = 0
+    while cursor < len(newly_out):
+        starting_stack = hand["stack_before"].get(newly_out[cursor]["player_id"], 0)
+        group = []
+        while (
+            cursor < len(newly_out)
+            and hand["stack_before"].get(newly_out[cursor]["player_id"], 0) == starting_stack
+        ):
+            group.append(newly_out[cursor])
+            cursor += 1
+        place = total - len(state["elimination_order"]) - len(group) + 1
+        for seat in group:
+            item = {
+                "player_id": seat["player_id"],
+                "name": seat["name"],
+                "seat_no": seat["seat_no"],
+                "place": place,
+                "tied": len(group) > 1,
+                "tie_count": len(group),
+                "stack_before": starting_stack,
+                "hand_no": hand.get("number", state.get("hand_no")),
+                "eliminated_at": int(now),
+            }
+            state["elimination_order"].append(item)
+            newly_recorded.append(item)
+            if len(group) > 1:
+                _log(
+                    state,
+                    "%s ties for %s place with %d players." % (
+                        seat["name"], _ordinal(place), len(group),
+                    ),
+                    now,
+                )
+            else:
+                _log(state, "%s is out in %s place." % (seat["name"], _ordinal(place)), now)
+    return newly_recorded
+
+
+def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if state.get("status") == "completed" and state.get("results"):
+        rows = []
+        elimination = {item["player_id"]: item for item in state.get("elimination_order", [])}
+        for result in state["results"]:
+            item = elimination.get(result["player_id"], {})
+            rows.append({
+                "player_id": result["player_id"],
+                "name": result["name"],
+                "seat_no": item.get("seat_no", _seat_by_id(state, result["player_id"])["seat_no"] if _seat_by_id(state, result["player_id"]) else None),
+                "chips": result.get("chips", 0),
+                "status": "winner" if result.get("place") == 1 else "eliminated",
+                "place": result.get("place"),
+                "tied": bool(result.get("tied", item.get("tied", False))),
+                "tie_count": result.get("tie_count", item.get("tie_count", 1)),
+                "hand_no": item.get("hand_no"),
+            })
+        return rows
+
+    elimination = {item["player_id"]: item for item in state.get("elimination_order", [])}
+    hand = state.get("hand") or {}
+    in_current_hand = set(hand.get("holes", {}))
+    active = [
+        seat for seat in _seats_in_order(state)
+        if seat["player_id"] not in elimination
+        and (seat["stack"] > 0 or seat["player_id"] in in_current_hand)
+    ]
+    active.sort(key=lambda seat: (-seat["stack"], seat["seat_no"]))
+    rows = []
+    last_stack = None
+    stack_rank = 0
+    for index, seat in enumerate(active, 1):
+        if seat["stack"] != last_stack:
+            stack_rank = index
+            last_stack = seat["stack"]
+        rows.append({
             "player_id": seat["player_id"],
             "name": seat["name"],
-            "place": place,
-            "eliminated_at": int(now),
-        }
-        state["elimination_order"].append(item)
-        _log(state, "%s is out in %s place." % (seat["name"], _ordinal(place)), now)
+            "seat_no": seat["seat_no"],
+            "chips": seat["stack"],
+            "status": "active",
+            "place": None,
+            "stack_rank": stack_rank,
+        })
+    for item in sorted(
+        state.get("elimination_order", []),
+        key=lambda row: (row["place"], row.get("seat_no", 0)),
+    ):
+        rows.append({
+            "player_id": item["player_id"],
+            "name": item["name"],
+            "seat_no": item.get("seat_no"),
+            "chips": (_seat_by_id(state, item["player_id"]) or {}).get("stack", 0),
+            "status": "eliminated",
+            "place": item["place"],
+            "tied": bool(item.get("tied", False)),
+            "tie_count": item.get("tie_count", 1),
+            "hand_no": item.get("hand_no"),
+        })
+    return rows
 
 
 def _ordinal(number: int) -> str:
@@ -1299,6 +1749,8 @@ def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) ->
                 "name": item["name"],
                 "place": item["place"],
                 "chips": seat["stack"] if seat else 0,
+                "tied": bool(item.get("tied", False)),
+                "tie_count": item.get("tie_count", 1),
             }
         )
     state["results"] = results
@@ -1322,7 +1774,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["bets"] = {player_id: 0 for player_id in hand.get("holes", {})}
     hand["current_bet"] = 0
     hand["runout_at"] = None
-    _record_eliminations(state, hand, now)
+    eliminated = _record_eliminations(state, hand, now)
     remaining = [seat for seat in _seats_in_order(state) if seat["stack"] > 0]
     hand["street"] = "showdown"
     hand["to_act"] = None
@@ -1332,6 +1784,11 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     if len(remaining) <= 1:
         _set_results(state, remaining[0]["player_id"] if remaining else None, now)
         hand["next_hand_at"] = None
+    _record_event(
+        state, hand, "standings", hand_no=hand.get("number"),
+        eliminated=[dict(item) for item in eliminated],
+        standings=_standings_rows(state),
+    )
 
 
 def _award_without_showdown(
@@ -1341,25 +1798,29 @@ def _award_without_showdown(
 ) -> None:
     hand = state["hand"]
     assert hand is not None
-    pot = sum(hand["contrib"].values())
-    payouts = {player_id: 0 for player_id in hand["contrib"]}
+    payouts, pot_winnings, pots, returns = _allocate_pots(state, hand)
+    pot_total = sum(hand["contrib"].values())
+    hand["pot_winnings"] = pot_winnings
+    hand["pots"] = pots
+    hand["returns"] = returns
     if winner_id is not None:
-        payouts[winner_id] = pot
         seat = _seat_by_id(state, winner_id)
-        _log(state, "%s wins %d without showdown." % (seat["name"], pot), now)
+        won = pot_winnings.get(winner_id, 0)
+        if won:
+            _log(state, "%s wins %d without showdown." % (seat["name"], won), now)
     _record_sweep(state, hand)
-    winners = []
-    for player_id, amount in payouts.items():
-        if amount > 0:
-            seat = _seat_by_id(state, player_id)
-            winners.append({
-                "player_id": player_id,
-                "actor_label": seat["name"] if seat is not None else "Player",
-                "amount": amount,
-            })
     _record_event(
-        state, hand, "payout", street=hand.get("street"),
-        payouts=dict(payouts), winners=winners,
+        state,
+        hand,
+        "payout",
+        street=hand.get("street"),
+        pot_total=pot_total,
+        payouts=dict(payouts),
+        pot_winnings=dict(pot_winnings),
+        pots=pots,
+        winners=_winner_rows(state, pot_winnings),
+        returns=returns,
+        return_total=sum(item["amount"] for item in returns),
     )
     _finish_hand(state, payouts, now)
 
@@ -1381,11 +1842,19 @@ def _settle_showdown(state: Dict[str, Any], now: float) -> None:
             hand["board"].append(_take_card(hand))
             hand["street"] = "river"
 
-    payouts = _split_side_pots(state, hand, now)
+    ranks = _showdown_ranks(hand)
+    payouts, pot_winnings, pots, returns = _allocate_pots(state, hand, ranks)
+    hand["pot_winnings"] = pot_winnings
+    hand["pots"] = pots
+    hand["returns"] = returns
+    returned = {
+        item["player_id"]: item["amount"]
+        for item in returns
+    }
     showdown = []
     for player_id in _hand_live_ids(hand):
         seat = _seat_by_id(state, player_id)
-        rank = rank_seven(hand["holes"][player_id] + hand["board"])
+        rank = ranks[player_id]
         showdown.append(
             {
                 "player_id": player_id,
@@ -1393,7 +1862,9 @@ def _settle_showdown(state: Dict[str, Any], now: float) -> None:
                 "cards": list(hand["holes"][player_id]),
                 "rank": _rank_description(rank),
                 "rank_value": list(rank),
-                "payout": payouts.get(player_id, 0),
+                "payout": pot_winnings.get(player_id, 0),
+                "returned": returned.get(player_id, 0),
+                "total_credited": payouts.get(player_id, 0),
             }
         )
     hand["showdown"] = showdown
@@ -1403,20 +1874,17 @@ def _settle_showdown(state: Dict[str, Any], now: float) -> None:
         "showdown_result",
         street=hand.get("street"),
         board=list(hand.get("board", [])),
+        pot_total=sum(hand["contrib"].values()),
         payouts=dict(payouts),
-        winners=[
-            {
-                "player_id": player_id,
-                "actor_label": next((item["name"] for item in showdown if item["player_id"] == player_id), "Player"),
-                "amount": amount,
-                "rank": next((item["rank"] for item in showdown if item["player_id"] == player_id), None),
-            }
-            for player_id, amount in payouts.items() if amount > 0
-        ],
+        pot_winnings=dict(pot_winnings),
+        pots=pots,
+        winners=_winner_rows(state, pot_winnings, ranks),
+        returns=returns,
+        return_total=sum(item["amount"] for item in returns),
         showdown=list(showdown),
     )
 
-    for player_id, amount in payouts.items():
+    for player_id, amount in pot_winnings.items():
         if amount > 0:
             seat = _seat_by_id(state, player_id)
             if seat is not None:
@@ -1506,6 +1974,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "small_blind": state["config"]["small_blind"],
             "big_blind": state["config"]["big_blind"],
             "level_minutes": state["config"]["level_minutes"],
+            "turn_seconds": state["config"]["turn_seconds"],
+            "runout_seconds": state["config"].get("runout_seconds", RUNOUT_SECONDS),
         },
         "blinds": {
             "level": blinds["level"],
@@ -1544,6 +2014,16 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "action_log": list(state["action_log"]),
         "results": list(state["results"]),
         "showdown": list(hand.get("showdown", [])) if hand else [],
+        "pots": list(hand.get("pots", [])) if hand else [],
+        "pot_winnings": dict(hand.get("pot_winnings", {})) if hand else {},
+        "payouts": dict(hand.get("payouts", {})) if hand else {},
+        "returns": list(hand.get("returns", [])) if hand else [],
+        "runout_odds": list(hand.get("runout_odds", [])) if hand else [],
+        "runout_odds_street": hand.get("runout_odds_street") if hand else None,
+        "runout_odds_board": list(hand.get("runout_odds_board", [])) if hand else [],
+        "runout_odds_exact": hand.get("runout_odds_exact") if hand else None,
+        "runout_odds_samples": hand.get("runout_odds_samples", 0) if hand else 0,
+        "standings": _standings_rows(state),
         "next_hand_at": hand.get("next_hand_at") if hand else None,
         "runout_at": hand.get("runout_at") if hand else None,
     }

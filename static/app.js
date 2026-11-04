@@ -11,6 +11,7 @@
     activeTableId: "",
     skipAutoResume: false,
     tableView: null,
+    standingsDismissedFor: "",
     polling: false,
     refreshBusy: false,
     refreshTimer: 0,
@@ -40,6 +41,8 @@
       street: "",
       revealed: {},
       awards: [],
+      pots: [],
+      returns: [],
       displayWagers: {},
       wagerPositions: {},
       queue: [],
@@ -119,6 +122,12 @@
 
   function chips(value) {
     return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(number(value, 0));
+  }
+
+  function percent(value) {
+    var parsed = Number(value);
+    if (!isFinite(parsed)) return "0%";
+    return parsed.toFixed(1).replace(/\.0$/, "") + "%";
   }
 
   function showNotice(message, kind, persistent) {
@@ -423,13 +432,14 @@
       });
     } else if (event.type === "showdown_result" || event.type === "payout") {
       fx.awards = Array.isArray(event.winners) ? event.winners : [];
+      fx.pots = Array.isArray(event.pots) ? event.pots : [];
+      fx.returns = Array.isArray(event.returns) ? event.returns : [];
       (Array.isArray(event.showdown) ? event.showdown : []).forEach(function (hand) {
         var id = String(hand && hand.player_id || "");
         if (id && Array.isArray(hand.cards)) fx.revealed[id] = hand.cards;
       });
     }
   }
-
   function snapshotTableEffects(view, events) {
     var fx = state.tableFx;
     fx.generation += 1;
@@ -439,6 +449,8 @@
     fx.street = "";
     fx.revealed = {};
     fx.awards = [];
+    fx.pots = [];
+    fx.returns = [];
     fx.displayWagers = {};
     fx.wagerPositions = {};
     fx.eventAware = Array.isArray(events);
@@ -461,6 +473,7 @@
     var fx = state.tableFx;
     var handId = String(view.hand_id || (number(view.hand_no, 0) ? "hand:" + number(view.hand_no, 0) : ""));
     var events = Array.isArray(view.events) ? view.events : null;
+    if (Array.isArray(view.returns)) fx.returns = view.returns;
     var baseSeq = number(view.event_base_seq, 0);
     var firstView = fx.handId === null;
     var handChanged = !firstView && handId !== fx.handId;
@@ -475,6 +488,8 @@
         fx.actions = {};
         fx.revealed = {};
         fx.awards = [];
+        fx.pots = [];
+        fx.returns = [];
         fx.displayWagers = {};
         fx.wagerPositions = {};
         fx.queue = [];
@@ -485,6 +500,7 @@
           rememberTableEvent(event);
           if (event && event.type === "action" && number(event.amount, 0) > 0) fx.queue.push({ type: "action", event: event });
           else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
+          else if (event && (event.type === "showdown_result" || event.type === "payout")) fx.queue.push({ type: "payout", event: event });
           fx.lastSeq = Math.max(fx.lastSeq, seq);
         });
         fx.street = String(view.street || fx.street || "");
@@ -516,6 +532,7 @@
       rememberTableEvent(event);
       if (event && event.type === "action" && number(event.amount, 0) > 0) fx.queue.push({ type: "action", event: event });
       else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
+      else if (event && (event.type === "showdown_result" || event.type === "payout")) fx.queue.push({ type: "payout", event: event });
       fx.lastSeq = Math.max(fx.lastSeq, seq);
     });
     fx.street = visibleStreet || fx.street;
@@ -677,12 +694,12 @@
     return !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }
 
-  function animateChip(layer, start, end, amount, duration) {
+  function animateChip(layer, start, end, amount, duration, label, kind) {
     if (!motionAllowed() || !layer || !start || !end || typeof layer.animate !== "function") return Promise.resolve();
     var bounds = layer.getBoundingClientRect();
     var chip = document.createElement("span");
-    chip.className = "chip-flight";
-    chip.textContent = chips(amount);
+    chip.className = "chip-flight" + (kind ? " chip-flight-" + kind : "");
+    chip.textContent = label == null ? chips(amount) : String(label);
     chip.style.left = (start.x - bounds.left) + "px";
     chip.style.top = (start.y - bounds.top) + "px";
     layer.appendChild(chip);
@@ -694,7 +711,6 @@
     ], { duration: duration || 430, easing: "cubic-bezier(.18,.74,.32,1)", fill: "forwards" });
     return animation.finished.catch(function () {}).then(function () { chip.remove(); });
   }
-
   function playTableEffects() {
     var fx = state.tableFx;
     if (fx.running || !fx.queue.length) return;
@@ -708,7 +724,11 @@
     function complete() {
       fx.running = false;
       if (fx.currentItem === item) fx.currentItem = null;
-      if (stillCurrent() && state.tableView) renderSeats(state.tableView);
+      if (stillCurrent() && state.tableView) {
+        renderBoard(state.tableView);
+        renderSeats(state.tableView);
+        renderResults(state.tableView);
+      }
       playTableEffects();
     }
 
@@ -750,9 +770,55 @@
       });
       return;
     }
+
+    if (item.type === "payout") {
+      var payoutEvent = item.event || {};
+      var payoutLayer = byId("chip-layer");
+      var payoutSourceNode = byId("pot-amount");
+      var payoutSourceRect = payoutSourceNode && payoutSourceNode.getBoundingClientRect();
+      var payoutStart = payoutSourceRect
+        ? { x: payoutSourceRect.left + payoutSourceRect.width / 2, y: payoutSourceRect.top + payoutSourceRect.height / 2 }
+        : null;
+      var seatNodes = Array.prototype.slice.call(byId("seat-grid").querySelectorAll(".seat-card[data-player-id]"));
+      function recipientNode(recipient) {
+        var recipientId = String(recipient && recipient.player_id || "");
+        if (!recipientId) return null;
+        return seatNodes.find(function (node) {
+          return String(node.getAttribute("data-player-id") || "") === recipientId;
+        }) || null;
+      }
+      var transferCount = (payoutEvent.pots || []).length + ((payoutEvent.returns || []).length ? 1 : 0);
+      var flightMs = Math.min(570, 2100 / Math.max(1, transferCount));
+      function transferStep(recipients, isReturn) {
+        if (!stillCurrent() || state.tableView !== view && (!state.tableView || state.tableView.hand_id !== view.hand_id)) return Promise.resolve();
+        var motions = [];
+        (recipients || []).forEach(function (recipient) {
+          var amount = number(recipient && recipient.amount, 0);
+          var targetNode = recipientNode(recipient);
+          var targetRect = targetNode && targetNode.getBoundingClientRect();
+          if (amount <= 0 || !targetRect) return;
+          var target = { x: targetRect.left + targetRect.width / 2, y: targetRect.top + targetRect.height / 2 };
+          var label = (isReturn ? "RETURN +" : "+") + chips(amount);
+          motions.push(animateChip(payoutLayer, payoutStart, target, amount, flightMs, label, isReturn ? "return" : "payout"));
+        });
+        return Promise.all(motions);
+      }
+      var pots = Array.isArray(payoutEvent.pots) ? payoutEvent.pots.slice() : [];
+      if (!pots.length && Array.isArray(payoutEvent.winners) && payoutEvent.winners.length) {
+        pots.push({ recipients: payoutEvent.winners });
+      }
+      pots.sort(function (a, b) { return number(a && a.pot_index, 0) - number(b && b.pot_index, 0); });
+      var sequence = Promise.resolve();
+      pots.forEach(function (pot) {
+        var recipients = Array.isArray(pot && pot.recipients) ? pot.recipients : [];
+        sequence = sequence.then(function () { return transferStep(recipients, false); });
+      });
+      var returns = Array.isArray(payoutEvent.returns) ? payoutEvent.returns : [];
+      sequence.then(function () { return transferStep(returns, true); }).then(complete);
+      return;
+    }
     complete();
   }
-
   function renderSeats(view) {
     var layout = seatLayout(view);
     var max = layout.max;
@@ -773,6 +839,11 @@
     var currentHand = view.status === "playing";
     var fx = state.tableFx;
     var pendingWagers = queuedWagerAmounts(fx);
+    var oddsByPlayer = Object.create(null);
+    (Array.isArray(view.runout_odds) ? view.runout_odds : []).forEach(function (row) {
+      var oddsId = String(row && row.player_id || "");
+      if (oddsId) oddsByPlayer[oddsId] = row;
+    });
     var html = "";
 
     for (var i = 0; i < max; i += 1) {
@@ -807,7 +878,27 @@
         if (!cards.length) cards = cardArray(seat.revealed_cards);
       }
       var exposed = Boolean(cards.length && !isMe && (fx.revealed[id] || seat.cards || seat.revealed_cards));
+      var oddsRow = oddsByPlayer[id];
+      if (oddsRow && cards.length && !folded && stack <= 0) { allIn = true; label = "All in"; }
+      var equityHtml = "";
+      if (oddsRow && cards.length && (isMe || exposed)) {
+        var winPct = number(oddsRow.win_pct, 0);
+        var tiePct = number(oddsRow.tie_pct, 0);
+        var equityPct = number(oddsRow.equity_pct, 0);
+        var sampleCount = number(oddsRow.samples, 0);
+        var exactness = oddsRow.exact === true
+          ? "Exact enumeration of remaining runouts."
+          : (sampleCount > 0 ? "Simulation estimate from " + chips(sampleCount) + " sampled runouts." : "Simulation estimate; sample count unavailable.");
+        var oddsLabel = "Outright win chance " + percent(winPct) + ". Tied-best chance " + percent(tiePct) +
+          ". Equity is expected share of a hypothetical shared pot: " + percent(equityPct) +
+          ". Compared with all live hands; side pots can have different eligible players. " + exactness;
+        equityHtml = '<div class="seat-equity" data-player-id="' + esc(id) + '" role="group" tabindex="0" aria-label="' + esc(oddsLabel) + '" title="' + esc(oddsLabel) + '">' +
+          '<span class="seat-equity-win"><span>Win alone</span><strong>' + percent(winPct) + '</strong></span>' +
+          (tiePct >= 0.5 ? '<span class="seat-equity-tie">Tie ' + percent(tiePct) + '</span>' : '') + '</div>';
+      }
 
+      var compactRunoutSeat = Boolean(equityHtml && !folded && stack <= 0);
+      var stackHtml = compactRunoutSeat ? "" : '<div class="seat-stack">' + chips(stack) + ' <span class="seat-number">chips</span></div>';
       var cardHtml = "";
       if (cards.length) {
         cardHtml = '<div class="seat-cards' + (exposed ? ' is-exposed' : ' is-viewer-cards') + '">' + cards.map(function (card) { return playingCardHTML(card, true); }).join("") + '</div>';
@@ -816,12 +907,13 @@
       }
 
       var tags = bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '';
-      html += '<div class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
+      var tagsMarkup = tags ? '<div class="seat-tags">' + tags + '</div>' : '';
+      html += '<div class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
-        '<div class="seat-tags">' + tags + '</div>' +
-        '<div class="seat-stack">' + chips(stack) + ' <span class="seat-number">chips</span></div>' +
+        tagsMarkup +
+        stackHtml +
         '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        cardHtml +
+        cardHtml + equityHtml +
       '</div>';
       if (dealer) html += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
       if (actionState) {
@@ -847,12 +939,13 @@
       2: [[50, 91], [50, 9]],
       3: [[50, 91], [8, 18], [92, 18]],
       4: [[50, 91], [7, 74], [50, 10], [93, 74]],
-      5: [[50, 91], [28, 73], [6, 24], [94, 24], [72, 73]],
-      6: [[50, 91], [31, 73], [5, 24], [50, 10], [95, 24], [69, 73]],
-      7: [[50, 91], [30, 73], [0, 90], [0, 28], [50, 10], [100, 28], [70, 73]],
-      8: [[50, 91], [30, 73], [0, 90], [0, 28], [28, 10], [72, 10], [100, 28], [70, 73]],
-      9: [[50, 91], [30, 73], [0, 90], [0, 28], [28, 10], [72, 10], [100, 28], [100, 90], [70, 73]]
+      5: [[50, 91], [30, 68], [0, 32], [100, 32], [70, 68]],
+      6: [[50, 91], [30, 68], [0, 32], [50, 10], [100, 32], [70, 68]],
+      7: [[50, 91], [30, 68], [0, 32], [15, 10], [85, 10], [100, 32], [70, 68]],
+      8: [[50, 91], [30, 68], [0, 32], [15, 10], [50, 10], [85, 10], [100, 32], [70, 68]],
+      9: [[50, 91], [30, 68], [0, 90], [0, 32], [28, 10], [72, 10], [100, 32], [100, 90], [70, 68]]
     };
+    felt.classList.toggle("exposed-ring", max >= 5 && Boolean((view.runout_odds || []).length));
     felt.dataset.compactLayout = compact ? "true" : "false";
     felt.classList.toggle("is-crowded", max >= 7);
     grid.querySelectorAll(".seat-card").forEach(function (node) {
@@ -883,7 +976,7 @@
       var box = boxForNode(node, gridRect);
       if (box) blockers.push(box);
     });
-    ["board-caption", "board-cards", "pot-display", "street-label", "hand-result"].forEach(function (id) {
+    ["board-caption", "board-cards", "pot-display", "street-label"].forEach(function (id) {
       var box = boxForNode(byId(id), gridRect);
       if (box) blockers.push(box);
     });
@@ -943,25 +1036,75 @@
       slots = cards.map(function (card) { return playingCardHTML(card, false); });
     }
     byId("board-cards").innerHTML = slots.join("");
+
+    var fx = state.tableFx;
     var pot = number(view.pot, view.hand && view.hand.pot);
-    byId("pot-amount").textContent = chips(pot);
+    var awards = Array.isArray(fx.awards) ? fx.awards : [];
+    var pots = Array.isArray(fx.pots) ? fx.pots : [];
+    var returns = Array.isArray(fx.returns) ? fx.returns : [];
+    var hasSettlement = awards.length > 0 || pots.length > 0 || returns.length > 0;
+    var payoutPending = Boolean((fx.currentItem && fx.currentItem.type === "payout") ||
+      (fx.queue || []).some(function (item) { return item && item.type === "payout"; }));
+    var payoutAmount = pots.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0) +
+      returns.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0);
+    if (!payoutAmount) {
+      payoutAmount = awards.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0) +
+        returns.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0);
+    }
+    byId("pot-amount").textContent = chips(payoutPending && pot === 0 ? payoutAmount : pot);
     byId("pot-label").textContent = "Pot";
+    byId("pot-display").hidden = Boolean(hasSettlement && pot === 0 && !payoutPending);
     byId("street-label").textContent = view.street && view.street !== "lobby" ? String(view.street).replace(/_/g, " ").toUpperCase() : "";
-    var awards = Array.isArray(state.tableFx.awards) ? state.tableFx.awards : [];
-    byId("pot-display").hidden = Boolean(awards.length && pot === 0);
+
     var resultNode = byId("hand-result");
-    if (awards.length) {
+    if (hasSettlement) {
+      function nameFor(record) {
+        var id = String(record && record.player_id || "");
+        var seat = (Array.isArray(view.seats) ? view.seats : []).find(function (candidate) {
+          return String(candidate.id || candidate.player_id || "") === id;
+        });
+        return String(record && (record.actor_label || record.name) || (seat && seat.name) || "Player");
+      }
+      function recipientMarkup(record, isReturn) {
+        var amount = number(record && record.amount, 0);
+        var id = String(record && record.player_id || "");
+        var rank = String(record && record.rank || "");
+        return '<span class="hand-result-recipient' + (isReturn ? ' is-return' : '') + '\"' +
+          (id ? ' data-player-id=\"' + esc(id) + '\"' : '') + '><strong>' + esc(nameFor(record)) + '</strong><b>' +
+          (isReturn ? 'Returned ' : '+') + chips(amount) + (isReturn ? '' : '') + '</b>' +
+          (rank ? '<small>' + esc(rank) + '</small>' : '') + '</span>';
+      }
+
+      var resultParts = ['<span class="hand-result-title">HAND PAYOUT</span>'];
+      if (pots.length) {
+        pots.forEach(function (potRow, index) {
+          var recipients = Array.isArray(potRow && potRow.recipients) ? potRow.recipients : [];
+          var potIndex = number(potRow && potRow.pot_index, index);
+          var title = potIndex === 0 ? "Main pot" : "Side pot " + (potIndex + 1);
+          var amount = number(potRow && potRow.amount, recipients.reduce(function (sum, recipient) {
+            return sum + number(recipient && recipient.amount, 0);
+          }, 0));
+          resultParts.push('<div class="hand-result-pot"><span class="hand-result-pot-title"><strong>' + esc(title) +
+            '</strong><b>' + chips(amount) + ' chips</b></span><span class="hand-result-recipients">' +
+            recipients.map(function (recipient) { return recipientMarkup(recipient, false); }).join("") + '</span></div>');
+        });
+      } else if (awards.length) {
+        var fallbackAmount = awards.reduce(function (sum, award) { return sum + number(award && award.amount, 0); }, 0);
+        resultParts.push('<div class="hand-result-pot"><span class="hand-result-pot-title"><strong>Pot payout</strong><b>' +
+          chips(fallbackAmount) + ' chips</b></span><span class="hand-result-recipients">' +
+          awards.map(function (award) { return recipientMarkup(award, false); }).join("") + '</span></div>');
+      }
+      if (returns.length) {
+        resultParts.push('<div class="hand-result-returns"><span class="hand-result-returns-title">Uncalled chips returned</span><span class="hand-result-recipients">' +
+          returns.map(function (record) { return recipientMarkup(record, true); }).join("") + '</span></div>');
+      }
       resultNode.hidden = false;
-      resultNode.innerHTML = '<span class="hand-result-title">HAND PAYOUT</span>' + awards.map(function (award) {
-        var name = String(award.actor_label || award.name || "Player");
-        return '<span class="hand-result-winner"><strong>' + esc(name) + '</strong><span>+' + chips(award.amount) + '</span></span>';
-      }).join("");
+      resultNode.innerHTML = resultParts.join("");
     } else {
       resultNode.hidden = true;
       resultNode.innerHTML = "";
     }
   }
-
   function renderBlindStrip(view) {
     var b = blindParts(view);
     var remaining = clockRemaining(b);
@@ -1002,24 +1145,59 @@
 
   function renderResults(view) {
     var panel = byId("results-panel");
-    var results = Array.isArray(view.results) ? view.results : [];
+    var reopen = byId("reopen-results-button");
+    var results = Array.isArray(view.standings) && view.standings.length
+      ? view.standings.slice()
+      : (Array.isArray(view.results) ? view.results.slice() : []);
     if (view.status !== "completed" || !results.length) {
-      panel.hidden = view.status !== "completed";
+      panel.hidden = true;
+      reopen.hidden = true;
+      reopen.setAttribute("aria-expanded", "false");
       byId("results-list").innerHTML = "";
       return;
     }
-    panel.hidden = false;
+
+    var fx = state.tableFx;
+    var effectsPending = Boolean(fx.running || (fx.queue || []).length);
+    var tableId = String(state.activeTableId || view.id || "");
+    var dismissed = state.standingsDismissedFor === tableId;
+    var showPanel = !effectsPending && !dismissed;
+    panel.hidden = !showPanel;
+    reopen.hidden = effectsPending || showPanel;
+    reopen.setAttribute("aria-expanded", String(showPanel));
+    results.sort(function (a, b) {
+      return number(a && (a.place != null ? a.place : a.rank), 0) -
+        number(b && (b.place != null ? b.place : b.rank), 0);
+    });
+    var placeCounts = Object.create(null);
+    results.forEach(function (row, index) {
+      var place = number(row && (row.place != null ? row.place : row.rank), index + 1);
+      placeCounts[place] = number(placeCounts[place], 0) + 1;
+    });
+    var champions = results.filter(function (row, index) {
+      return number(row && (row.place != null ? row.place : row.rank), index + 1) === 1;
+    });
+    var title = byId("results-title");
+    if (champions.length > 1) {
+      title.textContent = "Tied at 1st place";
+    } else {
+      var championName = champions.length ? (champions[0].name || champions[0].player_name || "The winner") : "Tournament";
+      title.textContent = championName + " wins";
+    }
     byId("results-list").innerHTML = results.map(function (row, index) {
       var place = number(row.place != null ? row.place : row.rank, index + 1);
+      var suffix = place % 100 >= 11 && place % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[place % 10] || "th");
+      var placeLabel = (placeCounts[place] > 1 ? "T-" : "") + place + suffix;
+      var placeAria = (placeCounts[place] > 1 ? "Tied for " : "") + place + suffix + " place";
       var name = row.name || row.player_name || "Player";
-      var stack = row.stack != null ? row.stack : row.final_stack;
-      var detail = row.detail || (place === 1 ? "Tournament winner" : (row.eliminated_at ? "Eliminated" : "Final result"));
-      return '<div class="result-row"><span class="result-place ' + (place === 1 ? "first" : "") + '">' + place + '</span>' +
+      var stack = row.chips != null ? row.chips : (row.stack != null ? row.stack : row.final_stack);
+      var rowStatus = String(row.status || "").toLowerCase();
+      var detail = row.detail || (place === 1 ? "Tournament winner" : (row.eliminated_at || rowStatus === "eliminated" ? "Eliminated" : (row.status || "Final result")));
+      return '<div class="result-row" role="listitem"><span class="result-place ' + (place === 1 ? "first" : "") + '" aria-label="' + esc(placeAria) + '">' + placeLabel + '</span>' +
         '<span><span class="result-name">' + esc(name) + '</span><span class="result-detail">' + esc(detail) + '</span></span>' +
         '<span class="result-stack">' + (stack == null ? "" : chips(stack) + " chips") + '</span></div>';
     }).join("");
   }
-
   function actionTokenKey(view) {
     return [state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0)].join(":");
   }
@@ -1042,11 +1220,13 @@
     if (!restoreFocus) return;
     window.setTimeout(function () {
       var panel = byId("action-panel");
-      if (intent.trigger && intent.trigger.isConnected && panel && !panel.hidden && !intent.trigger.disabled) {
-        intent.trigger.focus();
-      } else if (panel && !panel.hidden) {
-        var first = byId("action-controls").querySelector("button:not(:disabled)");
-        if (first) first.focus();
+      if (actionIntentIsCurrent(intent) && intent.trigger && intent.trigger.isConnected && panel && !panel.hidden && !intent.trigger.disabled) {
+        intent.trigger.focus({ preventScroll: true });
+      } else if (panel && !panel.hidden && panel.getClientRects().length) {
+        var first = byId("action-controls").querySelector("button:not(:disabled), input:not(:disabled)");
+        if (first) first.focus({ preventScroll: true });
+      } else if (intent.trigger && intent.trigger.isConnected && document.activeElement === intent.trigger) {
+        intent.trigger.blur();
       }
     }, 0);
   }
@@ -1067,25 +1247,24 @@
     var ownBet = number(seat && seat.bet, 0);
     var valid = Number.isInteger(target) && target >= min && target <= max;
     var paid = Math.min(stack, Math.max(0, target - ownBet));
-    var projection = byId("raise-projection");
+    var actionName = number(view.current_bet, 0) > 0 ? "Raise" : "Bet";
+    var isAllInTarget = stack > 0 && target === max && max === ownBet + stack;
     var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
-    if (projection) {
-      projection.textContent = valid
-        ? "Adds " + chips(paid) + " chips to reach " + chips(target) + " total on this street."
-        : "Choose a whole-chip total from " + chips(min) + " to " + chips(max) + ".";
-    }
+    input.setAttribute("aria-valuetext", valid
+      ? actionName + " to " + chips(target) + " chips total; adds " + chips(paid) + (isAllInTarget ? "; all-in" : "")
+      : "Choose a whole-chip total from " + chips(min) + " to " + chips(max));
     if (button) {
-      var actionName = number(view.current_bet, 0) > 0 ? "Raise" : "Bet";
-      button.textContent = valid
-        ? actionName + " to " + chips(target) + (target === max ? " · all-in" : "")
+      var label = valid
+        ? actionName + " to " + chips(target) + (isAllInTarget ? " · all-in" : "")
         : actionName + " amount";
+      button.textContent = label;
+      button.setAttribute("aria-label", valid ? label.replace(" · all-in", "") + " chips" + (isAllInTarget ? ", all-in" : "") : label);
       button.disabled = Boolean(state.actionPending || state.actionConfirmation || !valid);
     }
   }
 
   function renderActions(view) {
     var panel = byId("action-panel");
-    var waitPanel = byId("wait-panel");
     var viewer = view.viewer || {};
     var playing = view.status === "playing";
     var canAct = playing && Boolean(viewer.can_act);
@@ -1100,33 +1279,10 @@
 
     panel.hidden = !canAct;
     panel.setAttribute("aria-busy", String(Boolean(state.actionPending)));
-    waitPanel.hidden = !playing || canAct;
-    var actorId = String(view.actor_id || view.to_act_id || "");
-    var actor = (view.seats || []).find(function (seat) {
-      return String(seat.id || seat.player_id || "") === actorId;
-    });
-    if (!playing) {
+    if (!playing || !canAct) {
       state.actionRenderKey = "";
       return;
     }
-    if (!canAct) {
-      state.actionRenderKey = "";
-      if (actor) {
-        byId("wait-title").textContent = esc(actor.name || "Another player") + " is acting";
-        var waitSeconds = turnClockSecondsRemaining();
-        byId("wait-description").textContent = waitSeconds >= 0 ? "The turn clock has " + formatClock(waitSeconds) + " left." : "The table will update as play continues.";
-      } else if (viewer.seated) {
-        byId("wait-title").textContent = "Waiting for the next hand";
-        byId("wait-description").textContent = "Your seat stays at the table while the tournament continues.";
-      } else {
-        byId("wait-title").textContent = "Watching the table";
-        byId("wait-description").textContent = "Join during the lobby phase to take a seat.";
-      }
-      return;
-    }
-    byId("action-title").textContent = "Choose an action";
-    var seconds = turnClockSecondsRemaining();
-    byId("turn-clock").textContent = seconds >= 0 ? "Auto-action in " + formatClock(seconds) : "";
 
     var toCall = number(viewer.to_call, 0);
     var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
@@ -1139,26 +1295,29 @@
     var callAmount = Math.min(stack, toCall);
     var callIsAllIn = stack > 0 && callAmount === stack && toCall > 0;
     var canRaise = viewer.raise_rights !== false;
-    var maxRaise = number(viewer.max_raise_to, ownBet + stack);
-    var minRaise = number(viewer.min_raise_to, currentBet + number(view.min_raise, 0));
-    var raising = canRaise && maxRaise > currentBet && minRaise > 0 && maxRaise >= minRaise;
+    var maxRaise = viewer.max_raise_to == null ? ownBet + stack : number(viewer.max_raise_to, ownBet + stack);
+    var minRaise = viewer.min_raise_to == null
+      ? currentBet + number(view.min_raise, 0)
+      : number(viewer.min_raise_to, currentBet + number(view.min_raise, 0));
+    var hasRaiseSlider = stack > 0 && canRaise && maxRaise > currentBet;
+    var shortAllInRaise = hasRaiseSlider && minRaise > maxRaise;
+    var rangeMin = shortAllInRaise ? maxRaise : Math.max(currentBet + 1, minRaise);
     var draftKey = actionTokenKey(view);
     if (state.raiseDraftKey !== draftKey) {
       state.raiseDraftKey = draftKey;
       state.raiseDraftValue = null;
     }
 
-    var summary = toCall > 0
-      ? "You owe " + chips(toCall) + " chips. " + (callIsAllIn
-        ? "Calling puts all " + chips(stack) + " chips left in your stack into the pot."
-        : "Your remaining stack is " + chips(stack) + " chips.")
-      : "No bet to call. Check is free. Your remaining stack is " + chips(stack) + " chips.";
-    byId("action-guidance").textContent = summary;
+    var suggested = Math.min(maxRaise, Math.max(rangeMin, number(viewer.suggested_raise_to, rangeMin)));
+    if (!Number.isInteger(suggested)) suggested = Math.round(suggested);
+    var draft = state.raiseDraftValue === null ? suggested : Number(state.raiseDraftValue);
+    if (!Number.isInteger(draft) || draft < rangeMin || draft > maxRaise) draft = suggested;
+    if (state.raiseDraftValue !== null && String(draft) !== state.raiseDraftValue) state.raiseDraftValue = String(draft);
 
     var actionKey = JSON.stringify([
       state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0),
       toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
-      minRaise, maxRaise, raising
+      minRaise, maxRaise, hasRaiseSlider, shortAllInRaise, rangeMin, suggested
     ]);
     var controls = "";
     if (toCall > 0) {
@@ -1169,23 +1328,17 @@
       controls += '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>';
     }
 
-    var allInRaises = stack > 0 && canRaise && maxRaise > currentBet;
-    if (allInRaises && !callIsAllIn) {
-      controls += '<button class="button button-quiet all-in-button" type="button" data-poker-action="all_in" aria-label="All in with ' + chips(stack) + ' chips">All-in · ' + chips(stack) + ' chips</button>';
-    }
-
-    if (raising) {
-      var isRaise = currentBet > 0;
-      var raiseLabel = isRaise ? "Raise to" : "Bet to";
-      var suggested = Math.min(maxRaise, Math.max(minRaise, number(viewer.suggested_raise_to, minRaise)));
-      var inputValue = state.raiseDraftValue !== null ? state.raiseDraftValue : String(suggested);
-      controls += '<div class="raise-control"><label for="raise-amount">' + raiseLabel + ' (total)</label>' +
-        '<input id="raise-amount" type="number" inputmode="numeric" min="' + minRaise + '" max="' + maxRaise + '" step="1" value="' + esc(inputValue) + '" aria-label="' + raiseLabel + ' total street contribution" aria-describedby="raise-range raise-projection">' +
-        '<button class="button button-primary" type="button" data-poker-action="raise_to">' + raiseLabel + ' ' + chips(number(inputValue, suggested)) + '</button>' +
-        '<span class="raise-range" id="raise-range">Min ' + chips(minRaise) + ' · max ' + chips(maxRaise) + ' total</span>' +
-        '<span class="raise-projection" id="raise-projection"></span></div>';
-    } else if (!canRaise && toCall > 0) {
-      controls += '<span class="action-disabled-note">Raising is closed after a short all-in.</span>';
+    if (hasRaiseSlider) {
+      var actionName = currentBet > 0 ? "Raise" : "Bet";
+      var maxIsAllIn = stack > 0 && maxRaise === ownBet + stack;
+      var rangeText = shortAllInRaise
+        ? "Short all-in · Max " + chips(maxRaise) + " chips"
+        : "Min " + chips(rangeMin) + " · Max " + chips(maxRaise) + " chips" + (maxIsAllIn ? " · all-in" : "");
+      controls += '<div class="raise-control" role="group" aria-labelledby="raise-label">' +
+        '<label id="raise-label" for="raise-amount">' + actionName + ' amount</label>' +
+        '<input id="raise-amount" type="range" min="' + rangeMin + '" max="' + maxRaise + '" step="1" value="' + draft + '" aria-describedby="raise-range">' +
+        '<span class="raise-range" id="raise-range">' + esc(rangeText) + '</span>' +
+        '<button class="button button-primary" type="button" data-poker-action="raise_to" aria-label="' + actionName + ' to ' + chips(draft) + ' chips">' + actionName + ' to ' + chips(draft) + '</button></div>';
     }
 
     if (state.actionRenderKey !== actionKey) {
@@ -1204,7 +1357,6 @@
     var raiseInput = byId("raise-amount");
     if (raiseInput) raiseInput.disabled = blocked;
     updateRaisePreview();
-
   }
 
   function renderLobbyControls(view, host, ownSeat, isSeated, layout) {
@@ -1257,6 +1409,8 @@
     byId("settings-small-blind").value = String(number(config.small_blind, number(view.small_blind, 10)));
     byId("settings-big-blind").value = String(number(config.big_blind, number(view.big_blind, 20)));
     byId("settings-level-minutes").value = String(number(config.level_minutes, number(view.level_minutes, 5)));
+    byId("settings-turn-seconds").value = String(number(config.turn_seconds, 30));
+    byId("settings-runout-seconds").value = String(number(config.runout_seconds, 2.5));
   }
 
   function renderSettingsPanel(view, host) {
@@ -1308,6 +1462,10 @@
     byId("table-view").hidden = !hasTable;
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
+      if (state.actionConfirmation) dismissAllInConfirmation(true);
+      state.actionRenderKey = "";
+      byId("results-panel").hidden = true;
+      byId("reopen-results-button").hidden = true;
       clearSeatTurnClock();
       byId("lobby-seat-panel").hidden = true;
       byId("host-panel").hidden = true;
@@ -1329,7 +1487,7 @@
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
     byId("hand-status-label").textContent = status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY");
     byId("table-player-count").textContent = seats.length + " seated · " + seats.filter(function (s) { return number(s.stack, 0) > 0; }).length + " still in";
-    byId("button-caption").textContent = view.status === "playing" ? "Dealer button moves each hand" : "Play chips · No rebuys";
+    byId("button-caption").textContent = view.status === "playing" ? "" : "Play chips · No rebuys";
 
     renderBlindStrip(view);
     renderBoard(view);
@@ -1387,6 +1545,19 @@
     }
   }
 
+  function adoptSnapshot(view, tableId) {
+    if (!view || view.id !== tableId || state.activeTableId !== tableId) return false;
+    var previous = state.tableView;
+    if (previous && previous.id === tableId) {
+      // A poll sent before an action can arrive after its response. Never
+      // rewind the board, odds, action controls, or countdown on a late poll.
+      if (view.version < previous.version ||
+          (view.version === previous.version && view.server_now < previous.server_now)) return false;
+    }
+    state.tableView = view;
+    return true;
+  }
+
   async function refreshAll(force) {
     if (!state.polling) return;
     if (state.refreshBusy) {
@@ -1399,28 +1570,29 @@
     }
     state.refreshBusy = true;
     try {
-      var result = await request("/tables");
-      state.tables = Array.isArray(result.tables) ? result.tables : [];
-      if (!state.activeTableId && !state.skipAutoResume) {
-        var resume = state.tables.find(function (table) {
-          return table.viewer_seated && table.status === "playing";
-        }) || state.tables.find(function (table) {
-          return table.viewer_seated;
-        });
-        if (resume) {
-          state.activeTableId = String(resume.id || "");
-          if (state.activeTableId) setHashTable(state.activeTableId);
+      if (!state.activeTableId) {
+        var result = await request("/tables");
+        state.tables = Array.isArray(result.tables) ? result.tables : [];
+        if (!state.activeTableId && !state.skipAutoResume) {
+          var resume = state.tables.find(function (table) {
+            return table.viewer_seated && table.status === "playing";
+          }) || state.tables.find(function (table) {
+            return table.viewer_seated;
+          });
+          if (resume) {
+            state.activeTableId = String(resume.id || "");
+            if (state.activeTableId) setHashTable(state.activeTableId);
+          }
         }
+        renderTables();
       }
-      renderTables();
 
       if (state.activeTableId) {
         var selectedTableId = String(state.activeTableId);
         try {
           var detail = await request("/tables/" + encodeURIComponent(selectedTableId));
           if (state.activeTableId !== selectedTableId) return;
-          state.tableView = detail.table || detail;
-          renderTable();
+          if (adoptSnapshot(detail.table || detail, selectedTableId)) renderTable();
         } catch (err) {
           if (state.activeTableId !== selectedTableId) return;
           if (err.status === 404) {
@@ -1438,7 +1610,13 @@
     } finally {
       state.refreshBusy = false;
       var activeHand = Boolean(state.tableView && state.tableView.status === "playing");
-      var delay = state.refreshPending ? 0 : (document.hidden ? 8000 : (activeHand ? 900 : 2800));
+      var visibleDelay = activeHand ? 900 : 2800;
+      if (activeHand && state.tableView.runout_at) {
+        // Fetch just after the next deal, even at a one-second card pace.
+        var untilDeal = (state.tableView.runout_at - state.tableView.server_now) * 1000;
+        visibleDelay = Math.max(120, Math.min(visibleDelay, untilDeal + 35));
+      }
+      var delay = state.refreshPending ? 0 : (document.hidden ? 8000 : visibleDelay);
       state.refreshPending = false;
       scheduleRefresh(delay);
     }
@@ -1455,7 +1633,9 @@
       starting_stack: number(byId("settings-starting-stack").value, 0),
       small_blind: number(byId("settings-small-blind").value, 0),
       big_blind: number(byId("settings-big-blind").value, 0),
-      level_minutes: number(byId("settings-level-minutes").value, 0)
+      level_minutes: number(byId("settings-level-minutes").value, 0),
+      turn_seconds: number(byId("settings-turn-seconds").value, 0),
+      runout_seconds: number(byId("settings-runout-seconds").value, 0)
     };
   }
 
@@ -1465,8 +1645,8 @@
     var form = byId("table-settings-form");
     if (!form.checkValidity() || !payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
         payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind ||
-        [3, 5, 8, 10, 15].indexOf(payload.level_minutes) === -1) {
-      showNotice("Check the table name, seat count, stack, blinds, and level length.", "error", false);
+        payload.level_minutes < 0.01 || payload.turn_seconds < 1 || payload.runout_seconds < 1) {
+      showNotice("Check the table name, seats, stack, blinds, and timers.", "error", false);
       return;
     }
     var currentSeats = Array.isArray(state.tableView.seats) ? state.tableView.seats.length : 0;
@@ -1508,8 +1688,7 @@
       throw err;
     }
     if (state.activeTableId !== selectedTableId) return;
-    state.tableView = data.table || data;
-    renderTable();
+    if (adoptSnapshot(data.table || data, selectedTableId)) renderTable();
   }
 
   function actionIntentFor(action, view, trigger) {
@@ -1725,7 +1904,9 @@
         starting_stack: number(byId("starting-stack").value, 1000),
         small_blind: small,
         big_blind: big,
-        level_minutes: number(byId("level-minutes").value, 5)
+        level_minutes: number(byId("level-minutes").value, 5),
+        turn_seconds: number(byId("turn-seconds").value, 30),
+        runout_seconds: number(byId("runout-seconds").value, 2.5)
       });
       var table = data.table || data;
       state.activeTableId = String(table.id || "");
@@ -1849,6 +2030,7 @@
     setHashTable("");
     renderTables();
     renderTable();
+    refreshAll(true);
   });
 
   byId("copy-invite-button").addEventListener("click", async function () {
@@ -1899,6 +2081,26 @@
       await refreshSelected();
     } catch (err) {
       if (err.status !== 401) showNotice(err.message, "error", false);
+    }
+  });
+
+  byId("reopen-results-button").addEventListener("click", function () {
+    state.standingsDismissedFor = "";
+    if (state.tableView) renderResults(state.tableView);
+    byId("dismiss-results-button").focus();
+  });
+
+  byId("dismiss-results-button").addEventListener("click", function () {
+    var tableId = String(state.activeTableId || (state.tableView && state.tableView.id) || "");
+    state.standingsDismissedFor = tableId;
+    if (state.tableView) renderResults(state.tableView);
+    byId("reopen-results-button").focus();
+  });
+
+  byId("results-panel").addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !byId("results-panel").hidden) {
+      event.preventDefault();
+      byId("dismiss-results-button").click();
     }
   });
 

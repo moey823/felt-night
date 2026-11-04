@@ -124,17 +124,18 @@
                     <input id="big-blind" name="big_blind" type="number" min="2" max="200000" step="1" value="20" required>
                   </div>
                 </div>
-                <label for="level-minutes">Blind level length</label>
-                <div class="select-suffix">
-                  <select id="level-minutes" name="level_minutes">
-                    <option value="3">3 minutes</option>
-                    <option value="5" selected>5 minutes</option>
-                    <option value="8">8 minutes</option>
-                    <option value="10">10 minutes</option>
-                    <option value="15">15 minutes</option>
-                  </select>
-                  <span>Levels double automatically</span>
+                <div class="form-row">
+                  <div>
+                    <label for="level-minutes">Blind levels (minutes)</label>
+                    <input id="level-minutes" name="level_minutes" type="number" min="0.01" max="2147483647" step="any" value="5" required>
+                  </div>
+                  <div>
+                    <label for="turn-seconds">Shot clock (seconds)</label>
+                    <input id="turn-seconds" name="turn_seconds" type="number" min="1" max="3600" step="1" value="30" required>
+                  </div>
                 </div>
+                <label for="runout-seconds">All-in card delay (seconds)</label>
+                <input id="runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required>
                 <button class="button button-primary button-wide" type="submit">
                   <span>Create table</span><span aria-hidden="true">↗</span>
                 </button>
@@ -181,6 +182,7 @@
                   <p id="view-table-subtitle" class="muted"></p>
                 </div>
                 <div class="table-heading-tools">
+                  <button id="reopen-results-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
                   <button id="copy-invite-button" class="button button-outline button-small" type="button">Copy invite link</button>
                   <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to all tables">All tables <span aria-hidden="true">↗</span></button>
                 </div>
@@ -200,33 +202,19 @@
                     <div id="board-cards" class="board-cards"></div>
                     <div id="pot-display" class="pot-display"><span class="pot-icon" aria-hidden="true">◈</span><span id="pot-label">Pot</span> <strong id="pot-amount">0</strong></div>
                     <div id="street-label" class="street-label"></div>
-                    <div id="hand-result" class="hand-result" aria-live="polite" hidden></div>
                   </div>
                   <div id="chip-layer" class="chip-layer" aria-hidden="true"></div>
                 </div>
+                <section id="action-panel" class="action-panel" aria-labelledby="action-title" hidden>
+                  <h3 id="action-title" class="visually-hidden">Betting actions</h3>
+                  <div id="action-controls" class="action-controls"></div>
+                </section>
+                <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
                   <span id="button-caption"></span>
                 </div>
-
-                <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
-
-                <section id="action-panel" class="action-panel" aria-labelledby="action-title" aria-describedby="action-guidance" hidden>
-                  <div class="action-head">
-                    <div>
-                      <div class="panel-kicker">YOUR TURN</div>
-                      <h3 id="action-title">Choose an action</h3>
-                    </div>
-                    <div id="turn-clock" class="turn-clock"></div>
-                  </div>
-                  <p id="action-guidance" class="action-guidance"></p>
-                  <div id="action-controls" class="action-controls"></div>
-                </section>
-
-                <section id="wait-panel" class="wait-panel" hidden>
-                  <span class="wait-pulse" aria-hidden="true"></span>
-                  <div><strong id="wait-title">Waiting for the table</strong><p id="wait-description" class="muted"></p></div>
-                </section>
+                <div id="hand-result" class="hand-result" aria-live="polite" tabindex="0" hidden></div>
               </div>
 
               <section id="lobby-seat-panel" class="panel lobby-panel" aria-labelledby="seat-status-title" hidden>
@@ -281,11 +269,16 @@
                     <input id="settings-big-blind" type="number" min="2" max="200000" step="1" required>
                   </div>
                   <div class="settings-field">
-                    <label for="settings-level-minutes">Blind level length</label>
-                    <select id="settings-level-minutes">
-                      <option value="3">3 minutes</option><option value="5">5 minutes</option><option value="8">8 minutes</option>
-                      <option value="10">10 minutes</option><option value="15">15 minutes</option>
-                    </select>
+                    <label for="settings-level-minutes">Blind levels (minutes)</label>
+                    <input id="settings-level-minutes" type="number" min="0.01" max="2147483647" step="any" required>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-turn-seconds">Shot clock (seconds)</label>
+                    <input id="settings-turn-seconds" type="number" min="1" max="3600" step="1" required>
+                  </div>
+                  <div class="settings-field">
+                    <label for="settings-runout-seconds">All-in card delay (seconds)</label>
+                    <input id="settings-runout-seconds" type="number" min="1" max="3600" step="any" required>
                   </div>
                 </div>
                 <div class="settings-footer">
@@ -294,11 +287,16 @@
                 </div>
               </form>
 
-              <section id="results-panel" class="panel results-panel" hidden>
-                <div class="panel-kicker">TOURNAMENT COMPLETE</div>
-                <h3>Well played.</h3>
-                <p class="muted">Final standings for this freezeout.</p>
-                <div id="results-list" class="results-list"></div>
+              <section id="results-panel" class="panel results-panel" role="dialog" aria-modal="false" aria-labelledby="results-title" aria-describedby="results-description" tabindex="-1" hidden>
+                <div class="results-panel-heading">
+                  <div>
+                    <div class="panel-kicker">TOURNAMENT COMPLETE</div>
+                    <h3 id="results-title">Well played.</h3>
+                  </div>
+                  <button id="dismiss-results-button" class="button button-quiet button-small" type="button" aria-label="Dismiss final standings">Close</button>
+                </div>
+                <p id="results-description" class="muted">Final places and chip stacks for this freezeout.</p>
+                <div id="results-list" class="results-list" role="list" tabindex="0"></div>
               </section>
 
               <div class="lower-grid">
