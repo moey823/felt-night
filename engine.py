@@ -1527,6 +1527,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "button_id": state["button_id"],
         "actor_id": actor_id,
         "turn_deadline": hand["turn_deadline"] if hand else None,
+        "server_now": timestamp,
         "turn_version": state["turn_version"],
         "version": state["version"],
         "seats": seats,

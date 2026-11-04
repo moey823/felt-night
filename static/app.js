@@ -18,9 +18,14 @@
     inviteCopiedFor: "",
     inviteResetTimer: 0,
     noticeTimer: 0,
+    actionFeedbackTimer: 0,
     settingsTableId: "",
     settingsDirty: false,
     settingsSaving: false,
+    seatTurnClockKey: "",
+    seatTurnRemainingMs: 0,
+    seatTurnClockUpdatedAt: 0,
+    seatTurnClockTimer: 0,
     actionPending: null,
     actionConfirmation: null,
     actionRenderKey: "",
@@ -32,6 +37,7 @@
       generation: 0,
       eventAware: false,
       actions: {},
+      street: "",
       revealed: {},
       awards: [],
       displayWagers: {},
@@ -131,6 +137,23 @@
     }
   }
 
+  function showActionFeedback(message, kind, persistent) {
+    var node = byId("action-feedback");
+    if (!node) return;
+    node.textContent = message || "";
+    node.dataset.kind = kind || "info";
+    node.hidden = !message;
+    if (state.actionFeedbackTimer) {
+      window.clearTimeout(state.actionFeedbackTimer);
+      state.actionFeedbackTimer = 0;
+    }
+    if (message && !persistent) {
+      state.actionFeedbackTimer = window.setTimeout(function () {
+        node.hidden = true;
+      }, 6000);
+    }
+  }
+
   function clearNotice() {
     showNotice("", "info", true);
   }
@@ -144,6 +167,7 @@
     state.skipAutoResume = false;
     state.polling = false;
     state.refreshPending = false;
+    clearSeatTurnClock();
     if (state.refreshTimer) {
       window.clearTimeout(state.refreshTimer);
       state.refreshTimer = 0;
@@ -375,6 +399,9 @@
     if (!event || typeof event !== "object") return;
     if (event.type === "action") {
       var text = eventActionText(event);
+      var actionStreet = String(event.street || "");
+      if (actionStreet && fx.street && actionStreet !== fx.street) fx.actions = {};
+      if (actionStreet) fx.street = actionStreet;
       var actionState = {
         label: text[0],
         compactLabel: text[1],
@@ -386,6 +413,9 @@
       if (id) fx.actions[id] = actionState;
       if (actionState.seatNo != null) fx.actions["seat:" + actionState.seatNo] = actionState;
       if (actionState.actorLabel) fx.actions["name:" + actionState.actorLabel.toLowerCase()] = actionState;
+    } else if (event.type === "street") {
+      fx.actions = {};
+      fx.street = String(event.street || "");
     } else if (event.type === "reveal") {
       (Array.isArray(event.hands) ? event.hands : []).forEach(function (hand) {
         var id = String(hand && hand.player_id || "");
@@ -406,6 +436,7 @@
     fx.queue = [];
     fx.currentItem = null;
     fx.actions = {};
+    fx.street = "";
     fx.revealed = {};
     fx.awards = [];
     fx.displayWagers = {};
@@ -416,6 +447,9 @@
       rememberTableEvent(event);
       fx.lastSeq = Math.max(fx.lastSeq, number(event && event.seq, -1));
     });
+    var snapshotStreet = String(view.street || "");
+    if (fx.street && snapshotStreet && fx.street !== snapshotStreet) fx.actions = {};
+    fx.street = snapshotStreet;
     (Array.isArray(view.seats) ? view.seats : []).forEach(function (seat, index) {
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
       var amount = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
@@ -433,6 +467,7 @@
 
     if (firstView || handChanged) {
       fx.handId = handId;
+      fx.street = "";
       fx.lastSeq = 0;
       var replayNewHand = handChanged && Boolean(handId) && Array.isArray(events) && baseSeq <= 1;
       if (replayNewHand) {
@@ -452,13 +487,19 @@
           else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
           fx.lastSeq = Math.max(fx.lastSeq, seq);
         });
+        fx.street = String(view.street || fx.street || "");
       } else {
         snapshotTableEffects(view, events);
       }
       return;
     }
 
-    if (!events) return;
+    var visibleStreet = String(view.street || "");
+    if (visibleStreet && fx.street && visibleStreet !== fx.street) fx.actions = {};
+    if (!events) {
+      fx.street = visibleStreet || fx.street;
+      return;
+    }
     fx.eventAware = true;
     if (baseSeq > fx.lastSeq + 1) {
       snapshotTableEffects(view, events);
@@ -477,6 +518,7 @@
       else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
       fx.lastSeq = Math.max(fx.lastSeq, seq);
     });
+    fx.street = visibleStreet || fx.street;
   }
 
   function actionForSeat(seat, seatNo) {
@@ -571,6 +613,63 @@
       amounts[seatNo] = number(item.event.street_contribution, number(item.event.amount, 0));
     });
     return amounts;
+  }
+
+  function epochMilliseconds(value) {
+    var stamp = number(value, 0);
+    if (stamp > 0 && stamp < 100000000000) stamp *= 1000;
+    return stamp;
+  }
+
+  function monotonicNow() {
+    return window.performance && typeof window.performance.now === "function" ? window.performance.now() : Date.now();
+  }
+
+  function turnClockSecondsRemaining() {
+    if (!state.seatTurnClockKey) return -1;
+    var elapsed = monotonicNow() - state.seatTurnClockUpdatedAt;
+    return Math.max(0, Math.ceil((state.seatTurnRemainingMs - elapsed) / 1000));
+  }
+
+  function turnClockLabel() {
+    var seconds = turnClockSecondsRemaining();
+    return seconds >= 0 ? formatClock(seconds) : "";
+  }
+
+  function updateSeatTurnClockNodes() {
+    var label = turnClockLabel();
+    document.querySelectorAll(".seat-turn-clock").forEach(function (node) {
+      node.textContent = label;
+    });
+  }
+
+  function clearSeatTurnClock() {
+    if (state.seatTurnClockTimer) window.clearInterval(state.seatTurnClockTimer);
+    state.seatTurnClockTimer = 0;
+    state.seatTurnClockKey = "";
+    state.seatTurnRemainingMs = 0;
+    state.seatTurnClockUpdatedAt = 0;
+  }
+
+  function syncSeatTurnClock(view) {
+    var actorId = String(view && (view.actor_id || view.to_act_id) || "");
+    var deadline = epochMilliseconds(view && view.turn_deadline);
+    var serverNow = epochMilliseconds(view && view.server_now);
+    if (!serverNow) serverNow = Date.now();
+    var valid = Boolean(view && view.status === "playing" && actorId && deadline);
+    if (!valid) {
+      clearSeatTurnClock();
+      return;
+    }
+    var key = [view.id || "", view.hand_id || view.hand_no || "", view.street || "", actorId, view.turn_version || "", deadline].join("|");
+    if (key !== state.seatTurnClockKey) {
+      if (state.seatTurnClockTimer) window.clearInterval(state.seatTurnClockTimer);
+      state.seatTurnClockKey = key;
+      state.seatTurnClockTimer = window.setInterval(updateSeatTurnClockNodes, 250);
+    }
+    state.seatTurnRemainingMs = Math.max(0, deadline - serverNow);
+    state.seatTurnClockUpdatedAt = monotonicNow();
+    updateSeatTurnClockNodes();
   }
 
   function motionAllowed() {
@@ -716,9 +815,7 @@
         cardHtml = '<div class="seat-cards">' + hiddenCardHTML(true, false) + hiddenCardHTML(true, false) + '</div>';
       }
 
-      var tags = (hostId === id ? '<span class="seat-label">HOST</span>' : '') +
-        (isMe ? '<span class="seat-label">YOU</span>' : '') +
-        (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '');
+      var tags = bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '';
       html += '<div class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
         '<div class="seat-tags">' + tags + '</div>' +
@@ -727,7 +824,12 @@
         cardHtml +
       '</div>';
       if (dealer) html += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
-      if (actionState) html += '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionState.label) + '"><span class="seat-action-full">' + esc(actionState.label) + '</span><span class="seat-action-short">' + esc(actionState.compactLabel || actionState.label) + '</span></span>';
+      if (actionState) {
+        var turnClockMarkup = acting && state.seatTurnClockKey
+          ? '<span class="seat-turn-clock" data-turn-clock-seat="' + esc(seatNo) + '" aria-label="Time left">' + esc(turnClockLabel()) + '</span>'
+          : '';
+        html += '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionState.label) + '"><span class="seat-action-full">' + esc(actionState.label) + '</span><span class="seat-action-short">' + esc(actionState.compactLabel || actionState.label) + '</span>' + turnClockMarkup + '</span>';
+      }
       var wager = number(fx.displayWagers[seatNo], 0);
       if (!fx.eventAware && !wager) wager = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
       if (wager > 0) {
@@ -1011,12 +1113,7 @@
       state.actionRenderKey = "";
       if (actor) {
         byId("wait-title").textContent = esc(actor.name || "Another player") + " is acting";
-        var waitDeadline = number(view.turn_deadline, 0);
-        var waitSeconds = -1;
-        if (waitDeadline > 0) {
-          var waitStamp = waitDeadline < 100000000000 ? waitDeadline * 1000 : waitDeadline;
-          waitSeconds = Math.max(0, Math.floor((waitStamp - Date.now()) / 1000));
-        }
+        var waitSeconds = turnClockSecondsRemaining();
         byId("wait-description").textContent = waitSeconds >= 0 ? "The turn clock has " + formatClock(waitSeconds) + " left." : "The table will update as play continues.";
       } else if (viewer.seated) {
         byId("wait-title").textContent = "Waiting for the next hand";
@@ -1028,12 +1125,7 @@
       return;
     }
     byId("action-title").textContent = "Choose an action";
-    var deadline = number(view.turn_deadline, 0);
-    var seconds = -1;
-    if (deadline > 0) {
-      var stamp = deadline < 100000000000 ? deadline * 1000 : deadline;
-      seconds = Math.max(0, Math.floor((stamp - Date.now()) / 1000));
-    }
+    var seconds = turnClockSecondsRemaining();
     byId("turn-clock").textContent = seconds >= 0 ? "Auto-action in " + formatClock(seconds) : "";
 
     var toCall = number(viewer.to_call, 0);
@@ -1216,6 +1308,7 @@
     byId("table-view").hidden = !hasTable;
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
+      clearSeatTurnClock();
       byId("lobby-seat-panel").hidden = true;
       byId("host-panel").hidden = true;
       byId("table-settings-form").hidden = true;
@@ -1223,6 +1316,7 @@
     }
 
     consumeTableEvents(view);
+    syncSeatTurnClock(view);
     var status = view.status || "lobby";
     var statusNode = byId("view-status");
     statusNode.textContent = statusName(status);
@@ -1231,8 +1325,7 @@
     var layout = seatLayout(view);
     var seats = layout.seats;
     var max = layout.max;
-    var hostName = view.host_name || "Host";
-    byId("view-table-subtitle").textContent = "Hosted by " + hostName + " · " + seats.length + " of " + max + " seats";
+    byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats";
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
     byId("hand-status-label").textContent = status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY");
     byId("table-player-count").textContent = seats.length + " seated · " + seats.filter(function (s) { return number(s.stack, 0) > 0; }).length + " still in";
@@ -1322,11 +1415,14 @@
       renderTables();
 
       if (state.activeTableId) {
+        var selectedTableId = String(state.activeTableId);
         try {
-          var detail = await request("/tables/" + encodeURIComponent(state.activeTableId));
+          var detail = await request("/tables/" + encodeURIComponent(selectedTableId));
+          if (state.activeTableId !== selectedTableId) return;
           state.tableView = detail.table || detail;
           renderTable();
         } catch (err) {
+          if (state.activeTableId !== selectedTableId) return;
           if (err.status === 404) {
             state.activeTableId = "";
             state.tableView = null;
@@ -1403,7 +1499,15 @@
       renderTable();
       return;
     }
-    var data = await request("/tables/" + encodeURIComponent(state.activeTableId));
+    var selectedTableId = String(state.activeTableId);
+    var data;
+    try {
+      data = await request("/tables/" + encodeURIComponent(selectedTableId));
+    } catch (err) {
+      if (state.activeTableId !== selectedTableId) return;
+      throw err;
+    }
+    if (state.activeTableId !== selectedTableId) return;
     state.tableView = data.table || data;
     renderTable();
   }
@@ -1432,7 +1536,7 @@
       var min = number(input && input.min, 0);
       var max = number(input && input.max, 0);
       if (!Number.isInteger(amount) || amount < min || amount > max) {
-        showNotice("Choose a whole-chip bet or raise total within the displayed range.", "error", false);
+        showActionFeedback("Choose a whole-chip bet or raise total within the displayed range.", "error", false);
         return null;
       }
       payload.action = currentBet > 0 ? "raise" : "bet";
@@ -1517,24 +1621,25 @@
 
     state.actionPending = intent;
     renderActions(state.tableView);
-    showNotice(intent.pendingMessage, "info", true);
+    showActionFeedback(intent.pendingMessage, "info", true);
     try {
       await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/action", intent.payload);
       intent.accepted = true;
-      showNotice(intent.successMessage, "success", false);
+      showActionFeedback(intent.successMessage, "success", false);
       try {
         await refreshSelected();
       } catch (refreshError) {
         if (refreshError.status !== 401) {
-          showNotice(intent.successMessage + " The table is waiting for its next refresh.", "success", true);
+          showActionFeedback(intent.successMessage + " The table is waiting for its next refresh.", "success", true);
         }
       }
       try { await refreshAll(true); } catch (refreshError) {}
     } catch (err) {
       if (err.status === 409) {
+        showActionFeedback("", "info", true);
         showNotice("The hand or turn changed before that action arrived. Review the refreshed table.", "info", false);
       } else {
-        showNotice(err.message, "error", false);
+        showActionFeedback(err.message, "error", false);
       }
       try { await refreshSelected(); } catch (refreshError) {}
       try { await refreshAll(true); } catch (refreshError) {}

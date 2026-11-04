@@ -208,6 +208,25 @@
                   <span id="table-player-count"></span>
                   <span id="button-caption"></span>
                 </div>
+
+                <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
+
+                <section id="action-panel" class="action-panel" aria-labelledby="action-title" aria-describedby="action-guidance" hidden>
+                  <div class="action-head">
+                    <div>
+                      <div class="panel-kicker">YOUR TURN</div>
+                      <h3 id="action-title">Choose an action</h3>
+                    </div>
+                    <div id="turn-clock" class="turn-clock"></div>
+                  </div>
+                  <p id="action-guidance" class="action-guidance"></p>
+                  <div id="action-controls" class="action-controls"></div>
+                </section>
+
+                <section id="wait-panel" class="wait-panel" hidden>
+                  <span class="wait-pulse" aria-hidden="true"></span>
+                  <div><strong id="wait-title">Waiting for the table</strong><p id="wait-description" class="muted"></p></div>
+                </section>
               </div>
 
               <section id="lobby-seat-panel" class="panel lobby-panel" aria-labelledby="seat-status-title" hidden>
@@ -274,23 +293,6 @@
                   <button id="save-settings-button" class="button button-outline button-small" type="submit">Save settings</button>
                 </div>
               </form>
-
-              <section id="action-panel" class="action-panel panel" aria-labelledby="action-title" aria-describedby="action-guidance" hidden>
-                <div class="action-head">
-                  <div>
-                    <div class="panel-kicker">YOUR TURN</div>
-                    <h3 id="action-title">Choose an action</h3>
-                  </div>
-                  <div id="turn-clock" class="turn-clock"></div>
-                </div>
-                <p id="action-guidance" class="action-guidance"></p>
-                <div id="action-controls" class="action-controls"></div>
-              </section>
-
-              <section id="wait-panel" class="panel wait-panel" hidden>
-                <span class="wait-pulse" aria-hidden="true"></span>
-                <div><strong id="wait-title">Waiting for the table</strong><p id="wait-description" class="muted"></p></div>
-              </section>
 
               <section id="results-panel" class="panel results-panel" hidden>
                 <div class="panel-kicker">TOURNAMENT COMPLETE</div>

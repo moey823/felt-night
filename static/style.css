@@ -262,6 +262,25 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .sidebar-foot p { margin: 0; font-size: 9px; line-height: 1.6; }
 .sidebar-foot strong { color: #b3c0b4; font-weight: 620; }
 
+.app-panel.has-active-table {
+  padding-top: 12px;
+}
+.app-panel.has-active-table .dashboard-heading,
+.app-panel.has-active-table .sidebar {
+  display: none;
+}
+.app-panel.has-active-table .dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+  padding-top: 0;
+}
+.app-panel.has-active-table .workspace {
+  order: 0;
+  width: 100%;
+  min-width: 0;
+}
 .workspace { min-width: 0; }
 .empty-state { min-height: 650px; padding: 58px 26px; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; overflow: hidden; position: relative; }
 .empty-state h2 { font-size: clamp(30px, 4vw, 45px); line-height: 1.08; letter-spacing: -.055em; font-weight: 580; margin: 12px 0 11px; }
@@ -385,6 +404,9 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .wait-panel strong { font-size: 11px; font-weight: 650; }
 .wait-panel p { margin: 4px 0 0; font-size: 9px; }
 
+.action-feedback { padding: 10px 13px; border: 1px solid rgba(197, 227, 124, .24); border-radius: 10px; background: rgba(197, 227, 124, .08); color: #d6e7b4; font-size: 12px; line-height: 1.5; }
+.action-feedback[data-kind=error] { border-color: rgba(229, 142, 136, .34); background: rgba(229, 142, 136, .09); color: #f0b6ae; }
+.action-feedback[data-kind=info] { border-color: rgba(230, 197, 141, .28); background: rgba(230, 197, 141, .08); color: #f1d6a6; }
 .action-panel { padding: 17px 19px; border-color: rgba(197, 227, 124, .26); }
 .action-head { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .action-head h3 { margin: 4px 0 0; font-size: 16px; letter-spacing: -.03em; }
@@ -401,6 +423,19 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .raise-range { color: var(--faint); font-size: 9px; }
 .raise-projection { flex: 1 0 100%; color: #becabd; font-size: 10px; line-height: 1.45; }
 .action-disabled-note { color: var(--faint); font-size: 10px; }
+.table-surface > .action-feedback { margin-top: 12px; }
+.table-surface > .action-panel,
+.table-surface > .wait-panel {
+  margin-top: 12px;
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(225, 237, 227, .14);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.table-surface > .action-panel { border-top-color: rgba(197, 227, 124, .3); }
+.table-surface > .wait-panel { min-height: 0; }
 .all-in-confirm { width: min(430px, calc(100vw - 28px)); max-width: none; padding: 0; color: var(--text); border: 1px solid rgba(229, 142, 136, .34); border-radius: 16px; background: linear-gradient(145deg, #26302a, #1b2521); box-shadow: 0 24px 80px rgba(0, 0, 0, .55); }
 .all-in-confirm::backdrop { background: rgba(4, 9, 7, .72); backdrop-filter: blur(3px); }
 .all-in-confirm-content { padding: 22px; }
@@ -863,4 +898,24 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 @media (max-width: 380px) {
   .seat-card .mini-rank { font-size: 15px; }
   .seat-card .mini-suit { font-size: 12px; }
+}
+
+/* The shared acting-seat shot clock keeps its digits readable as the badge resizes. */
+.seat-turn-clock {
+  display: inline-block;
+  min-width: 36px;
+  margin-left: 4px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(22, 37, 25, .38);
+  color: #20331f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 380px) {
+  .seat-turn-clock { min-width: 32px; margin-left: 3px; padding-left: 4px; font-size: 7px; }
 }
