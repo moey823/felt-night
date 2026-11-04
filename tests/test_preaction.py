@@ -12,6 +12,9 @@ import engine
 import server
 
 
+TEST_ROOM_PASSWORD = "test-room-invite"
+
+
 def config(**overrides):
     value = {
         "max_seats": 4,
@@ -233,7 +236,7 @@ class PreactionRouteTests(unittest.TestCase):
             public_origin="http://localhost:1",
             data_dir=str(data_dir),
         )
-        self.app = server.App(args)
+        self.app = server.App(args, room_password=TEST_ROOM_PASSWORD)
         self.httpd = server.LimitedThreadingHTTPServer(
             ("127.0.0.1", 0), server.Handler, self.app,
         )
@@ -276,7 +279,7 @@ class PreactionRouteTests(unittest.TestCase):
         payload = {
             "username": username,
             "password": "test-account-password",
-            "room_password": server.OPERATOR_PASSWORD,
+            "room_password": TEST_ROOM_PASSWORD,
         }
         body = json.dumps(payload).encode("utf-8")
         headers = {

@@ -1,4 +1,7 @@
+import contextlib
 import http.client
+import io
+import os
 import json
 import sqlite3
 import tempfile
@@ -12,18 +15,83 @@ from unittest.mock import patch
 import server
 
 
+TEST_ROOM_PASSWORD = "test-room-invite"
+
+
+class RoomPasswordConfigTests(unittest.TestCase):
+    def test_env_password_is_an_explicit_alternative_and_validated(self):
+        self.assertEqual(
+            server._load_room_password({server.ROOM_PASSWORD_ENV: TEST_ROOM_PASSWORD}),
+            TEST_ROOM_PASSWORD,
+        )
+        with self.assertRaisesRegex(RuntimeError, "single line") as caught:
+            server._load_room_password({server.ROOM_PASSWORD_ENV: "private\ninvite"})
+        self.assertNotIn("private", str(caught.exception))
+
+    def test_private_file_password_accepts_one_trailing_newline(self):
+        with tempfile.TemporaryDirectory(prefix="felt-night-password-") as directory:
+            path = Path(directory) / "room-invite.txt"
+            path.write_text(TEST_ROOM_PASSWORD + "\r\n", encoding="utf-8")
+            path.chmod(0o600)
+            self.assertEqual(
+                server._load_room_password({server.ROOM_PASSWORD_FILE_ENV: str(path)}),
+                TEST_ROOM_PASSWORD,
+            )
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "named pipes are unavailable")
+    def test_non_regular_password_file_is_rejected_without_blocking(self):
+        with tempfile.TemporaryDirectory(prefix="felt-night-password-") as directory:
+            path = Path(directory) / "room-invite.pipe"
+            os.mkfifo(path, 0o600)
+            with self.assertRaisesRegex(RuntimeError, "regular file"):
+                server._load_room_password({server.ROOM_PASSWORD_FILE_ENV: str(path)})
+
+    def test_file_with_group_or_other_permissions_is_rejected_without_value(self):
+        secret = "private-test-invite"
+        with tempfile.TemporaryDirectory(prefix="felt-night-password-") as directory:
+            path = Path(directory) / "room-invite.txt"
+            path.write_text(secret, encoding="utf-8")
+            path.chmod(0o644)
+            with self.assertRaisesRegex(RuntimeError, "accessible by group or others") as caught:
+                server._load_room_password({server.ROOM_PASSWORD_FILE_ENV: str(path)})
+            self.assertNotIn(secret, str(caught.exception))
+
+    def test_missing_config_fails_startup_without_secret_output(self):
+        with tempfile.TemporaryDirectory(prefix="felt-night-startup-") as directory:
+            stderr = io.StringIO()
+            with patch.dict(os.environ, {}, clear=True), patch("server.os.umask"), contextlib.redirect_stderr(stderr):
+                result = server.main([
+                    "--public-origin", "http://localhost:18943",
+                    "--data-dir", str(Path(directory) / "data"),
+                ])
+            self.assertEqual(result, 1)
+            self.assertIn(server.ROOM_PASSWORD_FILE_ENV, stderr.getvalue())
+            self.assertNotIn(TEST_ROOM_PASSWORD, stderr.getvalue())
+
+    def test_app_uses_the_configured_invite_for_registration_gate(self):
+        with tempfile.TemporaryDirectory(prefix="felt-night-app-config-") as directory:
+            args = types.SimpleNamespace(
+                public_origin="http://localhost:1",
+                data_dir=str(Path(directory) / "data"),
+            )
+            with patch.dict(os.environ, {server.ROOM_PASSWORD_ENV: TEST_ROOM_PASSWORD}, clear=True):
+                app = server.App(args)
+            self.assertTrue(app.store.verify_room_password(TEST_ROOM_PASSWORD))
+            self.assertFalse(app.store.verify_room_password("different-room-invite"))
+
+
 class ServerAuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="sitngo-test-")
         root = Path(self.temp.name)
-        self.password = server.OPERATOR_PASSWORD
+        self.password = TEST_ROOM_PASSWORD
         self.account_password = "test-account-password"
         self.data_dir = root / "data"
         args = types.SimpleNamespace(
             public_origin="http://localhost:1",
             data_dir=str(self.data_dir),
         )
-        self.app = server.App(args)
+        self.app = server.App(args, room_password=TEST_ROOM_PASSWORD)
         self.httpd = server.LimitedThreadingHTTPServer(("127.0.0.1", 0), server.Handler, self.app)
         self.port = self.httpd.server_port
         self.origin = "http://localhost:%d" % self.port
@@ -351,8 +419,8 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(detail["table"]["name"], "Friday Friends")
 
 
-    def test_hardcoded_gate_is_example-room-invite(self):
-        self.assertEqual(server.OPERATOR_PASSWORD, "example-room-invite")
+    def test_configured_room_invite_authenticates_new_accounts(self):
+        self.assertTrue(self.app.store.verify_room_password(self.password))
         cookie, proof, _, _ = self.login("Gate")
         status, _, body = self.request(
             "GET", "/poker/api/me", cookie=cookie, proof=proof,
@@ -367,13 +435,8 @@ class ServerAuthTests(unittest.TestCase):
             data_dir=str(self.data_dir),
         )
 
-        original_gate = server.OPERATOR_PASSWORD
-        rotated_gate = "changed-test-gate"
-        try:
-            server.OPERATOR_PASSWORD = rotated_gate
-            rotated_app = server.App(args)
-        finally:
-            server.OPERATOR_PASSWORD = original_gate
+        rotated_gate = "changed-test-room-invite"
+        rotated_app = server.App(args, room_password=rotated_gate)
 
         self.app = rotated_app
         self.httpd.app = self.app
@@ -593,7 +656,7 @@ class ServerAuthTests(unittest.TestCase):
             public_origin=self.origin,
             data_dir=str(legacy_dir),
         )
-        self.app = server.App(args)
+        self.app = server.App(args, room_password=TEST_ROOM_PASSWORD)
         self.httpd.app = self.app
         conn = self.app.store.connect()
         try:
@@ -814,7 +877,7 @@ class ServerAuthTests(unittest.TestCase):
             public_origin=self.origin,
             data_dir=str(self.data_dir),
         )
-        self.app = server.App(args)
+        self.app = server.App(args, room_password=TEST_ROOM_PASSWORD)
         self.httpd.app = self.app
         status, _, restored = self.request(
             "GET", "/poker/api/history/" + table_id,
@@ -983,7 +1046,7 @@ class ServerAuthTests(unittest.TestCase):
             public_origin=self.origin,
             data_dir=str(self.data_dir),
         )
-        self.app = server.App(args)
+        self.app = server.App(args, room_password=TEST_ROOM_PASSWORD)
         self.httpd.app = self.app
         status, _, persisted = self.request(
             "GET", "/poker/api/tables/" + first_id, cookie=cookie, proof=proof,

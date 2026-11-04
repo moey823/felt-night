@@ -10,6 +10,7 @@ import tournament from './tournament.mjs';
 import crowded from './crowded.mjs';
 
 const game = process.argv[2] === 'crowded' ? crowded : tournament;
+const testRoomPassword = 'test-room-invite';
 
 if (!process.env.BROWSER_BIN) throw Error('Set BROWSER_BIN to a Chromium headless shell executable.');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -21,8 +22,11 @@ await once(portFinder, 'listening');
 const port = portFinder.address().port;
 await new Promise(resolve => portFinder.close(resolve));
 const origin = 'http://127.0.0.1:' + port;
+const backendEnv = {...process.env};
+delete backendEnv.FELT_NIGHT_ROOM_PASSWORD_FILE;
+backendEnv.FELT_NIGHT_ROOM_PASSWORD = testRoomPassword;
 const backend = spawn(process.env.PYTHON || 'python3', ['-B','server.py','--port',String(port),
-  '--public-origin',origin,'--data-dir',join(directory,'data')], {cwd:root,stdio:['ignore','pipe','inherit']});
+  '--public-origin',origin,'--data-dir',join(directory,'data')], {cwd:root,env:backendEnv,stdio:['ignore','pipe','inherit']});
 let browser;
 const pending = new Map(), errors = [];
 let serial = 0;
@@ -85,7 +89,7 @@ try {
     }
   });
   await Promise.race([
-    Promise.all([makePage(),makePage()]).then(pages=>game(pages,sleep)),
+    Promise.all([makePage(),makePage()]).then(pages=>game(pages,sleep,testRoomPassword)),
     once(browser,'exit').then(()=>{throw Error('Browser closed before the game finished');}),
     new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser check exceeded 150 s')),150000);})
   ]);

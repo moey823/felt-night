@@ -1,6 +1,6 @@
 // Nine accounts fill one table. One seated browser checks live controls before
 // any action is submitted; a separate spectator browser checks exposed hands.
-export default async function crowded([activePage, spectatorPage], sleep) {
+export default async function crowded([activePage, spectatorPage], sleep, roomPassword) {
   const ev = (page, fn, ...args) => page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
   async function wait(page, fn, ...args) {
     for (let i = 0; i < 120; i++) {
@@ -78,15 +78,16 @@ export default async function crowded([activePage, spectatorPage], sleep) {
   async function register(username, suffix) {
     const password = 'CrowdedPass_' + suffix + '_' + stamp;
     const session = await req('/register', null, {
-      room_password: 'example-room-invite', username, password,
+      room_password: roomPassword, username, password,
     });
     return { ...session, username, password };
   }
+  const playerNames = ['Alex','Sam','Jordan','Riley','Morgan','Casey','Taylor','Avery','Jamie'];
   const players = [];
-  for (let i = 0; i < seatsCount; i++) players.push(await register('Crowd' + i + '-' + stamp, String(i)));
-  const spectator = await register('Rail-' + stamp, 'spectator');
+  for (let i = 0; i < seatsCount; i++) players.push(await register(playerNames[i], String(i)));
+  const spectator = await register('Spectator', 'spectator');
   const host = players[0];
-  const tableName = 'Nine-handed runout ' + stamp;
+  const tableName = 'Friday Night';
   const table = await req('/tables', host, {
     name: tableName,
     max_seats: seatsCount,
@@ -185,6 +186,7 @@ export default async function crowded([activePage, spectatorPage], sleep) {
       throw Error('Raise preset submitted or changed the active turn');
     }
     console.log('Preset', selected, 'selected at', width, 'px without submitting');
+    await activePage.screenshot('active-' + width);
   }
 
   for (let i = 0; i < seatsCount + 2 && view.actor_id; i++) {

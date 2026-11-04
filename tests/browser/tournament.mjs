@@ -1,6 +1,6 @@
 // Two isolated browsers play on a disposable development server.
 // See README for the headless test command.
-export default async function game([one, two], sleep) {
+export default async function game([one, two], sleep, roomPassword) {
   const pages = [one, two];
   const ev = (p, fn, ...args) => p.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
   async function wait(p, fn, ...args) {
@@ -24,7 +24,7 @@ export default async function game([one, two], sleep) {
   if(!assets) throw Error('The fair-play guide or ace favicon is unavailable');
   for (const [i,p] of pages.entries()) {
     await wait(p, visible, '#login-name'); await click(p,'#auth-switch'); await input(p, '#login-name', ['Robin','Morgan'][i]);
-    await input(p,'#login-password','poker-test-password'); await input(p,'#room-password','example-room-invite'); await submit(p,'#login-form'); await wait(p, visible, '#app-panel');
+    await input(p,'#login-password','poker-test-password'); await input(p,'#room-password',roomPassword); await submit(p,'#login-form'); await wait(p, visible, '#app-panel');
   }
   async function create(name, extra = {}) {
     if(await ev(one,visible,'#create-game-tab')) await click(one,'#create-game-tab');

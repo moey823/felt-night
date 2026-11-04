@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private, loopback-only poker service. The game engine is server-authoritative."""
+"""Felt Night is a server-authoritative, loopback-only poker service."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import sys
 sys.dont_write_bytecode = True
 import threading
@@ -35,7 +36,9 @@ MAX_ACTIVE_TABLES = 32
 MAX_SESSIONS = 256
 GLOBAL_LOGIN_LIMIT = 50
 MAX_WORKERS = 32
-OPERATOR_PASSWORD = "example-room-invite"
+ROOM_PASSWORD_ENV = "FELT_NIGHT_ROOM_PASSWORD"
+ROOM_PASSWORD_FILE_ENV = "FELT_NIGHT_ROOM_PASSWORD_FILE"
+MAX_ROOM_PASSWORD_LENGTH = 4096
 
 
 class AppError(Exception):
@@ -66,12 +69,72 @@ def _parse_origin(value):
     return origin, netloc, parsed.scheme == "https"
 
 
+def _validate_room_password(value):
+    if (not isinstance(value, str) or not value or
+            len(value) > MAX_ROOM_PASSWORD_LENGTH or
+            "\n" in value or "\r" in value or "\x00" in value):
+        raise RuntimeError("room invite password must be a non-empty single line of at most 4096 characters")
+    return value
+
+
+def _read_room_password_file(path):
+    if not path:
+        raise RuntimeError("FELT_NIGHT_ROOM_PASSWORD_FILE must name a private file")
+    descriptor = None
+    try:
+        flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) |
+                 getattr(os, "O_NONBLOCK", 0))
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        if no_follow:
+            flags |= no_follow
+        elif os.path.islink(path):
+            raise RuntimeError("FELT_NIGHT_ROOM_PASSWORD_FILE must not be a symlink")
+        descriptor = os.open(path, flags)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError("FELT_NIGHT_ROOM_PASSWORD_FILE must be a regular file")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise RuntimeError("FELT_NIGHT_ROOM_PASSWORD_FILE must not be accessible by group or others")
+        stream = os.fdopen(descriptor, "r", encoding="utf-8", newline="")
+        descriptor = None
+        with stream:
+            value = stream.read(MAX_ROOM_PASSWORD_LENGTH + 3)
+        if len(value) > MAX_ROOM_PASSWORD_LENGTH + 2:
+            raise RuntimeError("FELT_NIGHT_ROOM_PASSWORD_FILE contents are too long")
+    except RuntimeError:
+        raise
+    except (OSError, UnicodeError, TypeError, ValueError):
+        raise RuntimeError("FELT_NIGHT_ROOM_PASSWORD_FILE could not be read") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+    if value.endswith("\n"):
+        value = value[:-1]
+        if value.endswith("\r"):
+            value = value[:-1]
+    return _validate_room_password(value)
+
+
+def _load_room_password(environ=None):
+    config = os.environ if environ is None else environ
+    file_path = config.get(ROOM_PASSWORD_FILE_ENV)
+    direct_password = config.get(ROOM_PASSWORD_ENV)
+    if file_path is None and direct_password is None:
+        raise RuntimeError("set FELT_NIGHT_ROOM_PASSWORD_FILE or FELT_NIGHT_ROOM_PASSWORD")
+    if file_path is not None and direct_password is not None:
+        raise RuntimeError("configure only one room invite password source")
+    if file_path is not None:
+        return _read_room_password_file(file_path)
+    return _validate_room_password(direct_password)
+
+
 def _json_dumps(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
 class Store:
-    def __init__(self, data_dir, operator_password):
+    def __init__(self, data_dir, room_password):
         self.data_dir = os.path.abspath(data_dir)
         if os.path.lexists(self.data_dir) and os.path.islink(self.data_dir):
             raise RuntimeError("data directory may not be a symlink")
@@ -80,7 +143,7 @@ class Store:
             raise RuntimeError("data directory is not a directory")
         os.chmod(self.data_dir, 0o700)
         self.db_path = os.path.join(self.data_dir, "sitngo.sqlite3")
-        self._initialize(operator_password)
+        self._initialize(room_password)
 
     def connect(self):
         conn = sqlite3.connect(self.db_path, timeout=4.0, isolation_level=None)
@@ -93,7 +156,7 @@ class Store:
     def _password_verifier(password, salt):
         return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 300000).hex()
 
-    def _initialize(self, operator_password):
+    def _initialize(self, room_password):
         existed = os.path.exists(self.db_path)
         conn = self.connect()
         try:
@@ -174,19 +237,19 @@ class Store:
                 conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('password_salt',?)",
                              (salt.hex(),))
                 conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('password_verifier',?)",
-                             (self._password_verifier(operator_password, salt),))
+                             (self._password_verifier(room_password, salt),))
             else:
                 old_salt = bytes.fromhex(salt_row["value"])
                 old_verifier = verifier_row["value"]
-                current_verifier = self._password_verifier(operator_password, old_salt)
+                current_verifier = self._password_verifier(room_password, old_salt)
                 if not hmac.compare_digest(current_verifier, old_verifier):
-                    # Changing the fixed gate in server.py and restarting revokes all sessions.
+                    # Changing the configured invite and restarting revokes all sessions.
                     conn.execute("DELETE FROM sessions")
                     new_salt = secrets.token_bytes(16)
                     conn.execute("UPDATE meta SET value=? WHERE key='password_salt'",
                                  (new_salt.hex(),))
                     conn.execute("UPDATE meta SET value=? WHERE key='password_verifier'",
-                                 (self._password_verifier(operator_password, new_salt),))
+                                 (self._password_verifier(room_password, new_salt),))
         finally:
             conn.close()
         try:
@@ -1152,10 +1215,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class App:
-    def __init__(self, args):
-        self.operator_password = OPERATOR_PASSWORD
+    def __init__(self, args, room_password=None):
+        self.room_password = (
+            _load_room_password() if room_password is None
+            else _validate_room_password(room_password)
+        )
         self.public_origin, self.public_netloc, self.secure_cookie = _parse_origin(args.public_origin)
-        self.store = Store(args.data_dir, self.operator_password)
+        self.store = Store(args.data_dir, self.room_password)
 
 
 def _background_ticks(store, stop_event):
@@ -1167,7 +1233,7 @@ def _background_ticks(store, stop_event):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Private play-money Texas Hold'em sit-and-go server")
+    parser = argparse.ArgumentParser(description="Felt Night play-money Texas Hold'em sit-and-go server")
     parser.add_argument("--host", default="127.0.0.1", help="listen address (must be loopback)")
     parser.add_argument("--port", type=int, default=18943)
     parser.add_argument("--public-origin", required=True,
@@ -1187,13 +1253,13 @@ def main(argv=None):
         app = App(args)
         server = LimitedThreadingHTTPServer((args.host, args.port), Handler, app)
     except Exception as exc:
-        print("SitNGo startup failed: %s" % exc, file=sys.stderr)
+        print("Felt Night startup failed: %s" % exc, file=sys.stderr)
         return 1
 
     stop_event = threading.Event()
     ticker = threading.Thread(target=_background_ticks, args=(app.store, stop_event), daemon=True)
     ticker.start()
-    print("SitNGo listening on %s:%d for %s" %
+    print("Felt Night listening on %s:%d for %s" %
           (args.host, args.port, app.public_origin), flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
