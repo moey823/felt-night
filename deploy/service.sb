@@ -1,6 +1,6 @@
 (version 1)
 (deny default)
-(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/Library/Apple") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Frameworks") (subpath "/opt/homebrew/lib") (subpath "/private/var/db/timezone") (literal "/private/etc/localtime") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom") (literal "/") (literal "/Users") (literal "/home/poker") (subpath "/home/poker/services/sitngo") (subpath "/home/poker/Library/Application Support/SitNGo/data") (literal "/home/poker/Library/Application Support/SitNGo/password"))
+(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/Library/Apple") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Frameworks") (subpath "/opt/homebrew/lib") (subpath "/private/var/db/timezone") (literal "/private/etc/localtime") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom") (literal "/") (literal "/Users") (literal "/home/poker") (subpath "/home/poker/services/sitngo") (subpath "/home/poker/Library/Application Support/SitNGo/data"))
 (allow file-write* (subpath "/home/poker/Library/Application Support/SitNGo/data") (literal "/dev/null"))
 (allow process-exec (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (subpath "/opt/homebrew/Frameworks") (subpath "/opt/homebrew/lib"))
 (allow file-read-metadata)

@@ -13,17 +13,16 @@ Python 3.9 or newer is sufficient:
   --host 127.0.0.1 \
   --port 18943 \
   --public-origin https://poker.example.com:8443 \
-  --data-dir "/home/poker/Library/Application Support/SitNGo/data" \
-  --password-file "/home/poker/Library/Application Support/SitNGo/password"
+  --data-dir "/home/poker/Library/Application Support/SitNGo/data"
 ```
 
-The operator password file must be a one-line UTF-8 file with at least 12 characters and no group/world permissions. The data directory and SQLite database are kept outside the repository. The server tightens the data directory and database permissions on startup.
+The shared app gate is hardcoded as `example-room-invite` in `server.py`. Changing that constant and restarting revokes existing sessions. The data directory and SQLite database are kept outside the repository. The server tightens the data directory and database permissions on startup.
 
 For loopback browser QA, set `--public-origin http://localhost:18943` and open `http://localhost:18943/poker/`. Production must use the exact HTTPS origin configured on the ingress. The service rejects requests with a different Host or mutation Origin.
 
 ## Play
 
-Sign in with the operator password and choose a display name. Create a table, then share the private site with the other players. The host is seated automatically. Tables have 2–9 seats and can start with at least two players. Defaults are a 1,000-chip stack, 10/20 blinds, and 5-minute blind levels. Blinds double at each level. A hand continues until one player remains; players who run out of chips are eliminated.
+Sign in with the shared `example-room-invite` app gate and choose a display name. Create a table, then share the private site with the other players. The host is seated automatically. Tables have 2–9 seats and can start with at least two players. Defaults are a 1,000-chip stack, 10/20 blinds, and 5-minute blind levels. Blinds double at each level. A hand continues until one player remains; players who run out of chips are eliminated.
 
 An unstarted lobby expires after four hours without activity. Players may leave a lobby; its host may cancel it. The action deadline is 30 seconds. If a player times out, the server checks when possible and otherwise folds. Bet and raise amounts are target street contributions (raise-to values). Each action carries the current hand and turn version so retries cannot act on a later turn.
 
@@ -42,7 +41,7 @@ After login, every mutation needs the `X-SitNgo-CSRF` header returned by `/poker
 
 ## Security and data
 
-The browser receives a random, opaque session cookie scoped to `/poker/`; the database stores only its SHA-256 hash. The cookie is HttpOnly and SameSite Strict, and Secure for HTTPS origins. A session lasts 30 days. The server derives a per-session CSRF token and validates the configured public Origin for mutations. Login attempts are rate-limited to 5 failures per source address and 50 failures in aggregate per 15 minutes. The rightmost valid X-Forwarded-For address is used when present; the direct peer address is the fallback. Rotating the password file and restarting the service revokes all existing sessions. Request bodies, request workers, and active table count are capped.
+The browser receives a random, opaque session cookie scoped to `/poker/`; the database stores only its SHA-256 hash. The cookie is HttpOnly and SameSite Strict, and Secure for HTTPS origins. A session lasts 30 days. The server derives a per-session CSRF token and validates the configured public Origin for mutations. Login attempts are rate-limited to 5 failures per source address and 50 failures in aggregate per 15 minutes. The rightmost valid X-Forwarded-For address is used when present; the direct peer address is the fallback. Changing the fixed gate in `server.py` and restarting the service revokes all existing sessions. Request bodies, request workers, and active table count are capped.
 
 Only the current player's hole cards are returned during a hand. Showdowns reveal cards only for players who did not fold. Deck order and all hidden cards remain server-side.
 
@@ -52,4 +51,5 @@ SQLite is stored at `<data-dir>/sitngo.sqlite3`. Do not copy the runtime directo
 
 ```sh
 /usr/bin/python3 -m unittest discover -s tests
-```\nDeployment and runtime operations are documented in [deploy/README.md](deploy/README.md).\n
+```
+Deployment and runtime operations are documented in [deploy/README.md](deploy/README.md).

@@ -25,8 +25,6 @@
 		<string>18943</string>
 		<string>--data-dir</string>
 		<string>/home/poker/Library/Application Support/SitNGo/data</string>
-		<string>--password-file</string>
-		<string>/home/poker/Library/Application Support/SitNGo/password</string>
 		<string>--public-origin</string>
 		<string>https://poker.example.com:8443</string>
 	</array>

@@ -12,7 +12,6 @@ import os
 import re
 import secrets
 import sqlite3
-import stat
 import sys
 sys.dont_write_bytecode = True
 import threading
@@ -36,6 +35,7 @@ MAX_SESSIONS = 256
 GLOBAL_LOGIN_LIMIT = 50
 MAX_WORKERS = 32
 TURN_SECONDS = 30
+OPERATOR_PASSWORD = "example-room-invite"
 
 
 class AppError(Exception):
@@ -44,30 +44,6 @@ class AppError(Exception):
         self.status = status
         self.code = code
         self.message = message
-
-
-def _secure_file(path):
-    try:
-        info = os.lstat(path)
-    except OSError as exc:
-        raise RuntimeError("required protected file is unavailable") from exc
-    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
-        raise RuntimeError("required protected file must be a regular file")
-    if info.st_mode & 0o077:
-        raise RuntimeError("required protected file must not be group or world accessible")
-
-
-def _read_operator_password(path):
-    _secure_file(path)
-    try:
-        value = Path(path).read_text(encoding="utf-8").rstrip("\r\n")
-    except (OSError, UnicodeError) as exc:
-        raise RuntimeError("operator password file could not be read") from exc
-    if len(value) < 12 or len(value) > 4096:
-        raise RuntimeError("operator password must contain 12 to 4096 characters")
-    if "\x00" in value or "\n" in value or "\r" in value:
-        raise RuntimeError("operator password file must contain one line")
-    return value
 
 
 def _parse_origin(value):
@@ -176,7 +152,7 @@ class Store:
                 old_verifier = verifier_row["value"]
                 current_verifier = self._password_verifier(operator_password, old_salt)
                 if not hmac.compare_digest(current_verifier, old_verifier):
-                    # A password-file rotation takes effect on restart and revokes all sessions.
+                    # Changing the fixed gate in server.py and restarting revokes all sessions.
                     conn.execute("DELETE FROM sessions")
                     new_salt = secrets.token_bytes(16)
                     conn.execute("UPDATE meta SET value=? WHERE key='password_salt'",
@@ -749,7 +725,7 @@ class Handler(BaseHTTPRequestHandler):
 
 class App:
     def __init__(self, args):
-        self.operator_password = _read_operator_password(args.password_file)
+        self.operator_password = OPERATOR_PASSWORD
         self.public_origin, self.public_netloc, self.secure_cookie = _parse_origin(args.public_origin)
         self.store = Store(args.data_dir, self.operator_password)
 
@@ -770,8 +746,6 @@ def main(argv=None):
                         help="exact browser origin, e.g. https://host:8443")
     parser.add_argument("--data-dir", required=True,
                         help="protected runtime data directory for SQLite")
-    parser.add_argument("--password-file", required=True,
-                        help="protected external file containing the operator password")
     args = parser.parse_args(argv)
     try:
         if not ipaddress.ip_address(args.host).is_loopback:

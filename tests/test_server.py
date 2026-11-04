@@ -1,6 +1,5 @@
 import http.client
 import json
-import os
 import tempfile
 import threading
 import types
@@ -14,15 +13,9 @@ class ServerAuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="sitngo-test-")
         root = Path(self.temp.name)
-        self.password = "A-strong-test-password-5678"
-        password_file = root / "password"
-        password_file.write_text(self.password, encoding="utf-8")
-        os.chmod(password_file, 0o600)
-
-        self.password_file = password_file
+        self.password = server.OPERATOR_PASSWORD
         self.data_dir = root / "data"
         args = types.SimpleNamespace(
-            password_file=str(password_file),
             public_origin="http://localhost:1",
             data_dir=str(self.data_dir),
         )
@@ -173,24 +166,45 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(detail["table"]["name"], "Friday Friends")
 
 
-    def test_password_rotation_revokes_existing_sessions(self):
-        cookie, proof, _, _ = self.login("Rotating")
-        self.password_file.write_text("A-new-test-password-9012", encoding="utf-8")
-        os.chmod(self.password_file, 0o600)
+    def test_hardcoded_gate_is_example-room-invite(self):
+        self.assertEqual(server.OPERATOR_PASSWORD, "example-room-invite")
+        cookie, proof, _, _ = self.login("Gate")
+        status, _, body = self.request(
+            "GET", "/poker/api/me", cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["authenticated"])
 
+    def test_changing_gate_and_restarting_revokes_existing_sessions(self):
+        cookie, proof, _, _ = self.login("Rotating")
         args = types.SimpleNamespace(
-            password_file=str(self.password_file),
             public_origin=self.origin,
             data_dir=str(self.data_dir),
         )
-        self.app = server.App(args)
-        self.httpd.app = self.app
 
+        original_gate = server.OPERATOR_PASSWORD
+        rotated_gate = "changed-test-gate"
+        try:
+            server.OPERATOR_PASSWORD = rotated_gate
+            rotated_app = server.App(args)
+        finally:
+            server.OPERATOR_PASSWORD = original_gate
+
+        self.app = rotated_app
+        self.httpd.app = self.app
         status, _, body = self.request(
             "GET", "/poker/api/me", cookie=cookie, proof=proof,
         )
         self.assertEqual(status, 200)
         self.assertFalse(body["authenticated"])
+
+        self.password = rotated_gate
+        new_cookie, new_proof, _, _ = self.login("After rotation")
+        status, _, body = self.request(
+            "GET", "/poker/api/me", cookie=new_cookie, proof=new_proof,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(body["authenticated"])
 
     def test_login_throttle_applies_to_client_and_aggregate(self):
         for _ in range(server.LOGIN_LIMIT):

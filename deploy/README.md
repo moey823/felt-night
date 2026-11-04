@@ -12,7 +12,6 @@ umask 077
 runtime="$HOME/Library/Application Support/SitNGo"
 service="$HOME/services/sitngo"
 mkdir -p "$runtime/data" "$service" "$HOME/Library/LaunchAgents"
-test -s "$runtime/password" || /usr/bin/openssl rand -hex 16 > "$runtime/password"
 git archive main | tar -xf - -C "$service"
 install -m 600 deploy/service.sb "$runtime/service.sb"
 install -m 600 deploy/net.personal.sitngo.plist "$HOME/Library/LaunchAgents/net.personal.sitngo.plist"
@@ -36,8 +35,8 @@ To take just poker offline, run `"$ts" funnel --https=8443 off` and `launchctl b
 
 ## Exposure and access
 
-Anyone on the internet can attempt the password. Deliver the password privately. Players who know it can create identities and participate under display names they choose. A shared password cannot identify an individual, prevent collusion or stop a player from joining with multiple browser profiles. Clearing the browser cookie loses the seat credential. Treat the SQLite database as private because it contains game state including undealt cards.
+The shared app gate is hardcoded as `example-room-invite` in `server.py`. Anyone who can reach the site knows the gate and can create identities under display names they choose; it is only a simple entry screen, not individual authentication. It cannot prevent collusion or stop a player from joining with multiple browser profiles. Changing the constant and restarting revokes existing sessions. Clearing the browser cookie loses the seat credential. Treat the SQLite database as private because it contains game state including undealt cards.
 
-The service process can read the deployed code, game data, its own password and system runtime files. Its sandbox limits file writes to its data directory and blocks outgoing socket connections, including to the mini's other loopback web apps. The agent starts in the logged-in user's context. The sandbox, OS, Tailscale and Python runtime are part of the security boundary.
+The service process can read the deployed code, game data and system runtime files. Its sandbox limits file writes to its data directory and blocks outgoing socket connections, including to the mini's other loopback web apps. The agent starts in the logged-in user's context. The sandbox, OS, Tailscale and Python runtime are part of the security boundary.
 
 Cookies are scoped by hostname and path, independent of port. Other services on this same hostname can receive the poker cookie if a player visits a matching path on those services. Poker therefore also requires a secret obtained at login and held in the browser's origin-scoped storage. A sibling service receiving the cookie alone cannot use it to read hands or control a seat. Other apps' own broadly scoped cookies can still arrive at poker; the poker service ignores those values and does not log request headers. A dedicated hostname or node would isolate cookies in both directions. A public listener can also consume bandwidth and request capacity before authentication. Tailscale Funnel routing and local listeners are separate surfaces; host firewall rules and tailnet ACLs can further restrict direct listeners.
