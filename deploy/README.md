@@ -35,7 +35,7 @@ To take just poker offline, run `"$ts" funnel --https=8443 off` and `launchctl b
 
 ## Exposure and access
 
-The shared app gate is hardcoded as `example-room-invite` in `server.py`. Anyone who can reach the site knows the gate and can create identities under display names they choose; it is only a simple entry screen, not individual authentication. It cannot prevent collusion or stop a player from joining with multiple browser profiles. Changing the constant and restarting revokes existing sessions. Clearing the browser cookie loses the seat credential. Treat the SQLite database as private because it contains game state including undealt cards.
+Registration requires the room invite password and creates a persistent, password-protected account. The invite password alone cannot recover an account or seat. A valid legacy session can secure its own player identity. Accounts do not prevent collusion or multiple accounts. Treat the SQLite database as private because it contains game state including undealt cards.
 
 The service process can read the deployed code, game data and system runtime files. Its sandbox limits file writes to its data directory and blocks outgoing socket connections, including to the mini's other loopback web apps. The agent starts in the logged-in user's context. The sandbox, OS, Tailscale and Python runtime are part of the security boundary.
 

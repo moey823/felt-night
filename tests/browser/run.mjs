@@ -1,7 +1,7 @@
 // Run a headless, two-player check against an isolated throwaway game server.
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtempSync, rmSync} from 'node:fs';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -45,6 +45,11 @@ async function makePage() {
       const reply = await send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});
       if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description || reply.exceptionDetails.text);
       return reply.result.value;
+    },
+    async screenshot(name) {
+      if(!process.env.QA_SCREEN_DIR) return;
+      const {data} = await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+      writeFileSync(join(process.env.QA_SCREEN_DIR,name+'.png'),Buffer.from(data,'base64'));
     },
     resize(width,height) {
       return send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<800});

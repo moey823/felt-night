@@ -1,6 +1,34 @@
 (function () {
   "use strict";
 
+  var authMode = "login";
+  function setAuthMode(mode) {
+    authMode = mode;
+    var newAccount = mode !== "login", claim = mode === "claim";
+    var sw = byId("auth-switch");
+    sw.hidden = false;
+    sw.textContent = claim ? "Sign out of this legacy seat" : newAccount ? "Already registered? Sign in" : "Create an account";
+    byId("auth-room").hidden = !newAccount;
+    if (!newAccount) byId("room-password").value = "";
+    byId("room-password").required = newAccount;
+    var nameInput = byId("login-name");
+    nameInput.pattern = "[A-Za-z0-9][A-Za-z0-9._\\x2d]{2,23}";
+    nameInput.title = "3–24 characters: letters, numbers, dots, underscores or hyphens. Start with a letter or number.";
+    byId("login-password").maxLength = 256;
+    byId("login-password").minLength = newAccount ? 10 : 1;
+    byId("login-password").autocomplete = newAccount ? "new-password" : "current-password";
+    byId("login-form").querySelector('button[type=submit] span').textContent = claim ? "Secure my seat" : newAccount ? "Create account" : "Sign in";
+    document.querySelector(".login-card h2").textContent = claim ? "Keep your seat" : newAccount ? "Create an account" : "Welcome back";
+    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password of at least 10 characters." : "Sign in to return to your seat and view your tournament history.";
+  }
+  byId("auth-switch").addEventListener("click", async function () {
+    if (authMode === "claim") {
+      try {await mutate("/logout",{}); setLoggedOut("");} catch (err) {showNotice(err.message,"error",false);}
+    } else {
+      setAuthMode(authMode === "login" ? "register" : "login");
+      byId("login-password").value = ""; byId("room-password").value = ""; clearNotice();
+    }
+  });
   var API_ROOT = "/poker/api";
   var AUTH_STORAGE_KEY = "sitngo.poker.session-proof.v1";
   var state = {
@@ -169,6 +197,9 @@
 
   function setLoggedOut(message) {
     state.player = null;
+    setAuthMode("login");
+    if (byId("history-dialog").open) byId("history-dialog").close();
+    byId("history-content").replaceChildren();
     clearAuth();
     state.tableView = null;
     state.tables = [];
@@ -233,8 +264,8 @@
       data = {};
     }
 
-    if (response.status === 401 && path !== "/login") {
-      setLoggedOut("Your room session has expired. Enter the room password to continue.");
+    if (response.status === 401 && !["/login", "/register", "/claim"].includes(path)) {
+      setLoggedOut("Your session has expired. Sign in again.");
       throw new apiError("Your session has expired.", 401, "unauthorized");
     }
 
@@ -834,6 +865,15 @@
     }) || layout.seats[0] || null;
     var anchorRawSeatNo = anchorSeat && anchorSeat.seat_no != null ? anchorSeat.seat_no : layout.seats.indexOf(anchorSeat);
     var anchorSeatNo = anchorSeat ? Math.floor(number(anchorRawSeatNo, 0)) : 0;
+    var ringOnlySeated = view.status === "playing" || view.status === "completed";
+    var clockwiseSeats = layout.seats.map(function (seat, index) {
+      var raw = seat.seat_no != null ? seat.seat_no : index;
+      var seatNo = Math.floor(number(raw, index));
+      return { seatNo: seatNo, offset: (seatNo - anchorSeatNo + max) % max };
+    }).sort(function (a, b) { return a.offset - b.offset; });
+    var relativeBySeatNo = Object.create(null);
+    clockwiseSeats.forEach(function (entry, index) { relativeBySeatNo[entry.seatNo] = index; });
+    var positionCount = ringOnlySeated ? Math.max(2, Math.min(max, clockwiseSeats.length)) : max;
     var actorId = String(view.actor_id || view.to_act_id || "");
     var buttonId = String(view.button_id || "");
     var currentHand = view.status === "playing";
@@ -848,9 +888,13 @@
 
     for (var i = 0; i < max; i += 1) {
       var seat = bySeat[i];
-      var relativeIndex = (i - anchorSeatNo + max) % max;
+      var relativeIndex = ringOnlySeated
+        ? number(relativeBySeatNo[i], (i - anchorSeatNo + max) % max)
+        : (i - anchorSeatNo + max) % max;
       if (!seat) {
-        html += '<div class="seat-card seat-empty" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true"><span>Seat ' + (i + 1) + '</span><span>Open</span></div>';
+        if (!ringOnlySeated) {
+          html += '<div class="seat-card seat-empty" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true"><span>Seat ' + (i + 1) + '</span><span>Open</span></div>';
+        }
         continue;
       }
 
@@ -935,6 +979,7 @@
     var felt = byId("felt");
     grid.innerHTML = html;
     var compact = window.innerWidth <= 820 || grid.clientWidth < 500;
+    var heroHasActionSpace = currentHand && Boolean(ownSeat);
     var portraitSeats = {
       2: [[50, 91], [50, 9]],
       3: [[50, 91], [8, 18], [92, 18]],
@@ -943,18 +988,57 @@
       6: [[50, 91], [30, 68], [0, 32], [50, 10], [100, 32], [70, 68]],
       7: [[50, 91], [30, 68], [0, 32], [15, 10], [85, 10], [100, 32], [70, 68]],
       8: [[50, 91], [30, 68], [0, 32], [15, 10], [50, 10], [85, 10], [100, 32], [70, 68]],
-      9: [[50, 91], [30, 68], [0, 90], [0, 32], [28, 10], [72, 10], [100, 32], [100, 90], [70, 68]]
+      9: [[50, 90], [30, 61], [5, 84], [5, 31], [27, 10], [73, 10], [95, 31], [95, 84], [70, 61]]
     };
-    felt.classList.toggle("exposed-ring", max >= 5 && Boolean((view.runout_odds || []).length));
+    var actionSeats = {
+      2: [[50, 52], [50, 9]],
+      3: [[50, 52], [8, 18], [92, 18]],
+      4: [[50, 62], [15, 44], [50, 8], [85, 44]],
+      5: [[50, 62], [15, 44], [20, 8], [80, 8], [85, 44]],
+      6: [[50, 62], [15, 44], [14, 8], [50, 8], [86, 8], [85, 44]],
+      7: [[50, 52], [14, 31], [0, 14], [15, 8], [85, 8], [100, 14], [86, 31]],
+      8: [[50, 52], [14, 31], [0, 14], [15, 8], [50, 8], [85, 8], [100, 14], [86, 31]],
+      9: [[50, 64], [16, 48], [5, 35], [12, 8], [38, 8], [62, 8], [88, 8], [95, 35], [84, 48]]
+    };
+    var phoneActionSeats = {
+      2: [[15, 78], [96, 8]],
+      3: [[15, 78], [50, 10], [92, 43]],
+      4: [[15, 78], [5, 48], [50, 8], [95, 48]],
+      5: [[15, 78], [5, 48], [25, 8], [75, 8], [95, 48]],
+      6: [[15, 78], [5, 48], [15, 8], [50, 8], [85, 8], [95, 48]],
+      7: [[15, 78], [5, 45], [15, 20], [38, 8], [62, 8], [85, 20], [95, 45]],
+      8: [[15, 78], [5, 44], [15, 20], [32, 8], [50, 8], [68, 8], [85, 20], [95, 44]],
+      9: [[15, 84], [10, 64], [10, 44], [10, 20], [35, 8], [60, 8], [85, 8], [95, 44], [95, 64]]
+    };
+    var desktopActionSeats = {
+      2: [[24, 78], [76, 18]],
+      3: [[24, 78], [50, 12], [88, 54]],
+      4: [[24, 78], [8, 46], [50, 12], [92, 46]],
+      5: [[24, 78], [7, 53], [26, 12], [70, 12], [92, 48]],
+      6: [[24, 78], [7, 55], [18, 21], [50, 10], [82, 21], [93, 55]],
+      7: [[24, 78], [7, 56], [17, 28], [38, 10], [66, 10], [85, 28], [93, 56]],
+      8: [[24, 78], [7, 56], [16, 34], [31, 10], [50, 8], [69, 10], [84, 34], [93, 56]],
+      9: [[20, 78], [5, 58], [5, 38], [15, 8], [38, 8], [62, 8], [85, 8], [95, 18], [95, 38]]
+    };
+    felt.classList.toggle("exposed-ring", positionCount >= 5 && Boolean((view.runout_odds || []).length));
     felt.dataset.compactLayout = compact ? "true" : "false";
-    felt.classList.toggle("is-crowded", max >= 7);
+    felt.classList.toggle("is-crowded", positionCount >= 7);
+    felt.classList.toggle("has-action-space", heroHasActionSpace);
+    felt.classList.toggle("is-playing", currentHand);
+    felt.dataset.seatCount = String(positionCount);
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
       var x;
       var y;
-      if (compact && portraitSeats[max]) {
-        x = portraitSeats[max][relativeIndex][0];
-        y = portraitSeats[max][relativeIndex][1];
+      var viewportActionSeats = compact
+        ? (window.innerWidth >= 381 && window.innerWidth <= 640 ? phoneActionSeats : actionSeats)
+        : desktopActionSeats;
+      if (heroHasActionSpace && viewportActionSeats[positionCount]) {
+        x = viewportActionSeats[positionCount][relativeIndex][0];
+        y = viewportActionSeats[positionCount][relativeIndex][1];
+      } else if (compact && portraitSeats[positionCount]) {
+        x = portraitSeats[positionCount][relativeIndex][0];
+        y = portraitSeats[positionCount][relativeIndex][1];
       } else {
         var angle = (90 + relativeIndex * 360 / max) * Math.PI / 180;
         x = 50 + 50 * Math.cos(angle);
@@ -972,6 +1056,27 @@
 
     var gridRect = grid.getBoundingClientRect();
     var blockers = [];
+    var dock = boxForNode(byId("action-panel"), gridRect);
+    var dockKey = view.id + ":" + Math.round(gridRect.width) + ":" + Math.round(gridRect.height);
+    if (dock) state.seatDock = {key:dockKey, box:dock};
+    else if (heroHasActionSpace && state.seatDock?.key === dockKey) dock = state.seatDock.box;
+    if (dock) blockers.push(dock);
+    if (currentHand && window.SitNgoLayout && gridRect.width && gridRect.height) {
+      var avoid = ["board-cards", "board-caption", "pot-display", "street-label"].map(function (id) {
+        return boxForNode(byId(id), gridRect);
+      }).filter(Boolean).concat(blockers);
+      var nodes = Array.from(grid.querySelectorAll(".seat-card"));
+      var seatsToFit = nodes.map(function (node,i) {
+        var b = boxForNode(node, gridRect);
+        return {id:i,x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,
+          width:b.right-b.left,height:b.bottom-b.top,hero:node.classList.contains("is-me")};
+      });
+      var fitted = window.SitNgoLayout.fit({width:gridRect.width,height:gridRect.height,seats:seatsToFit,blockers:avoid});
+      fitted.forEach(function (p,i) {
+        nodes[i].style.left = (p.x/gridRect.width*100).toFixed(3) + "%";
+        nodes[i].style.top = (p.y/gridRect.height*100).toFixed(3) + "%";
+      });
+    }
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var box = boxForNode(node, gridRect);
       if (box) blockers.push(box);
@@ -1184,6 +1289,8 @@
       var championName = champions.length ? (champions[0].name || champions[0].player_name || "The winner") : "Tournament";
       title.textContent = championName + " wins";
     }
+    var pool = results.reduce(function (sum,row) {return sum + number(row.award_cents,0);}, 0);
+    byId("results-description").textContent = results.some(function(row) {return row.award_cents != null;}) ? credits(pool) + " play credits awarded · Buy-in " + credits(view.config.buy_in * 100) + " · " + view.config.payout_percentages.join(" / ") + "%" : "Final standings for this freezeout.";
     byId("results-list").innerHTML = results.map(function (row, index) {
       var place = number(row.place != null ? row.place : row.rank, index + 1);
       var suffix = place % 100 >= 11 && place % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[place % 10] || "th");
@@ -1194,7 +1301,7 @@
       var rowStatus = String(row.status || "").toLowerCase();
       var detail = row.detail || (place === 1 ? "Tournament winner" : (row.eliminated_at || rowStatus === "eliminated" ? "Eliminated" : (row.status || "Final result")));
       return '<div class="result-row" role="listitem"><span class="result-place ' + (place === 1 ? "first" : "") + '" aria-label="' + esc(placeAria) + '">' + placeLabel + '</span>' +
-        '<span><span class="result-name">' + esc(name) + '</span><span class="result-detail">' + esc(detail) + '</span></span>' +
+        '<span><span class="result-name">' + esc(name) + '</span><span class="result-detail">' + esc(row.award_cents == null ? detail : credits(row.award_cents) + ' play credits') + '</span></span>' +
         '<span class="result-stack">' + (stack == null ? "" : chips(stack) + " chips") + '</span></div>';
     }).join("");
   }
@@ -1261,6 +1368,9 @@
       button.setAttribute("aria-label", valid ? label.replace(" · all-in", "") + " chips" + (isAllInTarget ? ", all-in" : "") : label);
       button.disabled = Boolean(state.actionPending || state.actionConfirmation || !valid);
     }
+    byId("action-controls").querySelectorAll("[data-raise-preset]").forEach(function (preset) {
+      preset.setAttribute("aria-pressed", String(number(preset.getAttribute("data-target"), -1) === target));
+    });
   }
 
   function renderActions(view) {
@@ -1314,8 +1424,29 @@
     if (!Number.isInteger(draft) || draft < rangeMin || draft > maxRaise) draft = suggested;
     if (state.raiseDraftValue !== null && String(draft) !== state.raiseDraftValue) state.raiseDraftValue = String(draft);
 
+    var street = String(view.street || "").toLowerCase();
+    var preflop = street ? street === "preflop" : cardArray(view.board).length === 0;
+    var bigBlind = Math.max(1, number(blindParts(view).big, number(view.config && view.config.big_blind, 1)));
+    var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
+    var presetSpecs = preflop
+      ? [{ label: "2.5 BB", bb: 2.5 }, { label: "3 BB", bb: 3 }, { label: "4 BB", bb: 4 }]
+      : [{ label: "1/2 pot", fraction: 0.5 }, { label: "3/4 pot", fraction: 0.75 }, { label: "Pot", fraction: 1 }];
+    presetSpecs = presetSpecs.map(function (preset) {
+      var rawTarget = preflop
+        ? Math.round(bigBlind * preset.bb)
+        : currentBet + Math.round(potAfterCall * preset.fraction);
+      var target = Math.max(rangeMin, Math.min(maxRaise, rawTarget));
+      var adjusted = target !== rawTarget;
+      return {
+        label: preset.label,
+        target: target,
+        ariaLabel: "Set raise-to amount to " + chips(target) + " chips with the " + preset.label + " preset" +
+          (preflop ? "" : " after calling") + (adjusted ? "; adjusted to the legal range" : "")
+      };
+    });
     var actionKey = JSON.stringify([
       state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0),
+      street, number(view.pot, 0), bigBlind, presetSpecs.map(function (preset) { return preset.target; }),
       toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
       minRaise, maxRaise, hasRaiseSlider, shortAllInRaise, rangeMin, suggested
     ]);
@@ -1332,10 +1463,18 @@
       var actionName = currentBet > 0 ? "Raise" : "Bet";
       var maxIsAllIn = stack > 0 && maxRaise === ownBet + stack;
       var rangeText = shortAllInRaise
-        ? "Short all-in · Max " + chips(maxRaise) + " chips"
-        : "Min " + chips(rangeMin) + " · Max " + chips(maxRaise) + " chips" + (maxIsAllIn ? " · all-in" : "");
+        ? "Short all-in · max " + chips(maxRaise)
+        : "Min " + chips(rangeMin) + "–" + chips(maxRaise) + (maxIsAllIn ? " · all-in" : "");
+      var presetMarkup = '<div class="raise-presets" role="group" aria-label="' +
+        (preflop ? "Preflop raise sizes in big blinds" : "Postflop pot-size raises") + '">' +
+        presetSpecs.map(function (preset) {
+          return '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true" data-target="' +
+            preset.target + '" aria-pressed="false" aria-label="' + esc(preset.ariaLabel) + '" title="' +
+            esc(preset.ariaLabel) + '">' + esc(preset.label) + '</button>';
+        }).join("") + '</div>';
       controls += '<div class="raise-control" role="group" aria-labelledby="raise-label">' +
         '<label id="raise-label" for="raise-amount">' + actionName + ' amount</label>' +
+        presetMarkup +
         '<input id="raise-amount" type="range" min="' + rangeMin + '" max="' + maxRaise + '" step="1" value="' + draft + '" aria-describedby="raise-range">' +
         '<span class="raise-range" id="raise-range">' + esc(rangeText) + '</span>' +
         '<button class="button button-primary" type="button" data-poker-action="raise_to" aria-label="' + actionName + ' to ' + chips(draft) + ' chips">' + actionName + ' to ' + chips(draft) + '</button></div>';
@@ -1351,7 +1490,7 @@
       }
     }
     var blocked = Boolean(state.actionPending || state.actionConfirmation);
-    byId("action-controls").querySelectorAll("button[data-poker-action]").forEach(function (button) {
+    byId("action-controls").querySelectorAll("button[data-poker-action], button[data-raise-preset]").forEach(function (button) {
       if (button.getAttribute("data-poker-action") !== "raise_to") button.disabled = blocked;
     });
     var raiseInput = byId("raise-amount");
@@ -1403,6 +1542,8 @@
 
   function loadSettingsForm(view) {
     var config = view.config || {};
+    byId("settings-buy-in").value = String(config.buy_in == null ? 10 : config.buy_in);
+    byId("settings-payout").value = (config.payout_percentages || [60,25,15]).join(", ");
     byId("settings-table-name").value = view.name || "";
     byId("settings-max-seats").value = String(number(config.max_seats, number(view.max_seats, 6)));
     byId("settings-starting-stack").value = String(number(config.starting_stack, number(view.starting_stack, 1000)));
@@ -1483,7 +1624,7 @@
     var layout = seatLayout(view);
     var seats = layout.seats;
     var max = layout.max;
-    byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats";
+    byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats" + (view.prize_pool_cents == null ? "" : " · " + credits(view.prize_pool_cents) + " play credits in the pool") + (status === "lobby" && view.config ? " · Buy-in " + view.config.buy_in + " · " + view.config.payout_percentages.join(" / ") + "%" : "");
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
     byId("hand-status-label").textContent = status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY");
     byId("table-player-count").textContent = seats.length + " seated · " + seats.filter(function (s) { return number(s.stack, 0) > 0; }).length + " still in";
@@ -1491,10 +1632,10 @@
 
     renderBlindStrip(view);
     renderBoard(view);
+    renderActions(view);
     renderSeats(view);
     renderLog(view);
     renderResults(view);
-    renderActions(view);
     playTableEffects();
 
     var viewer = view.viewer || {};
@@ -1530,11 +1671,15 @@
   async function boot() {
     try {
       var data = await request("/me");
-      if (data.authenticated && state.sessionProof && data.csrf) {
+      if (data.authenticated && (data.needs_claim || data.player?.needs_claim) && state.sessionProof && data.csrf) {
+        state.csrf = data.csrf;
+        byId("login-panel").hidden = false;
+        setAuthMode("claim");
+      } else if (data.authenticated && state.sessionProof && data.csrf) {
         state.activeTableId = hashTableId();
         enterApp(data.player, data.csrf, state.sessionProof);
       } else if (data.authenticated || state.sessionProof) {
-        setLoggedOut("Your room session could not be restored. Enter the room password again.");
+        setLoggedOut("Your session could not be restored. Sign in again.");
       } else {
         setLoggedOut("");
       }
@@ -1626,8 +1771,18 @@
     return request(path, { method: method || "POST", body: body, mutate: true });
   }
 
+  function payouts(id) {
+    var parts = byId(id).value.split(",").map(function (x) {return x.trim();});
+    if (parts.length > 9 || parts.some(function (x) {return !/^\d{1,3}$/.test(x);}) || parts.reduce(function (sum,x) {return sum + Number(x);},0) !== 100) {
+      throw Error("Enter one to nine whole-number payout percentages totaling 100, separated by commas.");
+    }
+    return parts.map(Number);
+  }
+  function credits(cents) {return new Intl.NumberFormat("en-US",{maximumFractionDigits:2}).format(cents/100);}
   function settingsPayload() {
     return {
+      buy_in: number(byId("settings-buy-in").value, 0),
+      payout_percentages: payouts("settings-payout"),
       name: byId("settings-table-name").value.trim(),
       max_seats: number(byId("settings-max-seats").value, 0),
       starting_stack: number(byId("settings-starting-stack").value, 0),
@@ -1641,7 +1796,8 @@
 
   async function saveSettings() {
     if (!state.activeTableId || !state.tableView || state.settingsSaving) return;
-    var payload = settingsPayload();
+    var payload;
+    try { payload = settingsPayload(); } catch (err) { showNotice(err.message, "error", false); return; }
     var form = byId("table-settings-form");
     if (!form.checkValidity() || !payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
         payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind ||
@@ -1856,14 +2012,17 @@
     var name = byId("login-name").value.trim();
     var password = byId("login-password").value;
     if (!name || !password) {
-      showNotice("Enter your table name and the room password.", "error", false);
+      showNotice("Enter your username and password.", "error", false);
       return;
     }
     var submit = event.currentTarget.querySelector('button[type="submit"]');
     submit.disabled = true;
     submit.querySelector("span").textContent = "Opening room…";
     try {
-      var data = await request("/login", { method: "POST", body: { name: name, password: password } });
+      var body = {username:name,password:password};
+      if (authMode !== "login") body.room_password = byId("room-password").value;
+      var data = await request("/" + authMode, {method:"POST", body:body, mutate:authMode === "claim"});
+      byId("room-password").value = "";
       byId("login-password").value = "";
       state.activeTableId = hashTableId();
       if (!data.session_proof || !data.csrf) throw new apiError("The room did not issue complete session credentials. Try signing in again.", 500, "missing_session_proof");
@@ -1873,10 +2032,81 @@
       showNotice(err.message, "error", false);
     } finally {
       submit.disabled = false;
-      submit.querySelector("span").textContent = "Enter the room";
+      setAuthMode(authMode);
     }
   });
 
+  var historyGeneration = 0;
+  function historyCards(cards) {
+    return (cards || []).map(function (c) {var x=cardInfo(c); return x ? x.rank + cardSuit(x.suit).symbol : "";}).join(" ");
+  }
+  function historyEvent(e) {
+    var who = e.actor_label || "Player", street = e.street || "";
+    if (e.type === "action") {
+      var label = String(e.action || "").replace(/_/g," ");
+      return [street, who + ": " + label, e.target && /raise|bet/.test(label) ? "to " + chips(e.target) : e.amount ? chips(e.amount) : "", e.timed_out ? "(timeout)" : ""].filter(Boolean).join(" ");
+    }
+    if (e.type === "street") return street + ": " + historyCards(e.board);
+    if (e.type === "reveal") return "Cards shown: " + (e.hands || []).map(function (h) {return h.actor_label + " " + historyCards(h.cards);}).join(" · ");
+    if (e.type === "payout" || e.type === "showdown_result") {
+      var lines=(e.winners || []).map(function (w) {return w.actor_label + " won " + chips(w.amount) + (w.rank ? " (" + w.rank + ")" : "");});
+      (e.returns || []).forEach(function (w) {lines.push("Uncalled: " + chips(w.amount) + " returned to " + (w.actor_label || "player"));});
+      return lines.join(" · ");
+    }
+    return "";
+  }
+  function historyResults(results) {
+    return (results || []).map(function (r) {
+      return esc((r.tied ? "T-" : "") + r.place + ". " + r.name + (r.award_cents == null ? "" : " · " + credits(r.award_cents) + " credits"));
+    }).join("<br>");
+  }
+  function historyHand(h) {
+    var seats = (h.players || []).map(function (p) {
+      return '<li>' + esc(p.name) + (p.player_id === state.player?.id ? " (you)" : "") + (p.cards?.length ? " · " + esc(historyCards(p.cards)) : "") + (p.stack_before != null ? " · " + chips(p.stack_before) + " chips" : "") + '</li>';
+    }).join("");
+    var pots = (h.result?.pots || []).map(function (p,i) {
+      return (i ? "Side pot "+i : "Main pot") + ": " + (p.recipients || []).map(function (r) {return r.actor_label + " +" + chips(r.amount);}).join(", ");
+    });
+    var actions = (h.events || []).map(historyEvent).filter(Boolean);
+    return '<details class="history-entry"><summary>Hand ' + esc(h.number) + ' · ' + esc(historyCards(h.board) || "Preflop") + '</summary>' +
+      (seats ? '<ul>' + seats + '</ul>' : '') +
+      (pots.length ? '<p>' + esc(pots.join(" · ")) + '</p>' : '') +
+      (h.events_complete === false ? '<p>Earlier actions in this hand were not retained.</p>' : '') +
+      '<ol>' + actions.map(function (line) {return '<li>' + esc(line) + '</li>';}).join("") + '</ol></details>';
+  }
+  async function loadHistory(id, offset) {
+    var gen = ++historyGeneration, el = byId("history-content");
+    el.textContent = "Loading history…";
+    try {
+      var data = await request(id ? "/history/" + encodeURIComponent(id) + (offset ? "?offset="+offset : "") : "/history" + (offset ? "?offset="+offset : ""));
+      if (gen !== historyGeneration || !byId("history-dialog").open) return;
+      if (id) {
+        var t = data.tournament;
+        var partial = t.partial_history || (!offset && data.hands?.length && data.hands[0].number > 1);
+        var legacyNote = partial ? "<p>Only the hands the room still had when history tracking began are available for this tournament.</p>" : "";
+        el.innerHTML = '<button class="button button-quiet history-back" data-history-list>← All tournaments</button><h3>' + esc(t.name) + '</h3><p>' + historyResults(t.results) + '</p>' + legacyNote +
+          (data.hands || []).map(historyHand).join("") + (data.hands?.length ? '' : '<p>No saved hands for this tournament.</p>');
+      } else {
+        el.innerHTML = (data.tournaments || []).map(function (t) {
+          var mine = (t.results || []).find(function (row) {return row.player_id === state.player?.id;});
+          return '<div class="history-entry"><h3>' + esc(t.name) + '</h3><p>' + esc(new Date((t.started || t.created)*1000).toLocaleDateString()) + ' · ' + esc(statusName(t.status)) + ' · ' + esc(t.hand_count) + ' saved hands' + (mine ? ' · Place ' + esc(mine.place) + (mine.award_cents == null ? "" : ' · ' + credits(mine.award_cents) + ' credits') : '') + '</p><button class="button button-outline button-small" data-history-table="' + esc(t.id) + '">View hands &amp; results</button></div>';
+        }).join("") || "<p>You haven’t played a tournament yet.</p>";
+      }
+      if (offset || data.next_offset != null) {
+        el.insertAdjacentHTML("beforeend", '<div class="history-pages">' + (offset ? '<button class="button button-quiet" data-history-offset="0">First page</button>' : '') + (data.next_offset != null ? '<button class="button button-outline" data-history-offset="'+esc(data.next_offset)+'">Next page</button>' : '') + '</div>');
+      }
+      el.dataset.table = id || "";
+    } catch (err) { if (gen === historyGeneration) el.textContent = err.message; }
+  }
+  byId("history-button").addEventListener("click", function () {byId("history-dialog").showModal(); loadHistory("");});
+  byId("history-close").addEventListener("click", function () {byId("history-dialog").close();});
+  byId("history-dialog").addEventListener("close", function () {historyGeneration++; byId("history-content").replaceChildren();});
+  byId("history-content").addEventListener("click", function (e) {
+    var btn=e.target.closest("button");
+    if (btn?.hasAttribute("data-history-table")) loadHistory(btn.dataset.historyTable);
+    else if (btn?.hasAttribute("data-history-list")) loadHistory("");
+    else if (btn?.hasAttribute("data-history-offset")) loadHistory(byId("history-content").dataset.table, Number(btn.dataset.historyOffset));
+  });
   byId("logout-button").addEventListener("click", async function () {
     try {
       await mutate("/logout", {});
@@ -1899,6 +2129,8 @@
     button.disabled = true;
     try {
       var data = await mutate("/tables", {
+        buy_in: number(byId("buy-in").value,0),
+        payout_percentages: payouts("payout"),
         name: byId("table-name").value.trim(),
         max_seats: number(byId("max-seats").value, 6),
         starting_stack: number(byId("starting-stack").value, 1000),
@@ -2023,7 +2255,15 @@
     }
   });
 
+  function lobbyPane(which) {
+    byId("app-panel").dataset.pane = which;
+    byId("open-games-tab").setAttribute("aria-pressed", String(which !== "create"));
+    byId("create-game-tab").setAttribute("aria-pressed", String(which === "create"));
+  }
+  byId("open-games-tab").addEventListener("click",function () {lobbyPane("games");});
+  byId("create-game-tab").addEventListener("click",function () {lobbyPane("create");});
   byId("close-table-button").addEventListener("click", function () {
+    lobbyPane("games");
     state.activeTableId = "";
     state.skipAutoResume = true;
     state.tableView = null;
@@ -2121,6 +2361,19 @@
   });
 
   byId("action-controls").addEventListener("click", function (event) {
+    var preset = event.target.closest("[data-raise-preset]");
+    if (preset) {
+      if (preset.disabled || state.actionPending || state.actionConfirmation) return;
+      var presetView = state.tableView;
+      var raiseInput = byId("raise-amount");
+      var presetTarget = Number(preset.getAttribute("data-target"));
+      if (!presetView || !presetView.viewer || !presetView.viewer.can_act || !raiseInput || !Number.isInteger(presetTarget)) return;
+      state.raiseDraftKey = actionTokenKey(presetView);
+      state.raiseDraftValue = String(presetTarget);
+      raiseInput.value = String(presetTarget);
+      updateRaisePreview();
+      return;
+    }
     var button = event.target.closest("[data-poker-action]");
     if (!button || button.disabled || state.actionPending || state.actionConfirmation) return;
     var view = state.tableView;

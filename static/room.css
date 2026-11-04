@@ -1,0 +1,44 @@
+.topbar .ace-brand {display:block;width:42px;height:42px;flex:none}
+.room-link,.fair-home {color:var(--text,#ede9d9);font-weight:650;text-decoration:none}
+.room-link:hover,.fair-home:hover{text-decoration:underline}
+.room-link {font-size:.85rem}
+.topbar-right{flex-wrap:wrap}
+.fair-page{max-width:52rem;margin:0 auto;padding:clamp(1rem,4vw,3rem)}
+.fair-home{display:inline-flex;align-items:center;gap:.75rem;margin:0 0 1.3rem}
+.fair-article{padding:clamp(1.2rem,5vw,3rem)}
+.fair-article h1{margin:.5rem 0;font-size:clamp(2rem,6vw,3.8rem);line-height:1.1}
+.fair-article h2{margin:2rem 0 .4rem;font-size:1.3rem}
+.fair-article p{line-height:1.6}
+.fair-lede{font-size:1.2rem}
+.history-dialog{width:min(42rem,94vw);max-height:85dvh;padding:1.25rem;overflow:auto;color:inherit;background:#15251e;border:1px solid #526457;border-radius:16px}
+.history-dialog::backdrop{background:#050c09ce}
+.history-dialog summary{cursor:pointer;padding:.65rem 0}
+.history-dialog ol{padding-left:1.5rem}
+.history-entry{border-top:1px solid #45584b;padding:.8rem 0}
+.history-entry h3,.history-entry p{margin:.3rem 0}
+.history-dialog .history-back{margin:.5rem 0}
+.auth-switch{margin-top:.8rem}
+.history-dialog .section-heading{gap:1rem}
+.auth-room label{display:block}
+.auth-room input{width:100%}
+@media(max-width:600px){.topbar{flex-wrap:wrap;gap:.35rem}
+.topbar-right{gap:.5rem}
+.topbar .ace-brand{width:32px;height:32px}
+.topbar-right .privacy-chip{display:none}
+.room-link{font-size:.8rem}
+.welcome-name{max-width:8rem;overflow:hidden;text-overflow:ellipsis}
+}
+.lobby-switch { display:flex; gap:.4rem; margin:0 0 .7rem; max-width:325px }
+.lobby-switch button { flex:1; min-height:42px }
+.lobby-switch [aria-pressed=true] { background:#283d2c; color:#d8edab }
+.app-panel.has-active-table .lobby-switch,
+.app-panel:not([data-pane=create]):not(.has-active-table) .create-panel,
+.app-panel[data-pane=create]:not(.has-active-table) .tables-panel { display:none }
+@media (max-width:640px) {
+  .lobby-switch { max-width:none }
+  .app-panel:not(.has-active-table) .empty-state { display:none }
+  .login-card { order:-1 }
+  .login-story { min-height:185px }
+  .topbar { height:auto; min-height:67px; padding-block:.5rem }
+  .identity { min-width:0 }
+}

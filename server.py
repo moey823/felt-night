@@ -19,9 +19,10 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import engine
+import history as tournament_history
 
 
 BASE_PATH = "/poker/"
@@ -107,6 +108,14 @@ class Store:
                     name TEXT NOT NULL,
                     created REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS accounts (
+                    username TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    player_id TEXT NOT NULL UNIQUE REFERENCES players(id),
+                    password_salt TEXT NOT NULL,
+                    password_verifier TEXT NOT NULL,
+                    created REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
                     player_id TEXT NOT NULL REFERENCES players(id),
@@ -129,6 +138,26 @@ class Store:
                 CREATE INDEX IF NOT EXISTS login_attempts_recent
                     ON login_attempts(client_key, attempted);
             """)
+            tournament_history.create_schema(conn)
+            history_marker = conn.execute(
+                "SELECT value FROM meta WHERE key='history_backfill_v1'"
+            ).fetchone()
+            if history_marker is None:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    history_marker = conn.execute(
+                        "SELECT value FROM meta WHERE key='history_backfill_v1'"
+                    ).fetchone()
+                    if history_marker is None:
+                        tournament_history.backfill_tournaments(conn)
+                        conn.execute(
+                            "INSERT INTO meta(key,value) VALUES('history_backfill_v1','1')"
+                        )
+                    conn.commit()
+                except Exception:
+                    if conn.in_transaction:
+                        conn.rollback()
+                    raise
             row = conn.execute("SELECT value FROM meta WHERE key='csrf_secret'").fetchone()
             if row is None:
                 conn.execute(
@@ -193,8 +222,9 @@ class Store:
         conn = self.connect()
         try:
             row = conn.execute(
-                """SELECT s.token_hash,s.player_id,s.expires,p.name
+                """SELECT s.token_hash,s.player_id,s.expires,p.name,a.display_name AS account_name
                    FROM sessions s JOIN players p ON p.id=s.player_id
+                   LEFT JOIN accounts a ON a.player_id=p.id
                    WHERE s.token_hash=?""",
                 (self.hash_token(raw_token),),
             ).fetchone()
@@ -203,7 +233,14 @@ class Store:
             if row["expires"] <= now:
                 conn.execute("DELETE FROM sessions WHERE token_hash=?", (row["token_hash"],))
                 return None
-            return {"id": row["player_id"], "name": row["name"]}
+            has_account = row["account_name"] is not None
+            return {
+                "id": row["player_id"],
+                "name": row["name"],
+                "username": row["account_name"],
+                "account": has_account,
+                "needs_claim": not has_account,
+            }
         finally:
             conn.close()
 
@@ -239,31 +276,130 @@ class Store:
         finally:
             conn.close()
 
-    def create_session(self, name, now):
-        player_id = uuid.uuid4().hex
+    def verify_room_password(self, password):
+        if not isinstance(password, str) or len(password) > 4096:
+            return False
+        conn = self.connect()
+        try:
+            salt_row = conn.execute(
+                "SELECT value FROM meta WHERE key='password_salt'"
+            ).fetchone()
+            verifier_row = conn.execute(
+                "SELECT value FROM meta WHERE key='password_verifier'"
+            ).fetchone()
+            if salt_row is None or verifier_row is None:
+                return False
+            try:
+                salt = bytes.fromhex(salt_row["value"])
+            except ValueError:
+                return False
+            candidate = self._password_verifier(password, salt)
+            return hmac.compare_digest(candidate, verifier_row["value"])
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _account_player(player_id, display_name):
+        return {
+            "id": player_id,
+            "name": display_name,
+            "username": display_name,
+            "account": True,
+            "needs_claim": False,
+        }
+
+    def _issue_session(self, conn, player_id, now):
+        conn.execute("DELETE FROM sessions WHERE expires <= ?", (now,))
+        active = conn.execute(
+            "SELECT COUNT(*) AS n FROM sessions WHERE expires > ?", (now,),
+        ).fetchone()["n"]
+        if active >= MAX_SESSIONS:
+            raise AppError(503, "capacity", "The app is at its session limit. Try again later.")
         token = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT INTO sessions(token_hash,player_id,created,expires) VALUES(?,?,?,?)",
+            (self.hash_token(token), player_id, now, now + SESSION_TTL),
+        )
+        return token
+
+    def create_account(self, username, display_name, password, now, legacy_player_id=None):
+        salt = secrets.token_bytes(16)
+        verifier = self._password_verifier(password, salt)
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM sessions WHERE expires <= ?", (now,))
-            active = conn.execute("SELECT COUNT(*) AS n FROM sessions WHERE expires > ?", (now,)).fetchone()["n"]
-            if active >= MAX_SESSIONS:
-                conn.rollback()
-                raise AppError(503, "capacity", "The app is at its session limit. Try again later.")
-            conn.execute("INSERT INTO players(id,name,created) VALUES(?,?,?)",
-                         (player_id, name, now))
+            if conn.execute(
+                "SELECT 1 FROM accounts WHERE username=?", (username,),
+            ).fetchone():
+                raise AppError(409, "username_taken", "That username is already registered.")
+            if legacy_player_id is None:
+                player_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO players(id,name,created) VALUES(?,?,?)",
+                    (player_id, display_name, now),
+                )
+            else:
+                player_id = legacy_player_id
+                legacy = conn.execute(
+                    "SELECT id FROM players WHERE id=?", (player_id,),
+                ).fetchone()
+                if legacy is None:
+                    raise AppError(409, "legacy_identity_missing", "This old seat can no longer be claimed.")
+                if conn.execute(
+                    "SELECT 1 FROM accounts WHERE player_id=?", (player_id,),
+                ).fetchone():
+                    raise AppError(409, "account_exists", "This seat already has an account.")
+                conn.execute("UPDATE players SET name=? WHERE id=?", (display_name, player_id))
             conn.execute(
-                "INSERT INTO sessions(token_hash,player_id,created,expires) VALUES(?,?,?,?)",
-                (self.hash_token(token), player_id, now, now + SESSION_TTL),
+                """INSERT INTO accounts
+                   (username,display_name,player_id,password_salt,password_verifier,created)
+                   VALUES(?,?,?,?,?,?)""",
+                (username, display_name, player_id, salt.hex(), verifier, now),
             )
+            token = None if legacy_player_id is not None else self._issue_session(conn, player_id, now)
             conn.commit()
+            return self._account_player(player_id, display_name), token
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
             raise
         finally:
             conn.close()
-        return {"id": player_id, "name": name}, token
+
+    def login_account(self, username, password, now):
+        if not isinstance(password, str) or len(password) > 256:
+            password = ""
+        conn = self.connect()
+        try:
+            row = conn.execute(
+                """SELECT a.player_id,a.display_name,a.password_salt,a.password_verifier
+                   FROM accounts a WHERE a.username=?""",
+                (username,),
+            ).fetchone()
+            if row is None:
+                salt = bytes(16)
+                expected = "0" * 64
+            else:
+                try:
+                    salt = bytes.fromhex(row["password_salt"])
+                except ValueError:
+                    salt = bytes(16)
+                expected = row["password_verifier"]
+            candidate = self._password_verifier(password, salt)
+            if row is None or not hmac.compare_digest(candidate, expected):
+                return None
+            conn.execute("BEGIN IMMEDIATE")
+            player_id = row["player_id"]
+            player = self._account_player(player_id, row["display_name"])
+            token = self._issue_session(conn, player_id, now)
+            conn.commit()
+            return player, token
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def logout(self, raw_token):
         if not raw_token:
@@ -291,6 +427,7 @@ class Store:
                 "INSERT INTO tables(id,owner_id,state,created,updated) VALUES(?,?,?,?,?)",
                 (table_id, owner["id"], _json_dumps(state), now, now),
             )
+            tournament_history.record_table_created(conn, state, owner["id"], now)
             conn.commit()
         except Exception:
             if conn.in_transaction:
@@ -325,6 +462,7 @@ class Store:
                 conn.rollback()
                 raise AppError(404, "table_not_found", "Table not found.")
             original = json.loads(row["state"])
+            previous = copy.deepcopy(original)
             advanced = engine.advance(original, now)
             advanced_json = _json_dumps(advanced)
             try:
@@ -334,6 +472,8 @@ class Store:
                 if advanced_json != row["state"]:
                     conn.execute("UPDATE tables SET state=?,updated=? WHERE id=?",
                                  (advanced_json, now, table_id))
+                    tournament_history.sync_state(conn, previous, now)
+                    tournament_history.sync_state(conn, advanced, now)
                     conn.commit()
                 else:
                     conn.rollback()
@@ -342,12 +482,31 @@ class Store:
             if final_json != row["state"]:
                 conn.execute("UPDATE tables SET state=?,updated=? WHERE id=?",
                              (final_json, now, table_id))
+            if final_json != row["state"] or advanced_json != row["state"]:
+                tournament_history.sync_state(conn, previous, now)
+                if advanced_json != row["state"]:
+                    tournament_history.sync_state(conn, advanced, now)
+                tournament_history.sync_state(conn, state, now)
             conn.commit()
             return state
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
             raise
+        finally:
+            conn.close()
+
+    def list_history(self, player_id, offset=0):
+        conn = self.connect()
+        try:
+            return tournament_history.list_for_player(conn, player_id, offset)
+        finally:
+            conn.close()
+
+    def get_history(self, table_id, player_id, offset=0):
+        conn = self.connect()
+        try:
+            return tournament_history.get_for_player(conn, table_id, player_id, offset)
         finally:
             conn.close()
 
@@ -411,8 +570,26 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         if not parsed.path.startswith(BASE_PATH):
             raise AppError(404, "not_found", "Not found.")
-        if parsed.query or parsed.fragment:
-            raise AppError(400, "invalid_url", "Query strings are not supported.")
+        if parsed.fragment:
+            raise AppError(400, "invalid_url", "Fragments are not supported.")
+        self.request_offset = 0
+        if parsed.query:
+            history_route = (
+                parsed.path == "/poker/api/history"
+                or re.fullmatch(r"/poker/api/history/[a-f0-9]{32}", parsed.path)
+            )
+            if self.command != "GET" or not history_route:
+                raise AppError(400, "invalid_url", "Query strings are not supported here.")
+            try:
+                query = parse_qs(parsed.query, strict_parsing=True, keep_blank_values=True)
+            except ValueError as exc:
+                raise AppError(400, "invalid_url", "Invalid history pagination.") from exc
+            if set(query) != {"offset"} or len(query["offset"]) != 1:
+                raise AppError(400, "invalid_url", "Use one numeric history offset.")
+            raw_offset = query["offset"][0]
+            if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
+                raise AppError(400, "invalid_url", "Invalid history offset.")
+            self.request_offset = int(raw_offset)
         host = self.headers.get("Host", "").strip().lower()
         if host != self.app.public_netloc:
             raise AppError(421, "misdirected_request", "Request host is not configured.")
@@ -466,10 +643,12 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self.app.store.authenticate(cookie_token), cookie_token
 
-    def _require_player(self):
+    def _require_player(self, require_account=True):
         session = self._player()
         if not session or not session[0]:
             raise AppError(401, "authentication_required", "Please sign in.")
+        if require_account and not session[0].get("account"):
+            raise AppError(403, "account_required", "Create or claim a personal account to continue.")
         return session[0], session[1]
 
     def _require_csrf(self, token):
@@ -514,6 +693,54 @@ class Handler(BaseHTTPRequestHandler):
         return value
 
     @staticmethod
+    def _username(value, error_code="invalid_username"):
+        if not isinstance(value, str):
+            raise AppError(400, error_code, "Choose a username.")
+        display = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,23}", display):
+            raise AppError(
+                400, error_code,
+                "Usernames must be 3 to 24 letters, numbers, periods, underscores, or hyphens.",
+            )
+        return display.lower(), display
+
+    @staticmethod
+    def _password(value, registration=False):
+        if not isinstance(value, str):
+            raise AppError(400, "invalid_password", "Enter your account password.")
+        if registration and not 10 <= len(value) <= 256:
+            raise AppError(400, "invalid_password", "Passwords must be 10 to 256 characters.")
+        if not registration and len(value) > 256:
+            raise AppError(400, "invalid_password", "Passwords must be 256 characters or fewer.")
+        return value
+
+    @staticmethod
+    def _payout_percentages(value):
+        if not isinstance(value, (list, tuple)) or not 1 <= len(value) <= 9:
+            raise AppError(400, "invalid_payout_percentages",
+                           "Choose 1 to 9 whole-number payout percentages.")
+        return [
+            Handler._integer(item, "payout_percentages", 0, 100)
+            for item in value
+        ]
+
+    def _session_response(self, status, player, token, set_cookie=True):
+        payload = {
+            "authenticated": True,
+            "csrf": self.app.store.csrf_token(token),
+            "session_proof": self.app.store.session_proof(token),
+            "player": player,
+        }
+        headers = None
+        if set_cookie:
+            cookie = ("%s=%s; Path=/poker/; HttpOnly; SameSite=Strict; Max-Age=%d" %
+                      (COOKIE_NAME, token, SESSION_TTL))
+            if self.app.secure_cookie:
+                cookie += "; Secure"
+            headers = {"Set-Cookie": cookie}
+        self._json(status, payload, headers)
+
+    @staticmethod
     def _display_name(value):
         if not isinstance(value, str):
             raise AppError(400, "invalid_name", "Choose a display name.")
@@ -555,12 +782,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, body, "text/html; charset=utf-8",
                            {"Content-Security-Policy": csp})
                 return
-            if path in ("/poker/app.js", "/poker/style.css"):
-                name = "app.js" if path.endswith(".js") else "style.css"
-                content_type = ("text/javascript; charset=utf-8" if name.endswith(".js")
-                                else "text/css; charset=utf-8")
+            assets = {
+                "/poker/seat-layout.js": ("seat-layout.js", "text/javascript; charset=utf-8"),
+                "/poker/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                "/poker/style.css": ("style.css", "text/css; charset=utf-8"),
+                "/poker/room.css": ("room.css", "text/css; charset=utf-8"),
+                "/poker/ace.svg": ("ace.svg", "image/svg+xml"),
+                "/poker/security.html": ("security.html", "text/html; charset=utf-8"),
+            }
+            if path in assets:
+                name, content_type = assets[path]
                 body = (Path(__file__).parent / "static" / name).read_bytes()
-                self._send(200, body, content_type)
+                headers = {}
+                if name in ("security.html",):
+                    headers["Content-Security-Policy"] = (
+                        "default-src 'self'; script-src 'self'; style-src 'self'; "
+                        "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
+                        "form-action 'self'; frame-ancestors 'none'"
+                    )
+                self._send(200, body, content_type, headers)
                 return
             if path == "/poker/api/me":
                 session = self._player()
@@ -570,9 +810,25 @@ class Handler(BaseHTTPRequestHandler):
                 player, token = session
                 self._json(200, {
                     "authenticated": True,
+                    "needs_claim": player.get("needs_claim", False),
                     "csrf": self.app.store.csrf_token(token),
                     "player": player,
                 })
+                return
+            if path == "/poker/api/history":
+                player, _ = self._require_player()
+                history_page = self.app.store.list_history(player["id"], self.request_offset)
+                self._json(200, history_page)
+                return
+            match = re.fullmatch(r"/poker/api/history/([a-f0-9]{32})", path)
+            if match:
+                player, _ = self._require_player()
+                history_page = self.app.store.get_history(
+                    match.group(1), player["id"], self.request_offset,
+                )
+                if history_page is None:
+                    raise AppError(404, "history_not_found", "Tournament history not found.")
+                self._json(200, history_page)
                 return
             if path == "/poker/api/tables":
                 player, _ = self._require_player()
@@ -602,11 +858,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             now = time.time()
 
-            if path == "/poker/api/login":
-                name = self._display_name(body.get("name"))
-                password = body.get("password")
-                if not isinstance(password, str) or len(password) > 4096:
-                    password = ""
+            if path == "/poker/api/register":
                 client_key = self._client_key()
                 retry = self.app.store.login_allowed(client_key, now)
                 if retry:
@@ -614,25 +866,78 @@ class Handler(BaseHTTPRequestHandler):
                                                "message": "Too many sign-in attempts. Try again later."}},
                                {"Retry-After": str(retry)})
                     return
-                if not hmac.compare_digest(password.encode("utf-8"),
-                                           self.app.operator_password.encode("utf-8")):
+                current = self._player()
+                if current and current[0]:
+                    code = "claim_required" if current[0].get("needs_claim") else "account_exists"
+                    message = ("Claim this existing seat to keep its history." if code == "claim_required"
+                               else "Sign out before registering another account.")
+                    raise AppError(409, code, message)
+                if not self.app.store.verify_room_password(body.get("room_password")):
+                    self.app.store.record_failed_login(client_key, now)
+                    self._error(401, "invalid_credentials", "Sign-in failed.")
+                    return
+                username, display_name = self._username(body.get("username"))
+                password = self._password(body.get("password"), registration=True)
+                player, token = self.app.store.create_account(
+                    username, display_name, password, now,
+                )
+                self.app.store.clear_failed_logins(client_key)
+                self._session_response(201, player, token)
+                return
+
+            if path == "/poker/api/login":
+                client_key = self._client_key()
+                retry = self.app.store.login_allowed(client_key, now)
+                if retry:
+                    self._json(429, {"error": {"code": "login_throttled",
+                                               "message": "Too many sign-in attempts. Try again later."}},
+                               {"Retry-After": str(retry)})
+                    return
+                raw_username = body.get("username")
+                username = (
+                    raw_username.lower()
+                    if isinstance(raw_username, str)
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,23}", raw_username.strip())
+                    else ""
+                )
+                password = body.get("password")
+                if not isinstance(password, str) or len(password) > 256:
+                    password = ""
+                result = self.app.store.login_account(username, password, now)
+                if result is None:
                     self.app.store.record_failed_login(client_key, now)
                     self._error(401, "invalid_credentials", "Sign-in failed.")
                     return
                 self.app.store.clear_failed_logins(client_key)
-                player, token = self.app.store.create_session(name, now)
-                cookie = ("%s=%s; Path=/poker/; HttpOnly; SameSite=Strict; Max-Age=%d" %
-                          (COOKIE_NAME, token, SESSION_TTL))
-                if self.app.secure_cookie:
-                    cookie += "; Secure"
-                self._json(200, {"authenticated": True,
-                                 "csrf": self.app.store.csrf_token(token),
-                                 "session_proof": self.app.store.session_proof(token),
-                                 "player": player},
-                           {"Set-Cookie": cookie})
+                self._session_response(200, result[0], result[1])
                 return
 
-            player, token = self._require_player()
+            if path == "/poker/api/claim":
+                player, token = self._require_player(require_account=False)
+                self._require_csrf(token)
+                if player.get("account"):
+                    raise AppError(409, "account_exists", "This seat already has an account.")
+                client_key = self._client_key()
+                retry = self.app.store.login_allowed(client_key, now)
+                if retry:
+                    self._json(429, {"error": {"code": "login_throttled",
+                                               "message": "Too many sign-in attempts. Try again later."}},
+                               {"Retry-After": str(retry)})
+                    return
+                if not self.app.store.verify_room_password(body.get("room_password")):
+                    self.app.store.record_failed_login(client_key, now)
+                    self._error(401, "invalid_credentials", "Sign-in failed.")
+                    return
+                username, display_name = self._username(body.get("username"))
+                password = self._password(body.get("password"), registration=True)
+                claimed, _ = self.app.store.create_account(
+                    username, display_name, password, now, legacy_player_id=player["id"],
+                )
+                self.app.store.clear_failed_logins(client_key)
+                self._session_response(200, claimed, token, set_cookie=False)
+                return
+
+            player, token = self._require_player(require_account=False)
             self._require_csrf(token)
 
             if path == "/poker/api/logout":
@@ -642,6 +947,10 @@ class Handler(BaseHTTPRequestHandler):
                             "=; Path=/poker/; HttpOnly; SameSite=Strict; Max-Age=0" +
                             ("; Secure" if self.app.secure_cookie else "")})
                 return
+
+            if not player.get("account"):
+                raise AppError(403, "account_required",
+                               "Claim this legacy seat or sign in with a personal account.")
 
             if path == "/poker/api/tables":
                 name = body.get("name")
@@ -660,6 +969,13 @@ class Handler(BaseHTTPRequestHandler):
                     "level_minutes": body.get("level_minutes"),
                     "turn_seconds": self._integer(body.get("turn_seconds", engine.TURN_SECONDS), "turn_seconds", 1, engine.MAX_TIMER_SECONDS),
                     "runout_seconds": body.get("runout_seconds", engine.RUNOUT_SECONDS),
+                    "buy_in": self._integer(
+                        body.get("buy_in", engine.DEFAULT_BUY_IN),
+                        "buy_in", 0, engine.MAX_CHIPS,
+                    ),
+                    "payout_percentages": self._payout_percentages(
+                        body.get("payout_percentages", list(engine.DEFAULT_PAYOUT_PERCENTAGES)),
+                    ),
                 }
                 if config["small_blind"] >= config["big_blind"] or config["big_blind"] > config["starting_stack"]:
                     raise AppError(400, "invalid_blinds", "Blinds must increase and the big blind must fit the starting stack.")
@@ -695,6 +1011,7 @@ class Handler(BaseHTTPRequestHandler):
                     "starting_stack": (100, 1_000_000_000),
                     "small_blind": (1, 1_000_000_000),
                     "big_blind": (2, 1_000_000_000),
+                    "buy_in": (0, engine.MAX_CHIPS),
                     "turn_seconds": (1, engine.MAX_TIMER_SECONDS),
                 }
                 settings = {
@@ -705,6 +1022,10 @@ class Handler(BaseHTTPRequestHandler):
                 for duration in ("level_minutes", "runout_seconds"):
                     if duration in body:
                         settings[duration] = body[duration]  # Numeric ranges are validated by the engine.
+                if "payout_percentages" in body:
+                    settings["payout_percentages"] = self._payout_percentages(
+                        body["payout_percentages"],
+                    )
                 table_name = None
                 if "name" in body:
                     table_name = body["name"]

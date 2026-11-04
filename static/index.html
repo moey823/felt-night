@@ -5,24 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111c19">
   <title>Sit & Go — Private play-money poker</title>
+  <link rel="icon" type="image/svg+xml" href="/poker/ace.svg">
   <link rel="stylesheet" href="/poker/style.css">
+  <link rel="stylesheet" href="/poker/room.css">
+  <script defer src="/poker/seat-layout.js"></script>
   <script defer src="/poker/app.js"></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <a class="brand" href="/poker/" aria-label="Sit and Go home">
-        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <img class="ace-brand" src="/poker/ace.svg" alt="" width="42" height="42">
         <span class="brand-copy">
           <strong>Sit &amp; Go</strong>
           <small>PRIVATE PLAY-MONEY POKER</small>
         </span>
       </a>
       <div class="topbar-right">
+        <a class="room-link" href="/poker/security.html">Fair play</a>
         <span class="privacy-chip"><span class="privacy-dot"></span>Private room</span>
         <div id="identity" class="identity" hidden>
           <span class="identity-avatar" id="identity-avatar" aria-hidden="true">♠</span>
           <span id="welcome-name" class="welcome-name"></span>
+          <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
           <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
         </div>
       </div>
@@ -30,6 +35,7 @@
 
     <main>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title"><div class="section-heading"><div><div class="panel-kicker">PLAYER RECORD</div><h2 id="history-title">My history</h2></div><button type="button" class="button button-quiet button-small" id="history-close">Close</button></div><div id="history-content" aria-live="polite"></div></dialog>
       <dialog id="allInConfirm" class="all-in-confirm" aria-labelledby="allInConfirmTitle" aria-describedby="allInConfirmDescription">
         <div class="all-in-confirm-content">
           <div class="panel-kicker">WHOLE STACK ACTION</div>
@@ -49,7 +55,7 @@
           <p>A private place to run a no-limit Texas Hold’em sit-and-go. Play chips only, with the table and the cards handled here.</p>
           <div class="login-note">
             <span class="note-icon" aria-hidden="true">♧</span>
-            <span>Freezeout format <i>·</i> No buy-ins <i>·</i> No cash prizes</span>
+            <span>Freezeout format <i>·</i> Play chips <i>·</i> No cash prizes</span>
           </div>
           <div class="decor-card decor-card-one" aria-hidden="true"><b>A</b><span>♠</span></div>
           <div class="decor-card decor-card-two" aria-hidden="true"><b>K</b><span>♥</span></div>
@@ -58,16 +64,18 @@
         <div class="login-card panel">
           <div class="panel-kicker">YOUR PRIVATE ROOM</div>
           <h2>Take a seat</h2>
-          <p class="muted">Use the room password and choose the name your friends will see.</p>
+          <p class="muted">Sign in to return to your seat and view your tournament history.</p>
           <form id="login-form" autocomplete="on">
-            <label for="login-name">Table name</label>
-            <input id="login-name" name="name" type="text" maxlength="24" autocomplete="nickname" placeholder="e.g. River" required>
-            <label for="login-password">Room password</label>
-            <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Enter the private room password" required>
+            <label for="login-name">Username</label>
+            <input id="login-name" name="name" type="text" maxlength="24" autocomplete="username" placeholder="e.g. River" required>
+            <label for="login-password">Your password</label>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Your account password" required>
+            <div id="auth-room" class="auth-room" hidden><label for="room-password">Room invite password</label><input id="room-password" type="password" autocomplete="off"></div>
             <button class="button button-primary button-wide" type="submit">
-              <span>Enter the room</span><span aria-hidden="true">↗</span>
+              <span>Sign in</span><span aria-hidden="true">↗</span>
             </button>
           </form>
+          <button type="button" id="auth-switch" class="button button-quiet auth-switch">Create an account</button>
           <div class="login-card-foot"><span class="lock-icon" aria-hidden="true">▣</span> Your session stays on this device</div>
         </div>
       </section>
@@ -82,6 +90,7 @@
           <div class="dashboard-mark" aria-hidden="true"><span>♠</span><span>♥</span><span>♦</span><span>♣</span></div>
         </div>
 
+        <nav class="lobby-switch" aria-label="Lobby views"><button id="open-games-tab" type="button" class="button" aria-pressed="true">Open games</button><button id="create-game-tab" type="button" class="button" aria-pressed="false">Create game</button></nav>
         <div class="dashboard-grid">
           <aside class="sidebar">
             <section class="panel create-panel" aria-labelledby="create-title">
@@ -93,6 +102,8 @@
                 <span class="section-icon" aria-hidden="true">＋</span>
               </div>
               <form id="create-form" class="create-form">
+<label for="buy-in">Buy-in (play credits)</label><input id="buy-in" type="number" min="0" max="1000000000" step="1" value="10" required>
+                <label for="payout">Payouts by place (%)</label><input id="payout" type="text" maxlength="48" value="60, 25, 15" required aria-describedby="payout-tip"><small id="payout-tip" class="muted">Enter shares from first place down, totaling 100%.</small>
                 <label for="table-name">Table name</label>
                 <input id="table-name" name="name" type="text" maxlength="40" value="Friends Sit &amp; Go" required>
                 <div class="form-row">
@@ -134,7 +145,7 @@
                     <input id="turn-seconds" name="turn_seconds" type="number" min="1" max="3600" step="1" value="30" required>
                   </div>
                 </div>
-                <label for="runout-seconds">All-in card delay (seconds)</label>
+                <label for="runout-seconds">All-in street delay (seconds)</label>
                 <input id="runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required>
                 <button class="button button-primary button-wide" type="submit">
                   <span>Create table</span><span aria-hidden="true">↗</span>
@@ -204,11 +215,11 @@
                     <div id="street-label" class="street-label"></div>
                   </div>
                   <div id="chip-layer" class="chip-layer" aria-hidden="true"></div>
+                  <section id="action-panel" class="action-panel" aria-labelledby="action-title" hidden>
+                    <h3 id="action-title" class="visually-hidden">Betting actions</h3>
+                    <div id="action-controls" class="action-controls"></div>
+                  </section>
                 </div>
-                <section id="action-panel" class="action-panel" aria-labelledby="action-title" hidden>
-                  <h3 id="action-title" class="visually-hidden">Betting actions</h3>
-                  <div id="action-controls" class="action-controls"></div>
-                </section>
                 <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
@@ -244,6 +255,8 @@
                   <span class="settings-lock-icon" aria-hidden="true">⚙</span>
                 </div>
                 <div class="settings-grid">
+<div class="settings-field"><label for="settings-buy-in">Buy-in (play credits)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
+                  <div class="settings-field"><label for="settings-payout">Payouts by place (%)</label><input id="settings-payout" type="text" maxlength="48" value="60, 25, 15" required aria-describedby="settings-payout-tip"><small id="settings-payout-tip" class="muted">Enter shares from first place down, totaling 100%.</small></div>
                   <div class="settings-field settings-name-field">
                     <label for="settings-table-name">Table name</label>
                     <input id="settings-table-name" type="text" maxlength="40" required>
@@ -277,7 +290,7 @@
                     <input id="settings-turn-seconds" type="number" min="1" max="3600" step="1" required>
                   </div>
                   <div class="settings-field">
-                    <label for="settings-runout-seconds">All-in card delay (seconds)</label>
+                    <label for="settings-runout-seconds">All-in street delay (seconds)</label>
                     <input id="settings-runout-seconds" type="number" min="1" max="3600" step="any" required>
                   </div>
                 </div>
@@ -295,7 +308,7 @@
                   </div>
                   <button id="dismiss-results-button" class="button button-quiet button-small" type="button" aria-label="Dismiss final standings">Close</button>
                 </div>
-                <p id="results-description" class="muted">Final places and chip stacks for this freezeout.</p>
+                <p id="results-description" class="muted">Final places and play-money payouts.</p>
                 <div id="results-list" class="results-list" role="list" tabindex="0"></div>
               </section>
 
@@ -313,7 +326,7 @@
                   <ul>
                     <li>One starting stack, no rebuys or re-entry.</li>
                     <li>Blinds double when the level clock expires.</li>
-                    <li>Play chips only. No buy-ins or cash prizes.</li>
+                    <li>Play chips only. No cash prizes.</li>
                   </ul>
                 </section>
               </div>

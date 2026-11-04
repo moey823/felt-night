@@ -222,22 +222,25 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(all("cards" in seat for seat in view["seats"]))
         self.assertEqual(view["runout_odds"], hand["runout_odds"])
 
-        expected_streets = ["flop", "flop", "flop", "turn", "river"]
-        for index, expected_street in enumerate(expected_streets, 1):
+        expected_streets = ["flop", "turn", "river"]
+        expected_board_sizes = [3, 4, 5]
+        expected_new_cards = [3, 1, 1]
+        for index, expected_street in enumerate(expected_streets):
             due = hand["runout_at"]
             engine.advance(state, now=due - 0.01)
-            self.assertEqual(len(hand["board"]), index - 1)
+            self.assertEqual(len(hand["board"]), [0, 3, 4][index])
             engine.advance(state, now=due)
             card_event = next(
                 event for event in reversed(hand["events"])
                 if event["type"] == "street"
             )
             self.assertEqual(card_event["street"], expected_street)
-            self.assertEqual(len(hand["board"]), index)
-            self.assertEqual(len(card_event["new_cards"]), 1)
-            self.assertEqual(card_event["runout_card_index"], index)
+            self.assertEqual(len(hand["board"]), expected_board_sizes[index])
+            self.assertEqual(len(card_event["new_cards"]), expected_new_cards[index])
+            self.assertEqual(card_event["runout_card_index"], expected_board_sizes[index])
+            self.assertEqual(card_event["runout_card_total"], 5)
             self.assertEqual(len(card_event["runout_odds"]), 2)
-            if index < 5:
+            if index < len(expected_streets) - 1:
                 self.assertEqual(hand["street"], expected_street)
                 self.assertEqual(hand["runout_at"], due + delay)
             else:
@@ -518,6 +521,167 @@ class EngineTests(unittest.TestCase):
         )
         payouts = engine._split_side_pots(state, hand, now=5)
         self.assertEqual(payouts, {"p1": 50, "p2": 51, "p3": 0})
+
+    def test_buy_in_and_payout_settings_validate_and_serialize(self):
+        state = engine.create_lobby("defaults", "p1", "Ada", config(), now=1)
+        self.assertEqual(state["config"]["buy_in"], 10)
+        self.assertEqual(state["config"]["payout_percentages"], [60, 25, 15])
+        view = engine.public_view(state, "p1")
+        self.assertEqual(view["config"]["buy_in"], 10)
+        self.assertEqual(view["config"]["payout_percentages"], [60, 25, 15])
+        summary = engine.summary(state, "p1")
+        self.assertEqual(summary["buy_in"], 10)
+        self.assertEqual(summary["payout_percentages"], [60, 25, 15])
+        self.assertEqual(summary["entrant_count"], 1)
+        self.assertEqual(summary["prize_pool_cents"], 1000)
+
+        nine_places = [25, 20, 15, 10, 8, 7, 6, 5, 4]
+        engine.update_settings(state, "p1", {
+            "buy_in": 0,
+            "payout_percentages": nine_places,
+        }, now=2)
+        self.assertEqual(state["config"]["buy_in"], 0)
+        self.assertEqual(state["config"]["payout_percentages"], nine_places)
+        self.assertEqual(engine.summary(state)["prize_pool_cents"], 0)
+
+        invalid_schedules = [
+            [],
+            [100] * 10,
+            [60, 39],
+            [True, 99],
+            [-1, 101],
+            [50, 25, 20],
+        ]
+        for percentages in invalid_schedules:
+            with self.subTest(percentages=percentages):
+                with self.assertRaises(engine.GameError) as caught:
+                    engine.create_lobby(
+                        "bad-payout", "p1", "Ada",
+                        config(payout_percentages=percentages), now=1,
+                    )
+                self.assertEqual(caught.exception.code, "invalid_config")
+        for buy_in in (True, -1, 1.5):
+            with self.subTest(buy_in=buy_in):
+                with self.assertRaises(engine.GameError) as caught:
+                    engine.create_lobby(
+                        "bad-buyin", "p1", "Ada", config(buy_in=buy_in), now=1,
+                    )
+                self.assertEqual(caught.exception.code, "invalid_config")
+
+    def test_legacy_settings_default_without_fabricating_completed_awards(self):
+        state = engine.create_lobby("legacy", "p1", "Ada", config(), now=1)
+        state["config"].pop("buy_in")
+        state["config"].pop("payout_percentages")
+        state["status"] = "completed"
+        state["results"] = [{
+            "player_id": "p1", "name": "Ada", "place": 1, "chips": 1000,
+        }]
+
+        view = engine.public_view(state, "p1")
+        self.assertEqual(view["config"]["buy_in"], 10)
+        self.assertEqual(view["config"]["payout_percentages"], [60, 25, 15])
+        self.assertNotIn("award_cents", view["standings"][0])
+        self.assertNotIn("award_cents", view["results"][0])
+        self.assertIsNone(view["prize"])
+        self.assertIsNone(view["prize_pool_cents"])
+        self.assertIsNone(engine.summary(state)["prize_pool_cents"])
+
+        legacy_lobby = engine.create_lobby("legacy-lobby", "p1", "Ada", config(), now=1)
+        legacy_lobby["config"].pop("buy_in")
+        legacy_lobby["config"].pop("payout_percentages")
+        engine.join(legacy_lobby, "p2", "Bea", now=2)
+        engine.start(legacy_lobby, "p1", now=3)
+        self.assertEqual(legacy_lobby["config"]["buy_in"], 10)
+        self.assertEqual(legacy_lobby["prize"]["pool_cents"], 2000)
+
+    def test_tournament_awards_conserve_pool_and_combine_tied_places(self):
+        state = engine.create_lobby(
+            "awards", "p1", "Ada", config(max_seats=3), now=1
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        view = engine.public_view(state, "p1")
+        self.assertEqual(view["entrant_count"], 3)
+        self.assertEqual(view["prize_pool_cents"], 3000)
+        self.assertEqual(view["prize"]["buy_in"], 10)
+        hand = state["hand"]
+        for seat in state["seats"]:
+            seat["stack"] = 0 if seat["player_id"] in ("p2", "p3") else 1000
+        hand["stack_before"] = {"p1": 1000, "p2": 1000, "p3": 1000}
+        newly_out = engine._record_eliminations(state, hand, now=5)
+        self.assertEqual({item["player_id"]: item["place"] for item in newly_out}, {"p2": 2, "p3": 2})
+        self.assertEqual({item["award_cents"] for item in newly_out}, {600})
+        engine._set_results(state, "p1", now=6)
+
+        awards = {item["player_id"]: item["award_cents"] for item in state["results"]}
+        self.assertEqual(awards, {"p1": 1800, "p2": 600, "p3": 600})
+        self.assertEqual(sum(awards.values()), state["prize"]["pool_cents"])
+        standings = {item["player_id"]: item for item in engine.public_view(state, "p1")["standings"]}
+        self.assertEqual({player_id: row["award_cents"] for player_id, row in standings.items()}, awards)
+
+    def test_tied_award_odd_cent_uses_left_of_button_and_small_fields_renormalize(self):
+        state = engine.create_lobby(
+            "odd-award", "p1", "Ada",
+            config(max_seats=3, buy_in=1, payout_percentages=[33, 33, 34]),
+            now=1,
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        hand = state["hand"]
+        for seat in state["seats"]:
+            seat["stack"] = 0 if seat["player_id"] in ("p2", "p3") else 1000
+        hand["stack_before"] = {"p1": 1000, "p2": 1000, "p3": 1000}
+        engine._record_eliminations(state, hand, now=5)
+        tied_ids = [item["player_id"] for item in state["elimination_order"]]
+        left_of_button = next(
+            player_id for player_id in (
+                seat["player_id"] for seat in engine._clockwise_after(state, hand["button_id"])
+            ) if player_id in tied_ids
+        )
+        tie_awards = {item["player_id"]: item["award_cents"] for item in state["elimination_order"]}
+        self.assertEqual(sum(tie_awards.values()), 201)
+        self.assertEqual(tie_awards[left_of_button], 101)
+        self.assertEqual(sorted(tie_awards.values()), [100, 101])
+
+        two_player = engine.create_lobby(
+            "short-field", "p1", "Ada",
+            config(max_seats=2, buy_in=10),
+            now=1,
+        )
+        engine.join(two_player, "p2", "Bea", now=2)
+        engine.start(two_player, "p1", now=3)
+        short_hand = two_player["hand"]
+        for seat in two_player["seats"]:
+            seat["stack"] = 0 if seat["player_id"] == "p2" else 1000
+        short_hand["stack_before"] = {"p1": 1000, "p2": 1000}
+        engine._record_eliminations(two_player, short_hand, now=4)
+        engine._set_results(two_player, "p1", now=5)
+        short_awards = {item["player_id"]: item["award_cents"] for item in two_player["results"]}
+        self.assertEqual(short_awards, {"p1": 1412, "p2": 588})
+        self.assertEqual(sum(short_awards.values()), two_player["prize"]["pool_cents"])
+        self.assertEqual(engine.summary(two_player)["entrant_count"], 2)
+        self.assertEqual(engine.summary(two_player)["prize_pool_cents"], 2000)
+
+    def test_unreachable_payout_weights_award_the_pool_to_the_winner(self):
+        state = engine.create_lobby(
+            "unreachable", "p1", "Ada",
+            config(max_seats=2, buy_in=10, payout_percentages=[0, 0, 100]),
+            now=1,
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.start(state, "p1", now=3)
+        self.assertEqual(engine._prize_slot_awards(state), {1: 2000})
+        hand = state["hand"]
+        engine._seat_by_id(state, "p2")["stack"] = 0
+        engine._seat_by_id(state, "p1")["stack"] = 1000
+        hand["stack_before"] = {"p1": 1000, "p2": 1000}
+        engine._record_eliminations(state, hand, now=4)
+        engine._set_results(state, "p1", now=5)
+        awards = {item["player_id"]: item["award_cents"] for item in state["results"]}
+        self.assertEqual(awards, {"p1": 2000, "p2": 0})
+        self.assertEqual(sum(awards.values()), state["prize"]["pool_cents"])
 
     def test_invalid_config_rejected(self):
         with self.assertRaises(engine.GameError) as caught:

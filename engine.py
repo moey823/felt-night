@@ -23,6 +23,9 @@ MAX_LOG_ENTRIES = 40
 MAX_HAND_EVENTS = 128
 RUNOUT_SECONDS = 2.5
 RUNOUT_EXACT_LIMIT = 10000
+DEFAULT_BUY_IN = 10
+DEFAULT_PAYOUT_PERCENTAGES = (60, 25, 15)
+MAX_PAYOUT_PLACES = 9
 RUNOUT_SAMPLE_COUNT = 10000
 MAX_CHIPS = 1_000_000_000
 LOBBY_IDLE_SECONDS = 4 * 60 * 60
@@ -70,15 +73,18 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
 def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise GameError("invalid_config", "Table settings are required.")
-    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds"}
+    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "buy_in", "payout_percentages"}
     unknown = set(config) - allowed
     if unknown:
         raise GameError("invalid_config", "Unknown table setting: %s." % sorted(unknown)[0])
     values = dict(base or {
         "max_seats": 9, "starting_stack": 1500, "small_blind": 10,
         "big_blind": 20, "level_minutes": 10, "turn_seconds": TURN_SECONDS,
+        "buy_in": DEFAULT_BUY_IN, "payout_percentages": list(DEFAULT_PAYOUT_PERCENTAGES),
     })
     values.setdefault("runout_seconds", RUNOUT_SECONDS)  # Lobbies saved before customizable pacing.
+    values.setdefault("buy_in", DEFAULT_BUY_IN)  # Tables saved before configurable play-money buy-ins.
+    values.setdefault("payout_percentages", list(DEFAULT_PAYOUT_PERCENTAGES))
     values.update(config)
     minutes = values["level_minutes"]
     if type(minutes) not in (int, float) or not 0.01 <= minutes <= MAX_LEVEL_MINUTES:
@@ -86,6 +92,14 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
     delay = values["runout_seconds"]
     if type(delay) not in (float, int) or not 1 <= delay <= MAX_TIMER_SECONDS:
         raise GameError("invalid_config", "Time between all-in cards must be 1 to 3600 seconds.")
+    payout_percentages = values["payout_percentages"]
+    if (
+        not isinstance(payout_percentages, (list, tuple))
+        or not 1 <= len(payout_percentages) <= MAX_PAYOUT_PLACES
+        or any(type(percentage) is not int or percentage < 0 or percentage > 100 for percentage in payout_percentages)
+        or sum(payout_percentages) != 100
+    ):
+        raise GameError("invalid_config", "Payout percentages must be 1 to 9 whole-number places totaling 100.")
     result = {
         "max_seats": _integer(values["max_seats"], "Seat count", 2, MAX_SEATS),
         "starting_stack": _integer(values["starting_stack"], "Starting stack", 100, MAX_CHIPS),
@@ -94,6 +108,8 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
         "level_minutes": minutes,
         "turn_seconds": _integer(values["turn_seconds"], "Shot clock", 1, MAX_TIMER_SECONDS),
         "runout_seconds": delay,
+        "buy_in": _integer(values["buy_in"], "Buy-in", 0, MAX_CHIPS),
+        "payout_percentages": list(payout_percentages),
     }
     if result["big_blind"] < result["small_blind"]:
         raise GameError("invalid_config", "The big blind must be at least the small blind.")
@@ -265,6 +281,8 @@ def create_lobby(
             "level_minutes": level_minutes,
             "turn_seconds": turn_seconds,
             "runout_seconds": validated["runout_seconds"],
+            "buy_in": validated["buy_in"],
+            "payout_percentages": list(validated["payout_percentages"]),
         },
         "seats": [
             {
@@ -500,6 +518,15 @@ def start(
         raise GameError("need_players", "At least two players are needed to start.", 409)
 
     timestamp = _now(now)
+    # Normalize lobbies created before newer settings were introduced.
+    state["config"] = _validated_config(state.get("config", {}))
+    entrants = len(state["seats"])
+    state["prize"] = {
+        "buy_in": state["config"]["buy_in"],
+        "entrants": entrants,
+        "pool_cents": state["config"]["buy_in"] * entrants * 100,
+        "payout_percentages": list(state["config"]["payout_percentages"]),
+    }
     state["status"] = "playing"
     state["started_at"] = timestamp
     state["last_activity_at"] = timestamp
@@ -834,27 +861,28 @@ def _deal_runout_card(
     hand: Dict[str, Any],
     now: float,
 ) -> bool:
-    """Expose one board card; burn once before the flop, turn, and river."""
+    """Expose a grouped flop, then the turn and river on separate intervals."""
     previous_street = hand.get("street")
     previous_board = list(hand.get("board", []))
     board = hand.setdefault("board", [])
     count = len(board)
-    if count == 0:
-        _take_card(hand)
+    if count < 3:
+        if count == 0:
+            _take_card(hand)  # burn once before the flop
         hand["street"] = "flop"
-    elif count in (1, 2):
-        hand["street"] = "flop"
+        board.extend(_take_card(hand) for _ in range(3 - count))
     elif count == 3:
         _take_card(hand)
+        board.append(_take_card(hand))
         hand["street"] = "turn"
     elif count == 4:
         _take_card(hand)
+        board.append(_take_card(hand))
         hand["street"] = "river"
     else:
         return False
 
-    board.append(_take_card(hand))
-    _log(state, "%s card dealt." % hand["street"].capitalize(), now)
+    _log(state, "%s dealt." % hand["street"].capitalize(), now)
     odds = _refresh_runout_odds(state, hand)
     _record_event(
         state,
@@ -1629,6 +1657,9 @@ def _record_eliminations(
             group.append(newly_out[cursor])
             cursor += 1
         place = total - len(state["elimination_order"]) - len(group) + 1
+        group_awards = _prize_awards_for_group(
+            state, place, [seat["player_id"] for seat in group], hand.get("button_id")
+        )
         for seat in group:
             item = {
                 "player_id": seat["player_id"],
@@ -1641,6 +1672,8 @@ def _record_eliminations(
                 "hand_no": hand.get("number", state.get("hand_no")),
                 "eliminated_at": int(now),
             }
+            if group_awards is not None:
+                item["award_cents"] = group_awards[seat["player_id"]]
             state["elimination_order"].append(item)
             newly_recorded.append(item)
             if len(group) > 1:
@@ -1654,6 +1687,86 @@ def _record_eliminations(
             else:
                 _log(state, "%s is out in %s place." % (seat["name"], _ordinal(place)), now)
     return newly_recorded
+
+
+def _prize_slot_awards(state: Dict[str, Any]) -> Optional[Dict[int, int]]:
+    """Return exact-cent prizes by place from a tournament's start snapshot."""
+    prize = state.get("prize")
+    if not isinstance(prize, dict):
+        return None
+    pool_cents = prize.get("pool_cents")
+    entrants = prize.get("entrants")
+    percentages = prize.get("payout_percentages")
+    if (
+        type(pool_cents) is not int or pool_cents < 0
+        or type(entrants) is not int or entrants < 1
+        or not isinstance(percentages, (list, tuple))
+        or any(type(value) is not int or value < 0 for value in percentages)
+    ):
+        return None
+    paid_places = min(entrants, len(percentages))
+    weights = list(percentages[:paid_places])
+    denominator = sum(weights)
+    if not weights:
+        return {}
+    if denominator == 0:
+        # Every configured payout place is beyond this field's payable weights.
+        return {1: pool_cents}
+
+    awards = {}
+    remainders = []
+    distributed = 0
+    for place, weight in enumerate(weights, 1):
+        quotient, remainder = divmod(pool_cents * weight, denominator)
+        awards[place] = quotient
+        distributed += quotient
+        remainders.append((remainder, place))
+    # Largest remainders conserve every cent; equal remainders favor the higher place.
+    remainders.sort(key=lambda item: (-item[0], item[1]))
+    for _, place in remainders[:pool_cents - distributed]:
+        awards[place] += 1
+    return awards
+
+
+def _prize_awards_for_group(
+    state: Dict[str, Any],
+    place: int,
+    player_ids: Sequence[str],
+    button_id: Optional[str] = None,
+) -> Optional[Dict[str, int]]:
+    """Split the occupied place slots exactly, with the odd cent left of button."""
+    slot_awards = _prize_slot_awards(state)
+    if slot_awards is None:
+        return None
+    gross = sum(slot_awards.get(slot, 0) for slot in range(place, place + len(player_ids)))
+    share, odd = divmod(gross, len(player_ids)) if player_ids else (0, 0)
+    amounts = {player_id: share for player_id in player_ids}
+    order = [
+        seat["player_id"] for seat in _clockwise_after(state, button_id)
+        if seat["player_id"] in amounts
+    ]
+    order.extend(player_id for player_id in player_ids if player_id not in order)
+    for player_id in order[:odd]:
+        amounts[player_id] += 1
+    return amounts
+
+
+def _prize_summary(state: Dict[str, Any]) -> Dict[str, Optional[int]]:
+    """Return the fixed start pool or a lobby projection without inventing history."""
+    prize = state.get("prize")
+    if isinstance(prize, dict):
+        return {
+            "entrant_count": prize.get("entrants"),
+            "prize_pool_cents": prize.get("pool_cents"),
+        }
+    entrant_count = len(state.get("seats", []))
+    if state.get("status") != "lobby":
+        return {"entrant_count": entrant_count, "prize_pool_cents": None}
+    buy_in = state.get("config", {}).get("buy_in", DEFAULT_BUY_IN)
+    return {
+        "entrant_count": entrant_count,
+        "prize_pool_cents": buy_in * entrant_count * 100,
+    }
 
 
 def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1672,6 +1785,7 @@ def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "tied": bool(result.get("tied", item.get("tied", False))),
                 "tie_count": result.get("tie_count", item.get("tie_count", 1)),
                 "hand_no": item.get("hand_no"),
+                **({"award_cents": result["award_cents"]} if "award_cents" in result else {}),
             })
         return rows
 
@@ -1714,6 +1828,7 @@ def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             "tied": bool(item.get("tied", False)),
             "tie_count": item.get("tie_count", 1),
             "hand_no": item.get("hand_no"),
+            **({"award_cents": item["award_cents"]} if "award_cents" in item else {}),
         })
     return rows
 
@@ -1753,6 +1868,18 @@ def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) ->
                 "tie_count": item.get("tie_count", 1),
             }
         )
+    prize_groups: Dict[int, List[str]] = {}
+    for result in results:
+        prize_groups.setdefault(int(result.get("place", 0)), []).append(result["player_id"])
+    for place, player_ids in prize_groups.items():
+        group_results = [result for result in results if result.get("place") == place]
+        if any("award_cents" in result for result in group_results):
+            # Elimination rows already split tied places using that hand's button.
+            continue
+        group_awards = _prize_awards_for_group(state, place, player_ids, state.get("button_id"))
+        if group_awards is not None:
+            for result in group_results:
+                result["award_cents"] = group_awards[result["player_id"]]
     state["results"] = results
     state["status"] = "completed"
     _log(state, "%s wins the tournament." % winner["name"], now)
@@ -1976,7 +2103,15 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "level_minutes": state["config"]["level_minutes"],
             "turn_seconds": state["config"]["turn_seconds"],
             "runout_seconds": state["config"].get("runout_seconds", RUNOUT_SECONDS),
+            "buy_in": state["config"].get("buy_in", DEFAULT_BUY_IN),
+            "payout_percentages": list(state["config"].get("payout_percentages", DEFAULT_PAYOUT_PERCENTAGES)),
         },
+        "prize": (
+            dict(state["prize"], payout_percentages=list(state["prize"].get("payout_percentages", [])))
+            if isinstance(state.get("prize"), dict) else None
+        ),
+        "entrant_count": _prize_summary(state)["entrant_count"],
+        "prize_pool_cents": _prize_summary(state)["prize_pool_cents"],
         "blinds": {
             "level": blinds["level"],
             "small": blinds["small"],
@@ -2042,6 +2177,10 @@ def summary(
         "status": state["status"],
         "host_name": state["host_name"],
         "max_seats": state["config"]["max_seats"],
+        "buy_in": state["config"].get("buy_in", DEFAULT_BUY_IN),
+        "payout_percentages": list(state["config"].get("payout_percentages", DEFAULT_PAYOUT_PERCENTAGES)),
+        "entrant_count": _prize_summary(state)["entrant_count"],
+        "prize_pool_cents": _prize_summary(state)["prize_pool_cents"],
         "seated_count": len(state["seats"]),
         "blinds": {
             "level": blinds["level"],
