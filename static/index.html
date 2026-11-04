@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111c19">
+  <title>Sit & Go — Private play-money poker</title>
+  <link rel="stylesheet" href="/poker/style.css">
+  <script defer src="/poker/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/poker/" aria-label="Sit and Go home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span class="brand-copy">
+          <strong>Sit &amp; Go</strong>
+          <small>PRIVATE PLAY-MONEY POKER</small>
+        </span>
+      </a>
+      <div class="topbar-right">
+        <span class="privacy-chip"><span class="privacy-dot"></span>Private room</span>
+        <div id="identity" class="identity" hidden>
+          <span class="identity-avatar" id="identity-avatar" aria-hidden="true">♠</span>
+          <span id="welcome-name" class="welcome-name"></span>
+          <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <section id="login-panel" class="login-layout" aria-labelledby="login-title" hidden>
+        <div class="login-story">
+          <div class="eyebrow"><span class="eyebrow-line"></span> A table for your people</div>
+          <h1 id="login-title">Good cards.<br><em>Better company.</em></h1>
+          <p>A private place to run a no-limit Texas Hold’em sit-and-go. Play chips only, with the table and the cards handled here.</p>
+          <div class="login-note">
+            <span class="note-icon" aria-hidden="true">♧</span>
+            <span>Freezeout format <i>·</i> No buy-ins <i>·</i> No cash prizes</span>
+          </div>
+          <div class="decor-card decor-card-one" aria-hidden="true"><b>A</b><span>♠</span></div>
+          <div class="decor-card decor-card-two" aria-hidden="true"><b>K</b><span>♥</span></div>
+        </div>
+
+        <div class="login-card panel">
+          <div class="panel-kicker">YOUR PRIVATE ROOM</div>
+          <h2>Take a seat</h2>
+          <p class="muted">Use the room password and choose the name your friends will see.</p>
+          <form id="login-form" autocomplete="on">
+            <label for="login-name">Table name</label>
+            <input id="login-name" name="name" type="text" maxlength="24" autocomplete="nickname" placeholder="e.g. River" required>
+            <label for="login-password">Room password</label>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Enter the private room password" required>
+            <button class="button button-primary button-wide" type="submit">
+              <span>Enter the room</span><span aria-hidden="true">↗</span>
+            </button>
+          </form>
+          <div class="login-card-foot"><span class="lock-icon" aria-hidden="true">▣</span> Your session stays on this device</div>
+        </div>
+      </section>
+
+      <section id="app-panel" class="app-panel" hidden>
+        <div class="dashboard-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-line"></span> Private poker room</div>
+            <h1>Choose your table.</h1>
+            <p>Set up a freezeout, invite your crew, and let the cards fall.</p>
+          </div>
+          <div class="dashboard-mark" aria-hidden="true"><span>♠</span><span>♥</span><span>♦</span><span>♣</span></div>
+        </div>
+
+        <div class="dashboard-grid">
+          <aside class="sidebar">
+            <section class="panel create-panel" aria-labelledby="create-title">
+              <div class="section-heading">
+                <div>
+                  <div class="panel-kicker">START A GAME</div>
+                  <h2 id="create-title">New sit-and-go</h2>
+                </div>
+                <span class="section-icon" aria-hidden="true">＋</span>
+              </div>
+              <form id="create-form" class="create-form">
+                <label for="table-name">Table name</label>
+                <input id="table-name" name="name" type="text" maxlength="40" value="Friends Sit &amp; Go" required>
+                <div class="form-row">
+                  <div>
+                    <label for="max-seats">Seats</label>
+                    <select id="max-seats" name="max_seats">
+                      <option value="2">2 players</option>
+                      <option value="3">3 players</option>
+                      <option value="4">4 players</option>
+                      <option value="5">5 players</option>
+                      <option value="6">6 players</option>
+                      <option value="7">7 players</option>
+                      <option value="8">8 players</option>
+                      <option value="9" selected>9 players</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="starting-stack">Starting stack</label>
+                    <input id="starting-stack" name="starting_stack" type="number" min="100" max="1000000" step="100" value="1000" required>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div>
+                    <label for="small-blind">Small blind</label>
+                    <input id="small-blind" name="small_blind" type="number" min="1" max="100000" step="1" value="10" required>
+                  </div>
+                  <div>
+                    <label for="big-blind">Big blind</label>
+                    <input id="big-blind" name="big_blind" type="number" min="2" max="200000" step="1" value="20" required>
+                  </div>
+                </div>
+                <label for="level-minutes">Blind level length</label>
+                <div class="select-suffix">
+                  <select id="level-minutes" name="level_minutes">
+                    <option value="3">3 minutes</option>
+                    <option value="5" selected>5 minutes</option>
+                    <option value="8">8 minutes</option>
+                    <option value="10">10 minutes</option>
+                    <option value="15">15 minutes</option>
+                  </select>
+                  <span>Levels double automatically</span>
+                </div>
+                <button class="button button-primary button-wide" type="submit">
+                  <span>Create table</span><span aria-hidden="true">↗</span>
+                </button>
+                <p class="form-caption">Everyone starts with the same stack. No rebuys.</p>
+              </form>
+            </section>
+
+            <section class="panel tables-panel" aria-labelledby="tables-title">
+              <div class="section-heading compact">
+                <div>
+                  <div class="panel-kicker">OPEN GAMES</div>
+                  <h2 id="tables-title">Tables</h2>
+                </div>
+                <span id="table-count" class="count-badge">0</span>
+              </div>
+              <div id="table-list" class="table-list">
+                <div class="list-loading"><span class="loading-dot"></span> Finding tables…</div>
+              </div>
+            </section>
+
+            <div class="sidebar-foot">
+              <span aria-hidden="true">♢</span>
+              <p><strong>Just for fun.</strong><br>Chips have no cash value.</p>
+            </div>
+          </aside>
+
+          <section class="workspace" aria-label="Selected poker table">
+            <div id="empty-state" class="empty-state panel">
+              <div class="empty-art" aria-hidden="true">
+                <div class="empty-chip">♠</div><div class="empty-card card-red"><b>Q</b><span>♥</span></div><div class="empty-card"><b>A</b><span>♣</span></div>
+              </div>
+              <div class="panel-kicker">READY WHEN YOU ARE</div>
+              <h2>Pick a table or<br>deal a new one.</h2>
+              <p>Open a lobby to take a seat. The host starts the game when everyone’s ready.</p>
+            </div>
+
+            <div id="table-view" class="table-view" hidden>
+              <div class="table-heading">
+                <div>
+                  <div class="table-title-row">
+                    <h2 id="view-table-name"></h2>
+                    <span id="view-status" class="status-pill"></span>
+                  </div>
+                  <p id="view-table-subtitle" class="muted"></p>
+                </div>
+                <div class="table-heading-tools">
+                  <button id="copy-invite-button" class="button button-outline button-small" type="button">Copy invite link</button>
+                  <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to all tables">All tables <span aria-hidden="true">↗</span></button>
+                </div>
+              </div>
+
+              <div id="blind-strip" class="blind-strip"></div>
+
+              <div class="table-surface panel">
+                <div class="felt-topline">
+                  <span class="live-indicator"><span></span><span id="hand-status-label">TABLE LOBBY</span></span>
+                  <span id="hand-number" class="hand-number"></span>
+                </div>
+                <div id="felt" class="felt">
+                  <div id="seat-grid" class="seat-grid"></div>
+                  <div class="board-center">
+                    <div class="board-caption" id="board-caption">COMMUNITY CARDS</div>
+                    <div id="board-cards" class="board-cards"></div>
+                    <div class="pot-display"><span class="pot-icon" aria-hidden="true">◈</span><span id="pot-label">Pot</span> <strong id="pot-amount">0</strong></div>
+                    <div id="street-label" class="street-label"></div>
+                  </div>
+                </div>
+                <div class="table-bottomline">
+                  <span id="table-player-count"></span>
+                  <span id="button-caption"></span>
+                </div>
+              </div>
+
+              <div id="join-panel" class="panel join-panel" hidden>
+                <div><div class="panel-kicker">TAKE YOUR SEAT</div><h3>This table is waiting for players.</h3><p class="muted">The host starts once at least two players have joined.</p></div>
+                <button id="join-button" class="button button-primary" type="button">Join this table <span aria-hidden="true">↗</span></button>
+              </div>
+
+              <div id="lobby-seat-panel" class="panel host-panel" hidden>
+                <div><div class="panel-kicker">YOUR SEAT</div><h3>You’re in.</h3><p class="muted">The host will deal once the table is ready.</p></div>
+                <button id="leave-button" class="button button-danger" type="button">Leave lobby</button>
+              </div>
+
+              <div id="host-panel" class="panel host-panel" hidden>
+                <div><div class="panel-kicker">HOST CONTROLS</div><h3>Ready to deal?</h3><p id="host-hint" class="muted">Wait for at least two seats, then start the freezeout.</p></div>
+                <div class="host-buttons">
+                  <button id="start-button" class="button button-primary" type="button">Start game <span aria-hidden="true">↗</span></button>
+                  <button id="cancel-button" class="button button-danger button-small" type="button">Cancel table</button>
+                </div>
+              </div>
+
+              <section id="action-panel" class="action-panel panel" aria-labelledby="action-title" hidden>
+                <div class="action-head">
+                  <div>
+                    <div class="panel-kicker">YOUR TURN</div>
+                    <h3 id="action-title">Choose an action</h3>
+                  </div>
+                  <div id="turn-clock" class="turn-clock"></div>
+                </div>
+                <div id="action-controls" class="action-controls"></div>
+              </section>
+
+              <section id="wait-panel" class="panel wait-panel" hidden>
+                <span class="wait-pulse" aria-hidden="true"></span>
+                <div><strong id="wait-title">Waiting for the table</strong><p id="wait-description" class="muted"></p></div>
+              </section>
+
+              <section id="results-panel" class="panel results-panel" hidden>
+                <div class="panel-kicker">TOURNAMENT COMPLETE</div>
+                <h3>Well played.</h3>
+                <p class="muted">Final standings for this freezeout.</p>
+                <div id="results-list" class="results-list"></div>
+              </section>
+
+              <div class="lower-grid">
+                <section class="panel activity-panel" aria-labelledby="activity-title">
+                  <div class="section-heading compact">
+                    <div><div class="panel-kicker">AT THE TABLE</div><h3 id="activity-title">Recent action</h3></div>
+                    <span class="activity-icon" aria-hidden="true">⌁</span>
+                  </div>
+                  <div id="action-log" class="action-log"></div>
+                </section>
+                <section class="panel rules-panel" aria-labelledby="rules-title">
+                  <div class="panel-kicker">QUICK NOTES</div>
+                  <h3 id="rules-title">Freezeout rules</h3>
+                  <ul>
+                    <li>One starting stack, no rebuys or re-entry.</li>
+                    <li>Blinds double when the level clock expires.</li>
+                    <li>Play chips only. No buy-ins or cash prizes.</li>
+                  </ul>
+                </section>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Private tables. Play money only.</span>
+      <span>Texas Hold’em <i>·</i> No-limit <i>·</i> Freezeout</span>
+    </footer>
+  </div>
+</body>
+</html>
+
