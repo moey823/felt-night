@@ -56,6 +56,7 @@
     seatTurnClockUpdatedAt: 0,
     seatTurnClockTimer: 0,
     actionPending: null,
+    preActionPending: null,
     actionConfirmation: null,
     actionRenderKey: "",
     raiseDraftKey: "",
@@ -1297,12 +1298,13 @@
       var placeLabel = (placeCounts[place] > 1 ? "T-" : "") + place + suffix;
       var placeAria = (placeCounts[place] > 1 ? "Tied for " : "") + place + suffix + " place";
       var name = row.name || row.player_name || "Player";
-      var stack = row.chips != null ? row.chips : (row.stack != null ? row.stack : row.final_stack);
       var rowStatus = String(row.status || "").toLowerCase();
       var detail = row.detail || (place === 1 ? "Tournament winner" : (row.eliminated_at || rowStatus === "eliminated" ? "Eliminated" : (row.status || "Final result")));
+      var awardRecorded = row.award_cents != null;
+      var awardLabel = awardRecorded ? credits(row.award_cents) + " credits" : "Not recorded";
       return '<div class="result-row" role="listitem"><span class="result-place ' + (place === 1 ? "first" : "") + '" aria-label="' + esc(placeAria) + '">' + placeLabel + '</span>' +
-        '<span><span class="result-name">' + esc(name) + '</span><span class="result-detail">' + esc(row.award_cents == null ? detail : credits(row.award_cents) + ' play credits') + '</span></span>' +
-        '<span class="result-stack">' + (stack == null ? "" : chips(stack) + " chips") + '</span></div>';
+        '<span><span class="result-name">' + esc(name) + '</span><span class="result-detail">' + esc(detail) + '</span></span>' +
+        '<span class="result-award ' + (awardRecorded ? "is-recorded" : "is-unrecorded") + '" aria-label="Award: ' + esc(awardLabel) + '">' + esc(awardLabel) + '</span></div>';
     }).join("");
   }
   function actionTokenKey(view) {
@@ -1316,6 +1318,36 @@
       view.status === "playing" && viewer.can_act &&
       number(view.hand_no, 0) === intent.payload.expected_hand &&
       number(view.turn_version, 0) === intent.payload.expected_turn_version);
+  }
+
+  function checkFoldEligible(view) {
+    if (!view || view.status !== "playing") return false;
+    var street = String(view.street || "").toLowerCase();
+    var actorId = String(view.actor_id || view.to_act_id || "");
+    if (!actorId || street === "showdown") return false;
+    var viewer = view.viewer || {};
+    if (viewer.can_act) return false;
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    if (!playerId) return false;
+    var seat = (view.seats || []).find(function (item) {
+      return String(item.id || item.player_id || "") === playerId;
+    });
+    if (!seat || seat.folded || seat.is_folded || seat.all_in || seat.is_all_in || number(seat.stack, 0) <= 0) return false;
+    var holeCards = cardArray(viewer.hole_cards);
+    if (!holeCards.length) holeCards = cardArray(seat.hole_cards);
+    return holeCards.length >= 2;
+  }
+
+  function checkFoldIntentIsCurrent(intent) {
+    var view = state.tableView;
+    return Boolean(intent && String(state.activeTableId) === intent.tableId && view &&
+      actionTokenKey(view) === intent.key && checkFoldEligible(view));
+  }
+
+  function checkFoldPendingForCurrentView(view) {
+    return Boolean(state.preActionPending && view &&
+      String(state.preActionPending.tableId) === String(state.activeTableId) &&
+      state.preActionPending.key === actionTokenKey(view));
   }
 
   function dismissAllInConfirmation(restoreFocus) {
@@ -1366,7 +1398,8 @@
         : actionName + " amount";
       button.textContent = label;
       button.setAttribute("aria-label", valid ? label.replace(" · all-in", "") + " chips" + (isAllInTarget ? ", all-in" : "") : label);
-      button.disabled = Boolean(state.actionPending || state.actionConfirmation || !valid);
+      button.disabled = Boolean(state.actionPending || state.actionConfirmation ||
+        checkFoldPendingForCurrentView(view) || !valid);
     }
     byId("action-controls").querySelectorAll("[data-raise-preset]").forEach(function (preset) {
       preset.setAttribute("aria-pressed", String(number(preset.getAttribute("data-target"), -1) === target));
@@ -1378,6 +1411,16 @@
     var viewer = view.viewer || {};
     var playing = view.status === "playing";
     var canAct = playing && Boolean(viewer.can_act);
+    var currentKey = actionTokenKey(view);
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    var seat = (view.seats || []).find(function (item) {
+      return String(item.id || item.player_id || "") === playerId;
+    });
+    var stack = number(seat && seat.stack, 0);
+    var ownBet = number(seat && seat.bet, 0);
+    var canPreAct = checkFoldEligible(view);
+    var panelVisible = canAct || canPreAct;
+    var preActionPendingForCurrentView = checkFoldPendingForCurrentView(view);
 
     if (state.actionPending && state.actionPending.accepted && !actionIntentIsCurrent(state.actionPending)) {
       state.actionPending = null;
@@ -1387,20 +1430,14 @@
       showNotice("That turn changed, so the all-in confirmation was canceled. Review the updated action.", "info", false);
     }
 
-    panel.hidden = !canAct;
-    panel.setAttribute("aria-busy", String(Boolean(state.actionPending)));
-    if (!playing || !canAct) {
+    panel.hidden = !panelVisible;
+    panel.setAttribute("aria-busy", String(Boolean(state.actionPending || preActionPendingForCurrentView)));
+    if (!playing || !panelVisible) {
       state.actionRenderKey = "";
       return;
     }
 
     var toCall = number(viewer.to_call, 0);
-    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var seat = (view.seats || []).find(function (item) {
-      return String(item.id || item.player_id || "") === playerId;
-    });
-    var stack = number(seat && seat.stack, 0);
-    var ownBet = number(seat && seat.bet, 0);
     var currentBet = number(view.current_bet, 0);
     var callAmount = Math.min(stack, toCall);
     var callIsAllIn = stack > 0 && callAmount === stack && toCall > 0;
@@ -1445,16 +1482,25 @@
       };
     });
     var actionKey = JSON.stringify([
-      state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0),
+      state.activeTableId, canAct, canPreAct, number(view.hand_no, 0), number(view.turn_version, 0),
       street, number(view.pot, 0), bigBlind, presetSpecs.map(function (preset) { return preset.target; }),
       toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
       minRaise, maxRaise, hasRaiseSlider, shortAllInRaise, rangeMin, suggested
     ]);
     var controls = "";
-    if (toCall > 0) {
+    if (canPreAct) {
+      var preSelected = Boolean(viewer.check_fold_selected);
+      var preLabel = preSelected
+        ? "Check/Fold on. Automatically check when free and fold facing a bet."
+        : "Check/Fold off. Turn on to automatically check when free and fold facing a bet.";
+      controls += '<button class="button button-outline preaction-toggle" type="button" data-preaction="check-fold" aria-pressed="' +
+        String(preSelected) + '" aria-describedby="preaction-help" aria-label="' + esc(preLabel) + '">' +
+        '<span class="preaction-name">Check/Fold</span><span class="preaction-state">' + (preSelected ? "On" : "Off") + '</span></button>' +
+        '<p class="preaction-help" id="preaction-help">Checks when free; folds facing a bet.</p>';
+    } else if (toCall > 0) {
       var callLabel = "Call " + chips(callAmount) + " chips" + (callIsAllIn ? " · all-in" : "");
-      controls += '<button class="button button-outline call-button" type="button" data-poker-action="call" aria-label="' + esc(callLabel) + '">' + esc(callLabel) + '</button>';
       controls += '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>';
+      controls += '<button class="button button-outline call-button" type="button" data-poker-action="call" aria-label="' + esc(callLabel) + '">' + esc(callLabel) + '</button>';
     } else {
       controls += '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>';
     }
@@ -1489,10 +1535,21 @@
         if (newInput) newInput.focus({ preventScroll: true });
       }
     }
-    var blocked = Boolean(state.actionPending || state.actionConfirmation);
+    var blocked = Boolean(state.actionPending || state.actionConfirmation || preActionPendingForCurrentView);
     byId("action-controls").querySelectorAll("button[data-poker-action], button[data-raise-preset]").forEach(function (button) {
       if (button.getAttribute("data-poker-action") !== "raise_to") button.disabled = blocked;
     });
+    var preActionToggle = byId("action-controls").querySelector('[data-preaction="check-fold"]');
+    if (preActionToggle) {
+      var selected = Boolean(viewer.check_fold_selected);
+      var stateLabel = preActionToggle.querySelector(".preaction-state");
+      preActionToggle.setAttribute("aria-pressed", String(selected));
+      preActionToggle.setAttribute("aria-label", selected
+        ? "Check/Fold on. Automatically check when free and fold facing a bet."
+        : "Check/Fold off. Turn on to automatically check when free and fold facing a bet.");
+      preActionToggle.disabled = preActionPendingForCurrentView;
+      if (stateLabel) stateLabel.textContent = selected ? "On" : "Off";
+    }
     var raiseInput = byId("raise-amount");
     if (raiseInput) raiseInput.disabled = blocked;
     updateRaisePreview();
@@ -1694,10 +1751,26 @@
     if (!view || view.id !== tableId || state.activeTableId !== tableId) return false;
     var previous = state.tableView;
     if (previous && previous.id === tableId) {
+      var previousViewer = previous.viewer || {};
+      var incomingViewer = view.viewer || {};
+      var samePrivateView = number(view.version, 0) === number(previous.version, 0) &&
+        number(view.hand_no, 0) === number(previous.hand_no, 0) &&
+        String(incomingViewer.player_id || "") !== "" &&
+        String(incomingViewer.player_id || "") === String(previousViewer.player_id || "");
+      if (samePrivateView) {
+        var oldRevision = number(previousViewer.check_fold_revision, 0);
+        var newRevision = number(incomingViewer.check_fold_revision, 0);
+        if (newRevision < oldRevision) return false;
+        if (newRevision > oldRevision) {
+          state.tableView = view;
+          return true;
+        }
+      }
       // A poll sent before an action can arrive after its response. Never
-      // rewind the board, odds, action controls, or countdown on a late poll.
-      if (view.version < previous.version ||
-          (view.version === previous.version && view.server_now < previous.server_now)) return false;
+      // rewind the board, odds, action controls, private preference, or countdown.
+      if (number(view.version, 0) < number(previous.version, 0) ||
+          (number(view.version, 0) === number(previous.version, 0) &&
+            number(view.server_now, 0) < number(previous.server_now, 0))) return false;
     }
     state.tableView = view;
     return true;
@@ -1944,6 +2017,62 @@
       successMessage: successMessage,
       trigger: trigger
     };
+  }
+
+  async function submitCheckFoldIntent() {
+    var view = state.tableView;
+    var tableId = String(state.activeTableId || "");
+    if (checkFoldPendingForCurrentView(view)) return;
+    if (!view || !checkFoldEligible(view)) {
+      showNotice("The hand or turn changed before Check/Fold was updated. Review the table.", "info", false);
+      try { await refreshSelected(); } catch (err) {}
+      return;
+    }
+    var intent = {
+      tableId: tableId,
+      key: actionTokenKey(view),
+      payload: {
+        selected: !Boolean(view.viewer && view.viewer.check_fold_selected),
+        expected_hand: number(view.hand_no, 0),
+        expected_turn_version: number(view.turn_version, 0)
+      }
+    };
+    if (!checkFoldIntentIsCurrent(intent)) {
+      showNotice("The hand or turn changed before Check/Fold was updated. Review the table.", "info", false);
+      try { await refreshSelected(); } catch (err) {}
+      return;
+    }
+
+    state.preActionPending = intent;
+    renderActions(view);
+    try {
+      var data = await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/preaction", intent.payload);
+      if (String(state.activeTableId) !== intent.tableId || !state.tableView ||
+          actionTokenKey(state.tableView) !== intent.key) {
+        try { await refreshSelected(); } catch (refreshError) {}
+        return;
+      }
+      var updated = data.table || data;
+      if (!updated || String(updated.id || "") !== intent.tableId) {
+        try { await refreshSelected(); } catch (refreshError) {}
+        return;
+      }
+      if (adoptSnapshot(updated, intent.tableId)) renderTable();
+      else if (state.tableView) renderTable();
+    } catch (err) {
+      var stillCurrent = checkFoldIntentIsCurrent(intent);
+      if (err.status === 409) {
+        if (stillCurrent) showNotice("The hand or turn changed before Check/Fold was updated. Review the refreshed table.", "info", false);
+      } else if (stillCurrent) {
+        showNotice(err.message, "error", false);
+      }
+      try { await refreshSelected(); } catch (refreshError) {}
+    } finally {
+      if (state.preActionPending === intent) {
+        state.preActionPending = null;
+        if (state.tableView) renderActions(state.tableView);
+      }
+    }
   }
 
   async function submitActionIntent(intent) {
@@ -2361,6 +2490,12 @@
   });
 
   byId("action-controls").addEventListener("click", function (event) {
+    var preAction = event.target.closest('[data-preaction="check-fold"]');
+    if (preAction) {
+      if (preAction.disabled || checkFoldPendingForCurrentView(state.tableView)) return;
+      submitCheckFoldIntent();
+      return;
+    }
     var preset = event.target.closest("[data-raise-preset]");
     if (preset) {
       if (preset.disabled || state.actionPending || state.actionConfirmation) return;

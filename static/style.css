@@ -513,7 +513,9 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .result-place.first { background: rgba(197,227,124,.15); color: var(--green); }
 .result-name { font-weight: 650; }
 .result-detail { display: block; color: var(--faint); font-size: 8px; margin-top: 3px; }
-.result-stack { color: #d6e3d0; font-size: 9px; font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+.result-award { max-width: 112px; color: #d6e3d0; font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 750; text-align: right; }
+.result-award.is-recorded { color: var(--green); white-space: nowrap; }
+.result-award.is-unrecorded { color: var(--faint); font-size: 9px; }
 
 @media (max-width: 1080px) {
   .app-shell { padding: 0 25px; }
@@ -1090,6 +1092,51 @@ input[type=number] { font-variant-numeric: tabular-nums; }
   padding: 0 8px;
   line-height: 1.15;
   white-space: normal;
+}
+.felt > .action-panel .preaction-toggle {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  text-align: left;
+  border-color: rgba(197, 227, 124, .3);
+}
+.felt > .action-panel .preaction-toggle[aria-pressed="true"] {
+  border-color: rgba(197, 227, 124, .7);
+  background: rgba(197, 227, 124, .16);
+  color: #eff8d5;
+}
+.preaction-name { font-weight: 750; }
+.preaction-state {
+  display: inline-flex;
+  min-width: 48px;
+  min-height: 27px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border: 1px solid rgba(225, 237, 227, .2);
+  border-radius: 999px;
+  color: #b8c5ba;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.preaction-toggle[aria-pressed="true"] .preaction-state {
+  border-color: rgba(197, 227, 124, .55);
+  background: rgba(197, 227, 124, .16);
+  color: var(--green);
+}
+.felt > .action-panel .preaction-help {
+  grid-column: 1 / -1;
+  margin: -2px 2px 0;
+  color: #b6c4b9;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: center;
 }
 .felt > .action-panel .raise-control {
   display: grid;

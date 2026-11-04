@@ -249,6 +249,18 @@ def _bump(state: Dict[str, Any]) -> None:
     state["version"] += 1
 
 
+def _bump_preaction_revision(hand: Dict[str, Any], player_id: str) -> None:
+    revisions = hand.setdefault("preaction_revisions", {})
+    revisions[player_id] = int(revisions.get(player_id, 0)) + 1
+
+
+def _clear_preactions(hand: Dict[str, Any]) -> None:
+    preactions = hand.setdefault("preactions", {})
+    for player_id in list(preactions):
+        preactions.pop(player_id, None)
+        _bump_preaction_revision(hand, player_id)
+
+
 def create_lobby(
     table_id: str,
     host_id: str,
@@ -624,6 +636,8 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "contrib": {seat["player_id"]: 0 for seat in alive},
         "folded": [],
         "acted": [],
+        "preactions": {},
+        "preaction_revisions": {},
         "acted_at_bet": {},
         "short_opening": False,
         "current_bet": 0,
@@ -732,10 +746,28 @@ def _set_next_actor(state: Dict[str, Any], after_id: Optional[str], now: float) 
             _advance_street(state, now)
             return
 
+    preactions = hand.setdefault("preactions", {})
     for seat in _clockwise_after(state, after_id):
         player_id = seat["player_id"]
         if player_id in hand["holes"] and _pending(state, hand, player_id):
             _arm_turn(state, hand, player_id, now)
+            selection = preactions.get(player_id)
+            if selection is not None:
+                if (
+                    isinstance(selection, dict)
+                    and selection.get("hand_no") == hand.get("number")
+                    and selection.get("street") == hand.get("street")
+                    and not seat.get("is_bot", False)
+                ):
+                    # Consume before acting: _perform_action may recursively select
+                    # another armed player, and each selection must run only once.
+                    preactions.pop(player_id, None)
+                    _bump_preaction_revision(hand, player_id)
+                    action = "check" if _to_call(hand, player_id) == 0 else "fold"
+                    _perform_action(state, player_id, action, None, now)
+                    return
+                preactions.pop(player_id, None)
+                _bump_preaction_revision(hand, player_id)
             return
 
     _advance_street(state, now)
@@ -811,6 +843,7 @@ def _deal_next_street(state: Dict[str, Any], hand: Dict[str, Any], now: float) -
     else:
         return False
 
+    _clear_preactions(hand)
     hand["bets"] = {player_id: 0 for player_id in hand["holes"]}
     hand["current_bet"] = 0
     hand["min_raise"] = hand["big_blind"]
@@ -841,6 +874,7 @@ def _begin_runout(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> No
     _record_sweep(state, hand)
     hand["runout_swept_street"] = hand.get("street")
     _reveal_live_hands(state, hand)
+    _clear_preactions(hand)
     hand["to_act"] = None
     hand["turn_deadline"] = None
     hand["bot_action_at"] = None
@@ -1133,6 +1167,57 @@ def apply_action(
     timestamp = _now(now)
     _perform_action(state, actor_id, action, amount, timestamp)
     _bump(state)
+    return state
+
+
+def set_preaction(
+    state: Dict[str, Any],
+    player_id: str,
+    selected: bool,
+    expected_hand: int,
+    expected_turn_version: int,
+) -> Dict[str, Any]:
+    """Arm or clear a private one-shot check/fold for the current street."""
+    if isinstance(expected_hand, bool) or not isinstance(expected_hand, int) or expected_hand != state["hand_no"]:
+        raise GameError("stale_hand", "That hand has moved on. Refresh the table.", 409)
+    if isinstance(expected_turn_version, bool) or not isinstance(expected_turn_version, int) or expected_turn_version != state["turn_version"]:
+        raise GameError("stale_turn", "That turn has moved on. Refresh the table.", 409)
+    if type(selected) is not bool:
+        raise GameError("invalid_preaction", "Choose whether to arm or clear check/fold.")
+
+    hand = state.get("hand")
+    seat = _seat_by_id(state, player_id)
+    if (
+        state.get("status") != "playing"
+        or hand is None
+        or hand.get("street") == "showdown"
+        or hand.get("to_act") is None
+        or hand.get("runout_at") is not None
+        or player_id not in hand.get("holes", {})
+        or player_id in hand.get("folded", [])
+        or seat is None
+        or seat.get("is_bot", False)
+        or seat.get("stack", 0) <= 0
+        or hand.get("to_act") == player_id
+    ):
+        raise GameError(
+            "preaction_unavailable",
+            "Check/fold is available only while you are waiting to act in a live hand.",
+            409,
+        )
+
+    preactions = hand.setdefault("preactions", {})
+    current = preactions.get(player_id)
+    if selected:
+        desired = {"hand_no": hand["number"], "street": hand["street"]}
+        if current != desired:
+            preactions[player_id] = desired
+            _bump_preaction_revision(hand, player_id)
+            # Private state: keep the public table version unchanged.
+    elif player_id in preactions:
+        preactions.pop(player_id, None)
+        _bump_preaction_revision(hand, player_id)
+        # Private state: keep the public table version unchanged.
     return state
 
 
@@ -1658,7 +1743,7 @@ def _record_eliminations(
             cursor += 1
         place = total - len(state["elimination_order"]) - len(group) + 1
         group_awards = _prize_awards_for_group(
-            state, place, [seat["player_id"] for seat in group], hand.get("button_id")
+            state, place, [seat["player_id"] for seat in group]
         )
         for seat in group:
             item = {
@@ -1689,8 +1774,8 @@ def _record_eliminations(
     return newly_recorded
 
 
-def _prize_slot_awards(state: Dict[str, Any]) -> Optional[Dict[int, int]]:
-    """Return exact-cent prizes by place from a tournament's start snapshot."""
+def _prize_schedule(state: Dict[str, Any]) -> Optional[Tuple[int, List[int], int]]:
+    """Return a validated immutable prize snapshot and its payable weights."""
     prize = state.get("prize")
     if not isinstance(prize, dict):
         return None
@@ -1698,57 +1783,44 @@ def _prize_slot_awards(state: Dict[str, Any]) -> Optional[Dict[int, int]]:
     entrants = prize.get("entrants")
     percentages = prize.get("payout_percentages")
     if (
-        type(pool_cents) is not int or pool_cents < 0
+        type(pool_cents) is not int or pool_cents < 0 or pool_cents % 100 != 0
         or type(entrants) is not int or entrants < 1
         or not isinstance(percentages, (list, tuple))
-        or any(type(value) is not int or value < 0 for value in percentages)
+        or not 1 <= len(percentages) <= MAX_PAYOUT_PLACES
+        or any(type(value) is not int or value < 0 or value > 100 for value in percentages)
     ):
         return None
-    paid_places = min(entrants, len(percentages))
-    weights = list(percentages[:paid_places])
-    denominator = sum(weights)
-    if not weights:
-        return {}
-    if denominator == 0:
-        # Every configured payout place is beyond this field's payable weights.
-        return {1: pool_cents}
-
-    awards = {}
-    remainders = []
-    distributed = 0
-    for place, weight in enumerate(weights, 1):
-        quotient, remainder = divmod(pool_cents * weight, denominator)
-        awards[place] = quotient
-        distributed += quotient
-        remainders.append((remainder, place))
-    # Largest remainders conserve every cent; equal remainders favor the higher place.
-    remainders.sort(key=lambda item: (-item[0], item[1]))
-    for _, place in remainders[:pool_cents - distributed]:
-        awards[place] += 1
-    return awards
+    weights = list(percentages[:min(entrants, len(percentages))])
+    return pool_cents, weights, sum(weights)
 
 
 def _prize_awards_for_group(
     state: Dict[str, Any],
     place: int,
     player_ids: Sequence[str],
-    button_id: Optional[str] = None,
 ) -> Optional[Dict[str, int]]:
-    """Split the occupied place slots exactly, with the odd cent left of button."""
-    slot_awards = _prize_slot_awards(state)
-    if slot_awards is None:
+    """Pool tied-place weights, divide equally, then floor each share to credits."""
+    schedule = _prize_schedule(state)
+    if schedule is None:
         return None
-    gross = sum(slot_awards.get(slot, 0) for slot in range(place, place + len(player_ids)))
-    share, odd = divmod(gross, len(player_ids)) if player_ids else (0, 0)
-    amounts = {player_id: share for player_id in player_ids}
-    order = [
-        seat["player_id"] for seat in _clockwise_after(state, button_id)
-        if seat["player_id"] in amounts
-    ]
-    order.extend(player_id for player_id in player_ids if player_id not in order)
-    for player_id in order[:odd]:
-        amounts[player_id] += 1
-    return amounts
+    if not player_ids:
+        return {}
+    pool_cents, weights, denominator = schedule
+
+    pooled_weight = sum(
+        weights[slot - 1]
+        for slot in range(place, place + len(player_ids))
+        if 1 <= slot <= len(weights)
+    )
+    if denominator == 0:
+        # No reachable place has a positive weight; only the champion can win.
+        pooled_weight = 100 if place <= 1 < place + len(player_ids) else 0
+        denominator = 100
+    amount = (
+        pool_cents * pooled_weight
+        // (denominator * len(player_ids) * 100)
+    ) * 100
+    return {player_id: amount for player_id in player_ids}
 
 
 def _prize_summary(state: Dict[str, Any]) -> Dict[str, Optional[int]]:
@@ -1842,10 +1914,35 @@ def _ordinal(number: int) -> str:
 
 
 def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) -> None:
+    # Results and awards from completed games are historical records.
+    if state.get("status") == "completed":
+        return
     if winner_id is None:
         state["results"] = []
         return
     winner = _seat_by_id(state, winner_id)
+    if winner is None:
+        state["results"] = []
+        return
+
+    # A tournament may have been saved mid-game by an older engine version.
+    # Recompute its elimination awards from the tie groups before finalizing, so
+    # old cent splits do not survive beside the new whole-credit award rule.
+    schedule = _prize_schedule(state)
+    if schedule is not None:
+        grouped_eliminations: Dict[int, List[Dict[str, Any]]] = {}
+        for item in state.get("elimination_order", []):
+            place = item.get("place")
+            if type(place) is int and place >= 1:
+                grouped_eliminations.setdefault(place, []).append(item)
+        for place, group in grouped_eliminations.items():
+            group_awards = _prize_awards_for_group(
+                state, place, [item["player_id"] for item in group]
+            )
+            if group_awards is not None:
+                for item in group:
+                    item["award_cents"] = group_awards[item["player_id"]]
+
     results = []
     if winner is not None:
         results.append(
@@ -1858,28 +1955,33 @@ def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) ->
         )
     for item in reversed(state["elimination_order"]):
         seat = _seat_by_id(state, item["player_id"])
-        results.append(
-            {
-                "player_id": item["player_id"],
-                "name": item["name"],
-                "place": item["place"],
-                "chips": seat["stack"] if seat else 0,
-                "tied": bool(item.get("tied", False)),
-                "tie_count": item.get("tie_count", 1),
-            }
+        result = {
+            "player_id": item["player_id"],
+            "name": item["name"],
+            "place": item["place"],
+            "chips": seat["stack"] if seat else 0,
+            "tied": bool(item.get("tied", False)),
+            "tie_count": item.get("tie_count", 1),
+        }
+        if "award_cents" in item:
+            result["award_cents"] = item["award_cents"]
+        results.append(result)
+
+    if schedule is not None and winner is not None:
+        pool_cents = schedule[0]
+        eliminated_total = sum(
+            result["award_cents"]
+            for result in results
+            if result.get("place") != 1
+            and type(result.get("award_cents")) is int
+            and result["award_cents"] >= 0
         )
-    prize_groups: Dict[int, List[str]] = {}
-    for result in results:
-        prize_groups.setdefault(int(result.get("place", 0)), []).append(result["player_id"])
-    for place, player_ids in prize_groups.items():
-        group_results = [result for result in results if result.get("place") == place]
-        if any("award_cents" in result for result in group_results):
-            # Elimination rows already split tied places using that hand's button.
-            continue
-        group_awards = _prize_awards_for_group(state, place, player_ids, state.get("button_id"))
-        if group_awards is not None:
-            for result in group_results:
-                result["award_cents"] = group_awards[result["player_id"]]
+        winner_result = next(result for result in results if result["player_id"] == winner_id)
+        if eliminated_total <= pool_cents:
+            # The champion receives all whole credits left after every other
+            # finisher's exact tied-place share was floored.
+            winner_result["award_cents"] = pool_cents - eliminated_total
+
     state["results"] = results
     state["status"] = "completed"
     _log(state, "%s wins the tournament." % winner["name"], now)
@@ -1898,6 +2000,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
         if seat is not None:
             seat["stack"] += amount
     hand["payouts"] = payouts
+    _clear_preactions(hand)
     hand["bets"] = {player_id: 0 for player_id in hand.get("holes", {})}
     hand["current_bet"] = 0
     hand["runout_at"] = None
@@ -2054,6 +2157,24 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
                 item["cards"] = showdown_cards[player_id]
         seats.append(item)
 
+    preaction = hand.get("preactions", {}).get(viewer_id) if hand and viewer_id else None
+    check_fold_selected = bool(
+        preaction
+        and isinstance(preaction, dict)
+        and hand.get("street") != "showdown"
+        and state.get("status") == "playing"
+        and hand.get("to_act") is not None
+        and hand.get("to_act") != viewer_id
+        and hand.get("runout_at") is None
+        and viewer_id in hand.get("holes", {})
+        and viewer_id not in hand.get("folded", [])
+        and viewer_seat is not None
+        and not viewer_seat.get("is_bot", False)
+        and viewer_seat.get("stack", 0) > 0
+        and preaction.get("hand_no") == hand.get("number")
+        and preaction.get("street") == hand.get("street")
+    )
+
     blinds = state["blinds"]
     next_level = blinds["next_level_at"]
     timestamp = time.time()
@@ -2140,6 +2261,11 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "player_id": viewer_id,
             "seated": viewer_seat is not None,
             "can_act": can_act,
+            "check_fold_selected": check_fold_selected,
+            "check_fold_revision": (
+                int(hand.get("preaction_revisions", {}).get(viewer_id, 0))
+                if hand and viewer_id else 0
+            ),
             "hole_cards": hole_cards,
             "to_call": to_call,
             "raise_rights": raise_rights,

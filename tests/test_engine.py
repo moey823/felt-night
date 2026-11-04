@@ -576,6 +576,9 @@ class EngineTests(unittest.TestCase):
         state["results"] = [{
             "player_id": "p1", "name": "Ada", "place": 1, "chips": 1000,
         }]
+        legacy_results = [dict(result) for result in state["results"]]
+        engine._set_results(state, "p1", now=2)
+        self.assertEqual(state["results"], legacy_results)
 
         view = engine.public_view(state, "p1")
         self.assertEqual(view["config"]["buy_in"], 10)
@@ -620,7 +623,7 @@ class EngineTests(unittest.TestCase):
         standings = {item["player_id"]: item for item in engine.public_view(state, "p1")["standings"]}
         self.assertEqual({player_id: row["award_cents"] for player_id, row in standings.items()}, awards)
 
-    def test_tied_award_odd_cent_uses_left_of_button_and_small_fields_renormalize(self):
+    def test_tied_award_floors_whole_credits_and_small_fields_renormalize(self):
         state = engine.create_lobby(
             "odd-award", "p1", "Ada",
             config(max_seats=3, buy_in=1, payout_percentages=[33, 33, 34]),
@@ -634,16 +637,13 @@ class EngineTests(unittest.TestCase):
             seat["stack"] = 0 if seat["player_id"] in ("p2", "p3") else 1000
         hand["stack_before"] = {"p1": 1000, "p2": 1000, "p3": 1000}
         engine._record_eliminations(state, hand, now=5)
-        tied_ids = [item["player_id"] for item in state["elimination_order"]]
-        left_of_button = next(
-            player_id for player_id in (
-                seat["player_id"] for seat in engine._clockwise_after(state, hand["button_id"])
-            ) if player_id in tied_ids
-        )
         tie_awards = {item["player_id"]: item["award_cents"] for item in state["elimination_order"]}
-        self.assertEqual(sum(tie_awards.values()), 201)
-        self.assertEqual(tie_awards[left_of_button], 101)
-        self.assertEqual(sorted(tie_awards.values()), [100, 101])
+        self.assertEqual(set(tie_awards.values()), {100})
+        self.assertEqual(sum(tie_awards.values()), 200)
+        engine._set_results(state, "p1", now=6)
+        completed_awards = {item["player_id"]: item["award_cents"] for item in state["results"]}
+        self.assertEqual(completed_awards, {"p1": 100, "p2": 100, "p3": 100})
+        self.assertEqual(sum(completed_awards.values()), state["prize"]["pool_cents"])
 
         two_player = engine.create_lobby(
             "short-field", "p1", "Ada",
@@ -659,10 +659,76 @@ class EngineTests(unittest.TestCase):
         engine._record_eliminations(two_player, short_hand, now=4)
         engine._set_results(two_player, "p1", now=5)
         short_awards = {item["player_id"]: item["award_cents"] for item in two_player["results"]}
-        self.assertEqual(short_awards, {"p1": 1412, "p2": 588})
+        self.assertEqual(short_awards, {"p1": 1500, "p2": 500})
         self.assertEqual(sum(short_awards.values()), two_player["prize"]["pool_cents"])
         self.assertEqual(engine.summary(two_player)["entrant_count"], 2)
         self.assertEqual(engine.summary(two_player)["prize_pool_cents"], 2000)
+
+    def test_finalizing_in_progress_recalculates_old_ties_and_conserves_whole_credits(self):
+        state = engine.create_lobby(
+            "mid-game-payout-upgrade", "p1", "Ada",
+            config(
+                max_seats=5,
+                buy_in=3,
+                payout_percentages=[40, 30, 20, 10],
+            ),
+            now=1,
+        )
+        for player_id, name in (("p2", "Bea"), ("p3", "Cy"), ("p4", "Dee"), ("p5", "Eli")):
+            engine.join(state, player_id, name, now=2)
+        engine.start(state, "p1", now=3)
+        hand = state["hand"]
+        hand["stack_before"] = {
+            "p1": 1000, "p2": 900, "p3": 900, "p4": 800, "p5": 800,
+        }
+
+        for player_id in ("p4", "p5"):
+            engine._seat_by_id(state, player_id)["stack"] = 0
+        engine._record_eliminations(state, hand, now=4)
+        self.assertEqual(
+            {item["player_id"]: item["place"] for item in state["elimination_order"]},
+            {"p4": 4, "p5": 4},
+        )
+
+        for player_id in ("p2", "p3"):
+            engine._seat_by_id(state, player_id)["stack"] = 0
+        engine._record_eliminations(state, hand, now=5)
+        self.assertEqual(
+            {item["player_id"]: item["place"] for item in state["elimination_order"]},
+            {"p4": 4, "p5": 4, "p2": 2, "p3": 2},
+        )
+
+        # Simulate awards saved by the old cent-based tie splitter.
+        for index, item in enumerate(state["elimination_order"]):
+            item["award_cents"] = 101 + index
+        engine._set_results(state, "p1", now=6)
+
+        awards = {item["player_id"]: item["award_cents"] for item in state["results"]}
+        self.assertEqual(awards, {"p1": 900, "p2": 300, "p3": 300, "p4": 0, "p5": 0})
+        self.assertTrue(all(amount % 100 == 0 for amount in awards.values()))
+        self.assertEqual(sum(awards.values()), state["prize"]["pool_cents"])
+        self.assertEqual(
+            {item["player_id"]: item["award_cents"] for item in state["elimination_order"]},
+            {"p4": 0, "p5": 0, "p2": 300, "p3": 300},
+        )
+
+    def test_malformed_prize_snapshots_do_not_create_awards(self):
+        state = engine.create_lobby("bad-prize", "p1", "Ada", config(), now=1)
+        engine.join(state, "p2", "Bea", now=2)
+        engine.start(state, "p1", now=3)
+        valid = dict(state["prize"])
+        malformed = [
+            dict(valid, pool_cents=True),
+            dict(valid, pool_cents=1),
+            dict(valid, entrants=False),
+            dict(valid, payout_percentages=[True, 99]),
+            dict(valid, payout_percentages=[101]),
+        ]
+        for prize in malformed:
+            with self.subTest(prize=prize):
+                state["prize"] = prize
+                self.assertIsNone(engine._prize_awards_for_group(state, 2, ["p2"]))
+        state["prize"] = valid
 
     def test_unreachable_payout_weights_award_the_pool_to_the_winner(self):
         state = engine.create_lobby(
@@ -672,7 +738,6 @@ class EngineTests(unittest.TestCase):
         )
         engine.join(state, "p2", "Bea", now=2)
         engine.start(state, "p1", now=3)
-        self.assertEqual(engine._prize_slot_awards(state), {1: 2000})
         hand = state["hand"]
         engine._seat_by_id(state, "p2")["stack"] = 0
         engine._seat_by_id(state, "p1")["stack"] = 1000
@@ -681,6 +746,7 @@ class EngineTests(unittest.TestCase):
         engine._set_results(state, "p1", now=5)
         awards = {item["player_id"]: item["award_cents"] for item in state["results"]}
         self.assertEqual(awards, {"p1": 2000, "p2": 0})
+        self.assertEqual(state["elimination_order"][0]["award_cents"], 0)
         self.assertEqual(sum(awards.values()), state["prize"]["pool_cents"])
 
     def test_invalid_config_rejected(self):

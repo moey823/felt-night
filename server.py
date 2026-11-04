@@ -984,7 +984,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             match = re.fullmatch(
-                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots)",
+                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots|preaction)",
                 path,
             )
             if not match:
@@ -1062,6 +1062,22 @@ class Handler(BaseHTTPRequestHandler):
             elif operation == "cancel":
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.cancel(value, player["id"], now), now)
+            elif operation == "preaction":
+                selected = body.get("selected")
+                if type(selected) is not bool:
+                    raise AppError(400, "invalid_selected", "Choose whether to arm or clear check/fold.")
+                expected_hand = self._integer(body.get("expected_hand"), "expected_hand", 0, 1_000_000_000)
+                expected_turn_version = self._integer(
+                    body.get("expected_turn_version"), "expected_turn_version", 0, 2**63 - 1,
+                )
+                state = self.app.store.mutate_table(
+                    table_id,
+                    lambda value: engine.set_preaction(
+                        value, player["id"], selected, expected_hand,
+                        expected_turn_version,
+                    ),
+                    now,
+                )
             else:
                 action = body.get("action")
                 if not isinstance(action, str):
