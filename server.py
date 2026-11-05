@@ -573,6 +573,16 @@ class Store:
         finally:
             conn.close()
 
+    def get_last_hand(self, table_id, player_id):
+        conn = self.connect()
+        try:
+            exists = conn.execute("SELECT 1 FROM tables WHERE id=?", (table_id,)).fetchone()
+            if exists is None:
+                raise AppError(404, "table_not_found", "Table not found.")
+            return tournament_history.last_completed_hand(conn, table_id, player_id)
+        finally:
+            conn.close()
+
     def tick_all(self, now):
         conn = self.connect()
         try:
@@ -897,6 +907,12 @@ class Handler(BaseHTTPRequestHandler):
                 player, _ = self._require_player()
                 self._json(200, {"tables": self.app.store.list_tables(time.time(), player["id"])})
                 return
+            match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/last-hand", path)
+            if match:
+                player, _ = self._require_player()
+                hand = self.app.store.get_last_hand(match.group(1), player["id"])
+                self._json(200, {"hand": hand})
+                return
             match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})", path)
             if match:
                 player, _ = self._require_player()
@@ -1047,7 +1063,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             match = re.fullmatch(
-                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots|preaction)",
+                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots)",
                 path,
             )
             if not match:
@@ -1125,25 +1141,6 @@ class Handler(BaseHTTPRequestHandler):
             elif operation == "cancel":
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.cancel(value, player["id"], now), now)
-            elif operation == "preaction":
-                selected = body.get("selected")
-                if type(selected) is not bool:
-                    raise AppError(400, "invalid_selected", "Choose whether to arm or clear check/fold.")
-                expected_hand = self._integer(body.get("expected_hand"), "expected_hand", 0, 1_000_000_000)
-                expected_turn_version = self._integer(
-                    body.get("expected_turn_version"), "expected_turn_version", 0, 2**63 - 1,
-                )
-                revision = body.get("expected_revision")
-                if "expected_revision" in body:
-                    revision = self._integer(revision, "expected_revision", 0, 2**63 - 1)
-                state = self.app.store.mutate_table(
-                    table_id,
-                    lambda value: engine.set_preaction(
-                        value, player["id"], selected, expected_hand,
-                        expected_turn_version, expected_revision=revision, now=now,
-                    ),
-                    now,
-                )
             else:
                 action = body.get("action")
                 if not isinstance(action, str):

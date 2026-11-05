@@ -92,16 +92,17 @@
       var maxY = height - EDGE - seatHeight / 2;
       var idealX = number(seat.x, width / 2);
       var idealY = number(seat.y, height / 2);
+      var hero = Boolean(seat.hero);
       return {
         id: seat.id,
         index: index,
         width: seatWidth,
         height: seatHeight,
-        hero: Boolean(seat.hero),
+        hero: hero,
         idealX: idealX,
         idealY: idealY,
-        x: clamp(idealX, minX, maxX),
-        y: clamp(idealY, minY, maxY),
+        x: hero ? idealX : clamp(idealX, minX, maxX),
+        y: hero ? idealY : clamp(idealY, minY, maxY),
         minX: minX,
         maxX: maxX,
         minY: minY,
@@ -180,6 +181,9 @@
     }
 
     function candidatesFor(seat) {
+      if (seat.hero) {
+        return [{ x: seat.x, y: seat.y, key: seat.x + ":" + seat.y }];
+      }
       var points = [];
       var seen = Object.create(null);
       function add(x, y) {

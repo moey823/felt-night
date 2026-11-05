@@ -22,6 +22,7 @@ MAX_SEATS = 9
 MAX_LOG_ENTRIES = 40
 MAX_HAND_EVENTS = 128
 RUNOUT_SECONDS = 2.5
+HAND_COMPLETE_PAUSE_SECONDS = 1.5
 RUNOUT_EXACT_LIMIT = 10000
 DEFAULT_BUY_IN = 10
 DEFAULT_PAYOUT_PERCENTAGES = (60, 25, 15)
@@ -247,18 +248,6 @@ def _record_sweep(state: Dict[str, Any], hand: Dict[str, Any]) -> None:
 
 def _bump(state: Dict[str, Any]) -> None:
     state["version"] += 1
-
-
-def _bump_preaction_revision(hand: Dict[str, Any], player_id: str) -> None:
-    revisions = hand.setdefault("preaction_revisions", {})
-    revisions[player_id] = int(revisions.get(player_id, 0)) + 1
-
-
-def _clear_preactions(hand: Dict[str, Any]) -> None:
-    preactions = hand.setdefault("preactions", {})
-    for player_id in list(preactions):
-        preactions.pop(player_id, None)
-        _bump_preaction_revision(hand, player_id)
 
 
 def create_lobby(
@@ -636,8 +625,6 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "contrib": {seat["player_id"]: 0 for seat in alive},
         "folded": [],
         "acted": [],
-        "preactions": {},
-        "preaction_revisions": {},
         "acted_at_bet": {},
         "short_opening": False,
         "current_bet": 0,
@@ -746,31 +733,13 @@ def _set_next_actor(state: Dict[str, Any], after_id: Optional[str], now: float) 
             _advance_street(state, now)
             return
 
-    preactions = hand.setdefault("preactions", {})
     for seat in _clockwise_after(state, after_id):
         player_id = seat["player_id"]
         if player_id in hand["holes"] and _pending(state, hand, player_id):
             _arm_turn(state, hand, player_id, now)
-            selection = preactions.get(player_id)
-            if selection is not None:
-                if (
-                    isinstance(selection, dict)
-                    and selection.get("hand_no") == hand.get("number")
-                    and not seat.get("is_bot", False)
-                ):
-                    # Consume before acting: _perform_action may recursively select
-                    # another armed player, and each selection must run only once.
-                    preactions.pop(player_id, None)
-                    _bump_preaction_revision(hand, player_id)
-                    action = "check" if _to_call(hand, player_id) == 0 else "fold"
-                    _perform_action(state, player_id, action, None, now)
-                    return
-                preactions.pop(player_id, None)
-                _bump_preaction_revision(hand, player_id)
             return
 
     _advance_street(state, now)
-
 
 def _round_complete(state: Dict[str, Any], hand: Dict[str, Any]) -> bool:
     for player_id in _hand_live_ids(hand):
@@ -872,7 +841,6 @@ def _begin_runout(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> No
     _record_sweep(state, hand)
     hand["runout_swept_street"] = hand.get("street")
     _reveal_live_hands(state, hand)
-    _clear_preactions(hand)
     hand["to_act"] = None
     hand["turn_deadline"] = None
     hand["bot_action_at"] = None
@@ -1169,73 +1137,6 @@ def apply_action(
     return state
 
 
-def set_preaction(
-    state: Dict[str, Any],
-    player_id: str,
-    selected: bool,
-    expected_hand: int,
-    expected_turn_version: int,
-    *, expected_revision: Optional[int] = None, now: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Arm or clear Check/Fold for this player’s next decision in this hand."""
-    if isinstance(expected_hand, bool) or not isinstance(expected_hand, int) or expected_hand != state["hand_no"]:
-        raise GameError("stale_hand", "That hand has moved on. Refresh the table.", 409)
-    hand = state.get("hand")
-    turn = state["turn_version"]
-    if type(expected_turn_version) is not int or not 0 < expected_turn_version <= turn:
-        raise GameError("stale_turn", "That turn has moved on. Refresh the table.", 409)
-    if expected_revision is None:
-        # Older clients target an exact table turn.
-        if expected_turn_version != turn:
-            raise GameError("stale_turn", "That turn has moved on. Refresh the table.", 409)
-    elif (not hand or type(expected_revision) is not int
-          or expected_revision != hand.get("preaction_revisions", {}).get(player_id, 0)
-          or hand.get("last_action_turn", {}).get(player_id, 0) >= expected_turn_version):
-        raise GameError("stale_turn", "Your action or selection has already changed.", 409)
-    if type(selected) is not bool:
-        raise GameError("invalid_preaction", "Choose whether to arm or clear check/fold.")
-
-    seat = _seat_by_id(state, player_id)
-    if (
-        state.get("status") != "playing"
-        or hand is None
-        or hand.get("street") == "showdown"
-        or hand.get("to_act") is None
-        or hand.get("runout_at") is not None
-        or player_id not in hand.get("holes", {})
-        or player_id in hand.get("folded", [])
-        or seat is None
-        or seat.get("is_bot", False)
-        or seat.get("stack", 0) <= 0
-        or (hand.get("to_act") == player_id and expected_turn_version == turn)
-    ):
-        raise GameError(
-            "preaction_unavailable",
-            "Check/fold is available only while you are waiting to act in a live hand.",
-            409,
-        )
-
-    preactions = hand.setdefault("preactions", {})
-    current = preactions.get(player_id)
-    if selected and hand["to_act"] == player_id:
-        # Their next turn began while the original off-turn click was in flight.
-        _bump_preaction_revision(hand, player_id)
-        action = "check" if _to_call(hand, player_id) == 0 else "fold"
-        _perform_action(state, player_id, action, None, _now(now))
-        _bump(state)
-        return state
-    if selected:
-        desired = {"hand_no": hand["number"]}
-        if current != desired:
-            preactions[player_id] = desired
-            _bump_preaction_revision(hand, player_id)
-            # Private state: keep the public table version unchanged.
-    elif player_id in preactions:
-        preactions.pop(player_id, None)
-        _bump_preaction_revision(hand, player_id)
-        # Private state: keep the public table version unchanged.
-    return state
-
 
 def _choose_bot_action(state: Dict[str, Any], hand: Dict[str, Any], player_id: str) -> Tuple[str, Optional[int]]:
     """Choose uniformly from legal action types without hand-strength strategy."""
@@ -1260,10 +1161,14 @@ def _choose_bot_action(state: Dict[str, Any], hand: Dict[str, Any], player_id: s
         choices.append(("all_in", None))
     return random.SystemRandom().choice(choices)
 
-
 def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
     """Advance blind clocks, turn timeouts, and the short showdown pause."""
     timestamp = _now(now)
+    # Discard check/fold selections left in tables by older versions.
+    hand = state.get("hand")
+    if isinstance(hand, dict):
+        hand.pop("preactions", None)
+        hand.pop("preaction_revisions", None)
     changed = False
     if state["status"] == "lobby":
         last_activity = state.get("last_activity_at", state["created_at"])
@@ -2016,7 +1921,6 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
         if seat is not None:
             seat["stack"] += amount
     hand["payouts"] = payouts
-    _clear_preactions(hand)
     hand["bets"] = {player_id: 0 for player_id in hand.get("holes", {})}
     hand["current_bet"] = 0
     hand["runout_at"] = None
@@ -2026,7 +1930,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["to_act"] = None
     hand["turn_deadline"] = None
     hand["bot_action_at"] = None
-    hand["next_hand_at"] = now + 5
+    hand["next_hand_at"] = now + HAND_COMPLETE_PAUSE_SECONDS
     if len(remaining) <= 1:
         _set_results(state, remaining[0]["player_id"] if remaining else None, now)
         hand["next_hand_at"] = None
@@ -2173,23 +2077,6 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
                 item["cards"] = showdown_cards[player_id]
         seats.append(item)
 
-    preaction = hand.get("preactions", {}).get(viewer_id) if hand and viewer_id else None
-    check_fold_selected = bool(
-        preaction
-        and isinstance(preaction, dict)
-        and hand.get("street") != "showdown"
-        and state.get("status") == "playing"
-        and hand.get("to_act") is not None
-        and hand.get("to_act") != viewer_id
-        and hand.get("runout_at") is None
-        and viewer_id in hand.get("holes", {})
-        and viewer_id not in hand.get("folded", [])
-        and viewer_seat is not None
-        and not viewer_seat.get("is_bot", False)
-        and viewer_seat.get("stack", 0) > 0
-        and preaction.get("hand_no") == hand.get("number")
-    )
-
     blinds = state["blinds"]
     next_level = blinds["next_level_at"]
     timestamp = time.time()
@@ -2276,11 +2163,6 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "player_id": viewer_id,
             "seated": viewer_seat is not None,
             "can_act": can_act,
-            "check_fold_selected": check_fold_selected,
-            "check_fold_revision": (
-                int(hand.get("preaction_revisions", {}).get(viewer_id, 0))
-                if hand and viewer_id else 0
-            ),
             "hole_cards": hole_cards,
             "to_call": to_call,
             "raise_rights": raise_rights,

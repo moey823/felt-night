@@ -132,6 +132,53 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(state["hand"]["street"], "flop")
         self.assertEqual(state["hand"]["to_act"], opponent)
 
+    def test_legacy_check_fold_selection_never_executes_and_is_discarded(self):
+        state = heads_up()
+        hand = state["hand"]
+        actor = hand["to_act"]
+        waiting = next(player_id for player_id in hand["holes"] if player_id != actor)
+        hand["preactions"] = {waiting: {"hand_no": state["hand_no"]}}
+        hand["preaction_revisions"] = {waiting: 1}
+        waiting_actions_before = sum(
+            event.get("type") == "action" and event.get("actor_id") == waiting
+            for event in hand["events"]
+        )
+
+        engine.apply_action(
+            state, actor, "call", None, state["hand_no"], state["turn_version"], now=104,
+        )
+
+        self.assertEqual(hand["to_act"], waiting)
+        waiting_actions_after = sum(
+            event.get("type") == "action" and event.get("actor_id") == waiting
+            for event in hand["events"]
+        )
+        self.assertEqual(waiting_actions_after, waiting_actions_before)
+        viewer = engine.public_view(state, waiting)["viewer"]
+        self.assertNotIn("check_fold_selected", viewer)
+        self.assertNotIn("check_fold_revision", viewer)
+
+        engine.advance(state, now=105)
+        self.assertNotIn("preactions", hand)
+        self.assertNotIn("preaction_revisions", hand)
+
+    def test_fold_completion_uses_short_pause_separate_from_runout_delay(self):
+        state = heads_up()
+        hand = state["hand"]
+        now = 104
+        engine.apply_action(
+            state, hand["to_act"], "fold", None,
+            state["hand_no"], state["turn_version"], now=now,
+        )
+
+        self.assertEqual(engine.HAND_COMPLETE_PAUSE_SECONDS, 1.5)
+        self.assertEqual(hand["next_hand_at"], now + engine.HAND_COMPLETE_PAUSE_SECONDS)
+        self.assertEqual(engine.RUNOUT_SECONDS, 2.5)
+        engine.advance(state, now=hand["next_hand_at"] - 0.01)
+        self.assertEqual(state["hand_no"], 1)
+        engine.advance(state, now=hand["next_hand_at"])
+        self.assertEqual(state["hand_no"], 2)
+
     def test_raise_to_rules_and_short_all_in(self):
         state = heads_up(starting_stack=100)
         hand = state["hand"]

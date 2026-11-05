@@ -112,6 +112,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       if (!cookie) throw Error(path + ' did not issue a session cookie');
       return {...json, cookie};
     }
+    if (path.endsWith('/last-hand')) return json;
     return json.table;
   }
 
@@ -156,7 +157,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   const tableActor = table => findUser(table.entrants, table.started.actor_id);
   const layoutFailures = [];
 
-  function layoutSnapshot(expectedSeats) {
+  function layoutSnapshot(expectedSeats, canAct) {
     const rect = node => {
       const value = node.getBoundingClientRect();
       return {
@@ -179,6 +180,8 @@ export default async function ux([one, two], sleep, roomPassword) {
     const seatGrid = document.querySelector('#seat-grid');
     const panel = document.querySelector('#action-panel');
     const board = document.querySelector('#board-cards');
+    const heroPair = document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
+    const actionButtons = [...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
     const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
     const markers = [...document.querySelectorAll(
       '#seat-grid .seat-action:not(.is-unplaced), ' +
@@ -204,9 +207,17 @@ export default async function ux([one, two], sleep, roomPassword) {
       errors.push('header is too tall');
     }
     if (!surface?.contains(blindStrip)) errors.push('blind strip is outside the table surface');
-    if (!felt || !panel || panel.hidden || !felt.contains(panel)) {
-      errors.push('action panel is not visible inside the felt');
+    if (!surface?.contains(panel) || !panel || panel.hidden) {
+      errors.push('action panel is not visible inside the table surface');
     }
+    if (felt?.contains(panel)) errors.push('action panel is inside the felt');
+    if (actionButtons.length !== 3) errors.push('expected three persistent primary actions, saw ' + actionButtons.length);
+    if (!canAct && actionButtons.some(button => !button.disabled)) errors.push('an off-turn primary action is enabled');
+    if (document.querySelector('[data-preaction], #allInConfirm, [data-action="confirm-all-in"], #hand-result')) {
+      errors.push('removed gameplay control or payout box remains in the DOM');
+    }
+    if (/uncalled/i.test(document.body.innerText)) errors.push('uncalled-bet UI remains');
+    if (!board?.offsetWidth) errors.push('community card area is not visible');
     if (seats.length !== expectedSeats) errors.push('expected ' + expectedSeats + ' seats, saw ' + seats.length);
     if (document.querySelector('#seat-grid .seat-empty')) errors.push('empty seat placeholders remain');
     if (heroCards.length !== 2) errors.push('expected two visible hero cards, saw ' + heroCards.length);
@@ -222,7 +233,30 @@ export default async function ux([one, two], sleep, roomPassword) {
 
     const feltBox = felt && rect(felt);
     const panelBox = panel && rect(panel);
+    const heroPairBox = heroPair && rect(heroPair);
     const boardBox = board && rect(board);
+    const footerLimit = innerWidth > innerHeight ? 72 : 80;
+    if (panelBox && panelBox.height > footerLimit + 1) {
+      errors.push('action footer exceeds ' + footerLimit + 'px: ' + panelBox.height.toFixed(1));
+    }
+    if (panelBox && surface && (
+      panelBox.left < surface.getBoundingClientRect().left - 1 ||
+      panelBox.right > surface.getBoundingClientRect().right + 1 ||
+      panelBox.top < surface.getBoundingClientRect().top - 1 ||
+      panelBox.bottom > surface.getBoundingClientRect().bottom + 1
+    )) errors.push('action footer escapes table surface');
+    const heroCenterOffset = heroPairBox && feltBox ? {
+      x: +(((heroPairBox.left + heroPairBox.right) - (feltBox.left + feltBox.right)) / 2).toFixed(1),
+      y: +(((heroPairBox.top + heroPairBox.bottom) - (feltBox.top + feltBox.bottom)) / 2).toFixed(1),
+    } : null;
+    const heroBottomGap = heroPairBox && feltBox ? +(feltBox.bottom - heroPairBox.bottom).toFixed(1) : null;
+    if (heroCards.length && (!heroCenterOffset || Math.abs(heroCenterOffset.x) > 2)) {
+      errors.push('hero pair is not horizontally centered: ' + JSON.stringify(heroCenterOffset));
+    }
+    if (heroCenterOffset && heroCenterOffset.y < 0) errors.push('hero pair is not in the lower half of the felt');
+    if (heroBottomGap != null && (heroBottomGap < -1 || heroBottomGap > 24)) {
+      errors.push('hero pair is too far from the felt bottom: ' + heroBottomGap + 'px');
+    }
     const gridBox = seatGrid && rect(seatGrid);
     const stripBox = blindStrip && rect(blindStrip);
     const seatBoxes = seats.map(seat => ({
@@ -365,6 +399,11 @@ export default async function ux([one, two], sleep, roomPassword) {
       header: header && rect(header),
       felt: feltBox,
       action: panelBox,
+      footerLimit,
+      actionButtons: actionButtons.length,
+      heroPair: heroPairBox,
+      heroCenterOffset,
+      heroBottomGap,
       cards: heroCards.map(rect),
       board: boardBox,
       strip: stripBox,
@@ -379,7 +418,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     };
   }
 
-  async function checkViewports(page, seatCount, label) {
+  async function checkViewports(page, seatCount, label, canAct = true) {
     await wait(page, visible, '#seat-grid .seat-action.kind-turn:not(.is-unplaced)');
     await wait(page, visible, '#seat-grid .seat-turn-clock:not(.is-unplaced)');
     const viewports = [
@@ -393,8 +432,8 @@ export default async function ux([one, two], sleep, roomPassword) {
     const failures = [];
     for (const viewport of viewports) {
       await page.resize(viewport.width, viewport.height);
-      await sleep(250);
-      const report = await evaluate(page, layoutSnapshot, seatCount);
+      await sleep(950); // Let the normal live-table refresh run after each resize.
+      const report = await evaluate(page, layoutSnapshot, seatCount, canAct);
       const name = label + '-' + viewport.width + 'x' + viewport.height;
       await page.screenshot(name);
       console.log(name, JSON.stringify(report));
@@ -405,7 +444,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     if (failures.length) layoutFailures.push(label + ': ' + failures.join(' | '));
   }
 
-  // A heads-up game hides Check/Fold while keeping the raise controls usable.
+  // Verify the persistent action footer for the actor and the waiting player.
   const headsUp = await createTable('UX Heads Up ' + stamp, users.slice(0, 2));
   const headsUpActor = tableActor(headsUp);
   const headsUpOther = headsUp.entrants.find(user => user !== headsUpActor);
@@ -415,18 +454,30 @@ export default async function ux([one, two], sleep, roomPassword) {
   await openTable(two, headsUp.name);
   await wait(one, visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]');
 
-  const headsUpChecks = await Promise.all(pages.map(page => evaluate(page, () => ({
-    preaction: Boolean(document.querySelector('[data-preaction="check-fold"]')),
-    quickNotes: /quick notes/i.test(document.body.innerText),
-    blindStrip: document.querySelector('#blind-strip')?.innerText || '',
-    stripInsideSurface: document.querySelector('.table-surface')
-      ?.contains(document.querySelector('#blind-strip')),
-  }))));
-  assert(headsUpChecks.every(result => !result.preaction), 'Heads-up exposed Check/Fold');
-  assert(headsUpChecks.every(result => !result.quickNotes), 'Quick Notes remain in gameplay');
+  const headsUpChecks = await Promise.all(pages.map(page => evaluate(page, () => {
+    const buttons = [...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
+    const panel = document.querySelector('#action-panel');
+    const felt = document.querySelector('#felt');
+    const surface = document.querySelector('.table-surface');
+    return {
+      count: buttons.length,
+      disabled: buttons.map(button => button.disabled),
+      panelVisible: Boolean(panel && !panel.hidden),
+      panelOutsideFelt: Boolean(panel && felt && !felt.contains(panel)),
+      panelInsideSurface: Boolean(panel && surface && surface.contains(panel)),
+      removedControls: Boolean(document.querySelector('[data-preaction], #allInConfirm, [data-action="confirm-all-in"], #hand-result')),
+      blindStrip: document.querySelector('#blind-strip')?.innerText || '',
+      stripInsideSurface: surface?.contains(document.querySelector('#blind-strip')),
+    };
+  })));
+  assert(headsUpChecks.every(result => result.count === 3), 'The action footer did not keep three primary buttons');
+  assert(headsUpChecks.every(result => result.panelVisible && result.panelOutsideFelt && result.panelInsideSurface),
+    'Action footer is not visible outside the felt and inside the table surface');
+  assert(headsUpChecks.every(result => !result.removedControls), 'A removed preaction, confirmation, or payout box remains');
   assert(headsUpChecks.every(result =>
     result.stripInsideSurface && !/players left|starting stack/i.test(result.blindStrip)
   ), 'Blind strip is outside the surface or includes gameplay tiles');
+  assert(headsUpChecks[1].disabled.every(Boolean), 'An off-turn primary action is enabled');
 
   await wait(one, visible, '#recent-action-button');
   await click(one, '#recent-action-button');
@@ -457,7 +508,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   const expectedBb = hero.stack / bigBlind >= 1
     ? Math.floor(hero.stack / bigBlind)
     : Number((hero.stack / bigBlind).toFixed(1));
-  await checkViewports(one, 2, 'heads-up');
+  await checkViewports(one, 2, 'heads-up', true);
 
   const initialStackText = await evaluate(one, () =>
     document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')?.innerText.trim()
@@ -572,6 +623,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   await openTable(two, multiway.name);
   await wait(one, visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]');
 
+  // Off-turn players keep all three actions visible but disabled; no preaction control exists.
   let waitingPage = null;
   const mappedPlayers = [
     {page: one, user: multiwayActor},
@@ -584,46 +636,18 @@ export default async function ux([one, two], sleep, roomPassword) {
       break;
     }
   }
-  assert(waitingPage, 'No waiting browser was available for the three-player preaction check');
-  await wait(waitingPage, visible, '#action-panel:not([hidden]) [data-preaction="check-fold"]');
-  await click(waitingPage, '[data-preaction="check-fold"]');
-  await wait(waitingPage, () =>
-    document.querySelector('[data-preaction="check-fold"]')?.getAttribute('aria-pressed') === 'true'
-  );
-  await evaluate(waitingPage, () => {
-    const originalFetch = window.fetch;
-    window.fetch = async function(url, options) {
-      const response = await originalFetch.apply(this, arguments);
-      const isTablePoll = /\/tables\/[a-f0-9]+$/.test(String(url)) &&
-        (!options?.method || options.method === 'GET');
-      if (!isTablePoll) return response;
-      const snapshot = await response.clone().json();
-      const view = snapshot.table;
-      if (!view?.viewer?.check_fold_selected) return response;
-
-      window.fetch = originalFetch;
-      view.viewer.check_fold_selected = false;
-      view.viewer.check_fold_revision--;
-      view.server_now += 2;
-      window.uxStalePreactionPollDelivered = true;
-      return new Response(JSON.stringify(snapshot), {
-        status: 200,
-        headers: {'Content-Type': 'application/json'},
-      });
-    };
-  });
-  await wait(waitingPage, () => window.uxStalePreactionPollDelivered === true);
-  assert(
-    await evaluate(waitingPage, () =>
-      document.querySelector('[data-preaction="check-fold"]')?.getAttribute('aria-pressed') === 'true'
-    ),
-    'A stale private poll reversed the newer Check/Fold selection'
-  );
-  await click(waitingPage, '[data-preaction="check-fold"]');
-  await wait(waitingPage, () =>
-    document.querySelector('[data-preaction="check-fold"]')?.getAttribute('aria-pressed') === 'false'
-  );
-  console.log('Three-player Check/Fold remains selected despite a stale poll, then clears.');
+  assert(waitingPage, 'No waiting browser was available for the off-turn action check');
+  await wait(waitingPage, visible, '#action-panel:not([hidden])');
+  const waitingActions = await evaluate(waitingPage, () => ({
+    buttons: [...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')]
+      .map(button => ({action: button.dataset.pokerAction, disabled: button.disabled})),
+    preaction: Boolean(document.querySelector('[data-preaction]')),
+    confirm: Boolean(document.querySelector('#allInConfirm, [data-action="confirm-all-in"]')),
+  }));
+  assert(waitingActions.buttons.length === 3, 'Off-turn player lost the persistent action buttons');
+  assert(waitingActions.buttons.every(button => button.disabled), 'An off-turn primary action is enabled');
+  assert(!waitingActions.preaction && !waitingActions.confirm, 'A removed preaction/confirmation control remains');
+  console.log('Off-turn player sees three disabled actions; preaction and all-in confirmation controls are absent.');
 
   let current = await request(multiway.path, multiwayActor);
   let actions = 0;
@@ -718,6 +742,195 @@ export default async function ux([one, two], sleep, roomPassword) {
   );
   console.log('Zero-stack all-in stayed visible; eliminated seats reflowed without empty seats.');
 
+  // A completed all-in hand is replayable while the next hand is live.
+  const replayUsers = users.slice(4, 7);
+  const replayTable = await createTable('UX Last Hand ' + stamp, replayUsers, {
+    starting_stack: 100,
+    small_blind: 10,
+    big_blind: 20,
+    runout_seconds: 1,
+  });
+  const replayActor = findUser(replayUsers, replayTable.started.actor_id);
+  const replaySpectator = users[10];
+  await switchUser(one, replaySpectator);
+  await switchUser(two, replayActor);
+  await openTable(one, replayTable.name);
+  await openTable(two, replayTable.name);
+  await wait(one, visible, '#last-hand-button');
+
+  await click(one, '#last-hand-button');
+  await wait(one, () => document.querySelector('#last-hand-dialog')?.open === true);
+  await wait(one, () => document.querySelector('#last-hand-content')?.innerText
+    .includes('No completed hand is available yet.'));
+  await one.pressEscape();
+  await wait(one, () => !document.querySelector('#last-hand-dialog')?.open);
+  assert(
+    await evaluate(one, () =>
+      document.activeElement === document.querySelector('#last-hand-button') &&
+      document.querySelector('#last-hand-button')?.getAttribute('aria-expanded') === 'false'
+    ),
+    'Empty replay Escape did not restore focus to its opener'
+  );
+
+  let replayState = replayTable.started;
+  const allInUser = findUser(replayUsers, replayState.actor_id);
+  replayState = await request(replayTable.path + '/action', allInUser, {
+    action: 'all_in',
+    expected_hand: replayState.hand_no,
+    expected_turn_version: replayState.turn_version,
+  });
+  const foldedUser = findUser(replayUsers, replayState.actor_id);
+  replayState = await request(replayTable.path + '/action', foldedUser, {
+    action: 'fold',
+    expected_hand: replayState.hand_no,
+    expected_turn_version: replayState.turn_version,
+  });
+  const calledUser = findUser(replayUsers, replayState.actor_id);
+  replayState = await request(replayTable.path + '/action', calledUser, {
+    action: 'call',
+    expected_hand: replayState.hand_no,
+    expected_turn_version: replayState.turn_version,
+  });
+  assert(replayState.runout_at, 'All-in replay scenario did not start its board runout');
+
+  let live = replayState;
+  for (let attempt = 0; attempt < 70 && live.hand_no === 1; attempt++) {
+    await sleep(100);
+    live = await request(replayTable.path, replaySpectator);
+  }
+  assert(live.hand_no === 2 && live.street === 'preflop',
+    'Completed hand did not remain available after the next hand started: ' + live.hand_no + '/' + live.street);
+  await wait(one, visible, '#last-hand-button');
+
+  await wait(one, () => /HAND 2/i.test(document.querySelector('#hand-number')?.innerText || ''));
+  const liveBoardBefore = await evaluate(one, () => ({
+    hand: document.querySelector('#hand-number')?.innerText || '',
+    street: document.querySelector('#street-label')?.innerText || '',
+    board: document.querySelector('#board-cards')?.innerText || '',
+  }));
+  await click(one, '#last-hand-button');
+  await wait(one, () => document.querySelector('#last-hand-dialog')?.open === true);
+  await wait(one, () => document.querySelectorAll('#last-hand-content .replay-player').length === 3);
+  const showdown = await evaluate(one, () => ({
+    label: document.querySelector('#last-hand-street')?.innerText || '',
+    previousDisabled: document.querySelector('#last-hand-prev')?.disabled,
+    nextDisabled: document.querySelector('#last-hand-next')?.disabled,
+    boardCards: document.querySelectorAll('#last-hand-content .replay-board-cards .mini-card').length,
+    exposedCards: document.querySelectorAll('#last-hand-content .replay-player-cards .mini-card').length,
+    liveNote: document.querySelector('.replay-live-note')?.innerText || '',
+  }));
+  assert(/showdown/i.test(showdown.label) && !showdown.previousDisabled && showdown.nextDisabled,
+    'Replay did not open at the bounded final street: ' + JSON.stringify(showdown));
+  assert(showdown.boardCards === 5 && showdown.exposedCards === 4,
+    'Showdown replay did not show five board cards and two exposed hands: ' + JSON.stringify(showdown));
+  assert(showdown.liveNote.includes('Live hand continues'),
+    'Replay omitted the live-hand note');
+  await one.screenshot('last-hand-showdown');
+  for (const {width, height} of [{width:320,height:568},{width:667,height:375}]) {
+    await one.resize(width, height);
+    await sleep(150);
+    const modal = await evaluate(one, () => {
+      const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+      const dialog=document.querySelector('#last-hand-dialog'), shell=dialog?.querySelector('.last-hand-shell');
+      const content=document.querySelector('#last-hand-content'), nav=dialog?.querySelector('.last-hand-nav');
+      const previous=document.querySelector('#last-hand-prev'), next=document.querySelector('#last-hand-next');
+      const close=document.querySelector('#last-hand-close'), box=dialog?rect(dialog):null, navBox=nav?rect(nav):null;
+      const errors=[];
+      if(!dialog?.open || !box) errors.push('dialog is not open');
+      if(box && (box.left<0 || box.right>innerWidth+1 || box.top<0 || box.bottom>innerHeight+1)) errors.push('dialog is clipped by viewport');
+      if(!shell?.offsetWidth || !content?.offsetWidth || !navBox?.height || !close?.offsetWidth) errors.push('modal section or close button is hidden');
+      if(navBox && (navBox.left<0 || navBox.right>innerWidth+1 || navBox.top<0 || navBox.bottom>innerHeight+1)) errors.push('street navigation is clipped');
+      if(navBox && previous && next) {
+        const a=rect(previous), b=rect(next);
+        if(a.left<0 || a.right>innerWidth+1 || a.top<0 || a.bottom>innerHeight+1 ||
+           b.left<0 || b.right>innerWidth+1 || b.top<0 || b.bottom>innerHeight+1) errors.push('street button is clipped');
+        if(Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))>1 &&
+           Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top))>1) errors.push('street buttons overlap');
+        if(content && content.getBoundingClientRect().bottom>navBox.top+1) errors.push('street navigation overlaps replay content');
+      }
+      return {errors,viewport:[innerWidth,innerHeight],dialog:box,nav:navBox,content:content?rect(content):null,
+        cardsVisible:document.querySelectorAll('#last-hand-content .replay-board-cards .mini-card').length,
+        scrollable:Boolean(content && content.scrollHeight>content.clientHeight+1)};
+    });
+    assert(!modal.errors.length, 'Replay modal does not fit at '+width+'x'+height+': '+JSON.stringify(modal));
+    assert(modal.cardsVisible===5, 'Five-card board not available in replay at '+width+'x'+height);
+    console.log('Replay modal at', width, 'x', height, JSON.stringify(modal));
+    await one.screenshot('last-hand-showdown-'+width+'x'+height);
+  }
+
+  const reverseStreets = [
+    {name: 'river', cards: 5},
+    {name: 'turn', cards: 4},
+    {name: 'flop', cards: 3},
+    {name: 'preflop', cards: 0},
+  ];
+  for (const [index, expected] of reverseStreets.entries()) {
+    await click(one, '#last-hand-prev');
+    await wait(one, street => (document.querySelector('#last-hand-street')?.innerText || '').toLowerCase().includes(street), expected.name);
+    const stage = await evaluate(one, () => ({
+      label: document.querySelector('#last-hand-street')?.innerText || '',
+      boardCards: document.querySelectorAll('#last-hand-content .replay-board-cards .mini-card').length,
+      exposedCards: document.querySelectorAll('#last-hand-content .replay-player-cards .mini-card').length,
+      previousDisabled: document.querySelector('#last-hand-prev')?.disabled,
+      nextDisabled: document.querySelector('#last-hand-next')?.disabled,
+    }));
+    assert(stage.boardCards === expected.cards && stage.exposedCards === 4,
+      'Wrong replay cards at ' + stage.label + ': ' + JSON.stringify(stage));
+    assert(stage.previousDisabled === (index === reverseStreets.length - 1) && !stage.nextDisabled,
+      'Replay previous navigation bounds failed at ' + stage.label);
+  }
+
+  const forwardStreets = [
+    {name: 'flop', cards: 3},
+    {name: 'turn', cards: 4},
+    {name: 'river', cards: 5},
+    {name: 'showdown', cards: 5},
+  ];
+  for (const [index, expected] of forwardStreets.entries()) {
+    await click(one, '#last-hand-next');
+    await wait(one, street => (document.querySelector('#last-hand-street')?.innerText || '').toLowerCase().includes(street), expected.name);
+    const stage = await evaluate(one, () => ({
+      label: document.querySelector('#last-hand-street')?.innerText || '',
+      boardCards: document.querySelectorAll('#last-hand-content .replay-board-cards .mini-card').length,
+      exposedCards: document.querySelectorAll('#last-hand-content .replay-player-cards .mini-card').length,
+      previousDisabled: document.querySelector('#last-hand-prev')?.disabled,
+      nextDisabled: document.querySelector('#last-hand-next')?.disabled,
+    }));
+    assert(stage.boardCards === expected.cards && stage.exposedCards === 4,
+      'Wrong replay cards at ' + stage.label + ': ' + JSON.stringify(stage));
+    assert(!stage.previousDisabled && stage.nextDisabled === (index === forwardStreets.length - 1),
+      'Replay next navigation bounds failed at ' + stage.label);
+    if (index === forwardStreets.length - 1) {
+      await one.screenshot('last-hand-showdown');
+    }
+  }
+
+  const liveNote = await evaluate(one, () => ({
+    hand: document.querySelector('#hand-number')?.innerText || '',
+    street: document.querySelector('#street-label')?.innerText || '',
+    board: document.querySelector('#board-cards')?.innerText || '',
+  }));
+  await sleep(1100);
+  const liveBoardAfterPoll = await evaluate(one, () => ({
+    hand: document.querySelector('#hand-number')?.innerText || '',
+    street: document.querySelector('#street-label')?.innerText || '',
+    board: document.querySelector('#board-cards')?.innerText || '',
+  }));
+  assert(JSON.stringify(liveBoardAfterPoll) === JSON.stringify(liveNote) &&
+    JSON.stringify(liveNote) === JSON.stringify(liveBoardBefore),
+    'Opening the replay changed the live board during polling');
+
+  await one.pressEscape();
+  await wait(one, () => !document.querySelector('#last-hand-dialog')?.open);
+  assert(
+    await evaluate(one, () =>
+      document.activeElement === document.querySelector('#last-hand-button') &&
+      document.querySelector('#last-hand-button')?.getAttribute('aria-expanded') === 'false'
+    ),
+    'Replay Escape did not restore focus to its opener'
+  );
+  console.log('Last-hand replay navigated both directions, showed final exposed cards, and left the live hand unchanged.');
+
   // Nine live seats cover phone, short-landscape, and desktop viewports.
   const nineSeats = await createTable('UX Nine Seats ' + stamp, users.slice(7, 16), {
     level_minutes: 0.25,
@@ -728,7 +941,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   await switchUser(two, nineOther);
   await openTable(one, nineSeats.name);
   await wait(one, visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]');
-  await checkViewports(one, 9, 'nine-seat');
+  await checkViewports(one, 9, 'nine-seat', true);
 
   await evaluate(one, () => {
     window.uxBlindTransitions = [];
@@ -749,11 +962,21 @@ export default async function ux([one, two], sleep, roomPassword) {
     );
   });
   const announcement = await evaluate(one, () => document.querySelector('#blind-announcement').innerText.trim());
+  const announcementCenter = await evaluate(one, () => {
+    const node=document.querySelector('#blind-announcement').getBoundingClientRect();
+    const felt=document.querySelector('#felt').getBoundingClientRect();
+    return {
+      x:+(((node.left+node.right)-(felt.left+felt.right))/2).toFixed(1),
+      y:+(((node.top+node.bottom)-(felt.top+felt.bottom))/2).toFixed(1),
+    };
+  });
   const blindStrip = await evaluate(one, () => document.querySelector('#blind-strip')?.innerText || '');
   assert(
     /level\s*2/i.test(announcement) && /20/.test(announcement) && /40/.test(announcement),
     'Blind announcement missed level 2 and new 20/40 blinds: ' + announcement
   );
+  assert(Math.abs(announcementCenter.x)<=2 && Math.abs(announcementCenter.y)<=2,
+    'Blind announcement is not centered on the felt: ' + JSON.stringify(announcementCenter));
   assert(
     /level\s*2/i.test(blindStrip) && /20/.test(blindStrip) && /40/.test(blindStrip) &&
     !/players left|starting stack/i.test(blindStrip),

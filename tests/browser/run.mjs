@@ -1,7 +1,7 @@
 // Run a headless, two-player check against an isolated throwaway game server.
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -15,6 +15,7 @@ const game = (mode === 'crowded'
 const testRoomPassword = 'test-room-invite';
 
 if (!process.env.BROWSER_BIN) throw Error('Set BROWSER_BIN to a Chromium headless shell executable.');
+if (process.env.QA_SCREEN_DIR) mkdirSync(process.env.QA_SCREEN_DIR, {recursive:true});
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const directory = mkdtempSync(join(tmpdir(), 'sitngo-tournament-'));
 const root = fileURLToPath(new URL('../../', import.meta.url));

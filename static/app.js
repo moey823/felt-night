@@ -60,9 +60,17 @@
     blindLevelValue: null,
     showBigBlinds: false,
     actionPending: null,
-    preActionPending: null,
-    actionConfirmation: null,
-    actionRenderKey: "",
+    actionSubmittedKey: "",
+    lastHandReplay: {
+      requestId: 0,
+      tableId: "",
+      playerId: "",
+      hand: null,
+      streetIndex: 0,
+      loading: false,
+      error: "",
+      trigger: null
+    },
     raiseDraftKey: "",
     raiseDraftValue: null,
     tableFx: {
@@ -73,9 +81,6 @@
       actions: {},
       street: "",
       revealed: {},
-      awards: [],
-      pots: [],
-      returns: [],
       displayWagers: {},
       wagerPositions: {},
       queue: [],
@@ -174,6 +179,16 @@
     return tableChipValue(value, view) + (tableUsesBigBlinds(view) ? " BB" : " chips");
   }
 
+  function actionChips(value, view) {
+    if (!tableUsesBigBlinds(view)) return chips(value) + " chips";
+    var bigBlind = Math.max(1, blindParts(view || state.tableView).big);
+    var rawAmount = number(value, 0);
+    var units = rawAmount / bigBlind;
+    var formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(units);
+    if (rawAmount > 0 && Number(formatted.replace(/,/g, "")) === 0) return chips(rawAmount) + " chips";
+    return formatted + " BB";
+  }
+
   function tableChipUnit(view) {
     return tableUsesBigBlinds(view) ? "BB" : "chips";
   }
@@ -254,11 +269,190 @@
     if (trigger) trigger.setAttribute("aria-expanded", "false");
   }
 
+  function replayStreets(hand) {
+    var streets = Array.isArray(hand && hand.streets) ? hand.streets.filter(function (street) {
+      return street && typeof street === "object";
+    }) : [];
+    if (streets.length) return streets;
+    return [{ name: "showdown", board: cardArray(hand && hand.board) }];
+  }
+
+  function replayStreetName(value) {
+    return String(value || "Street").replace(/[_-]+/g, " ").replace(/\b\w/g, function (letter) {
+      return letter.toUpperCase();
+    });
+  }
+
+  function syncLastHandButton() {
+    var trigger = byId("last-hand-button");
+    if (!trigger) return;
+    var ready = Boolean(state.player && state.activeTableId && state.tableView &&
+      number(state.tableView.hand_no, 0) > 0);
+    trigger.hidden = !ready;
+    trigger.disabled = !ready;
+    trigger.setAttribute("aria-expanded", String(Boolean(byId("last-hand-dialog") && byId("last-hand-dialog").open)));
+  }
+
+  function renderLastHandReplay() {
+    var stateReplay = state.lastHandReplay;
+    var content = byId("last-hand-content");
+    var streetLabel = byId("last-hand-street");
+    var previous = byId("last-hand-prev");
+    var next = byId("last-hand-next");
+    if (!content || !streetLabel || !previous || !next) return;
+
+    if (stateReplay.loading) {
+      streetLabel.textContent = "Loading";
+      content.setAttribute("aria-busy", "true");
+      content.innerHTML = '<p class="replay-status" role="status">Loading the last hand…</p>';
+      previous.disabled = true;
+      next.disabled = true;
+      return;
+    }
+    content.setAttribute("aria-busy", "false");
+    if (stateReplay.error) {
+      streetLabel.textContent = "Unavailable";
+      content.innerHTML = '<p class="replay-error" role="alert">' + esc(stateReplay.error) + '</p>';
+      previous.disabled = true;
+      next.disabled = true;
+      return;
+    }
+    if (!stateReplay.hand) {
+      streetLabel.textContent = "No completed hand";
+      content.innerHTML = '<p class="replay-empty">No completed hand is available yet.</p>';
+      previous.disabled = true;
+      next.disabled = true;
+      return;
+    }
+
+    var hand = stateReplay.hand;
+    var streets = replayStreets(hand);
+    var index = Math.max(0, Math.min(streets.length - 1, stateReplay.streetIndex));
+    stateReplay.streetIndex = index;
+    var street = streets[index] || {};
+    var board = cardArray(street.board);
+    var players = Array.isArray(hand.players) ? hand.players : [];
+    streetLabel.textContent = "Hand " + number(hand.number, 0) + " · " + replayStreetName(street.name);
+    var boardMarkup = board.length
+      ? board.map(function (card) { return playingCardHTML(card, true); }).join("")
+      : '<span class="replay-no-cards">No community cards yet</span>';
+    var playerMarkup = players.map(function (player) {
+      var cards = cardArray(player && player.cards);
+      var seatNo = number(player && player.seat_no, -1);
+      var isViewer = String(player && player.player_id || "") === String(state.player && state.player.id || "");
+      var name = String(player && player.name || "Player") + (isViewer ? " (you)" : "");
+      var cardMarkup = cards.length
+        ? cards.map(function (card) { return playingCardHTML(card, true); }).join("")
+        : '<span class="replay-cards-hidden">Cards not exposed</span>';
+      return '<article class="replay-player" role="listitem">' +
+        '<h3 class="replay-player-name">' + esc(name) + '</h3>' +
+        '<span class="replay-player-stack">' + (seatNo >= 0 ? "Seat " + (seatNo + 1) : "Seated player") + '</span>' +
+        '<div class="replay-player-cards" aria-label="' + esc(cards.length ? "Visible cards" : "No visible cards") + '">' + cardMarkup + '</div>' +
+      '</article>';
+    }).join("");
+    content.innerHTML =
+      '<p class="replay-live-note">Live hand continues at the table.</p>' +
+      '<section class="replay-board" aria-label="Community cards">' +
+        '<h3>Community cards</h3><div class="replay-board-cards">' + boardMarkup + '</div>' +
+      '</section>' +
+      '<div class="replay-players" role="list" aria-label="Players in the hand">' +
+        (playerMarkup || '<p class="replay-empty">Player details are unavailable.</p>') +
+      '</div>';
+    previous.disabled = index <= 0;
+    next.disabled = index >= streets.length - 1;
+  }
+
+  function lastHandRequestIsCurrent(requestId, tableId, playerId) {
+    var replay = state.lastHandReplay;
+    var dialog = byId("last-hand-dialog");
+    return Boolean(replay.requestId === requestId && replay.tableId === tableId &&
+      replay.playerId === playerId && state.activeTableId === tableId &&
+      String(state.player && state.player.id || "") === playerId && dialog && dialog.open);
+  }
+
+  async function fetchLastHand(requestId, tableId, playerId) {
+    try {
+      var data = await request("/tables/" + encodeURIComponent(tableId) + "/last-hand");
+      if (!lastHandRequestIsCurrent(requestId, tableId, playerId)) return;
+      state.lastHandReplay.hand = data && data.hand && typeof data.hand === "object" ? data.hand : null;
+      state.lastHandReplay.streetIndex = state.lastHandReplay.hand
+        ? replayStreets(state.lastHandReplay.hand).length - 1
+        : 0;
+      state.lastHandReplay.loading = false;
+      state.lastHandReplay.error = "";
+      renderLastHandReplay();
+    } catch (err) {
+      if (!lastHandRequestIsCurrent(requestId, tableId, playerId)) return;
+      state.lastHandReplay.loading = false;
+      state.lastHandReplay.error = err.message || "The last hand could not be loaded.";
+      renderLastHandReplay();
+    }
+  }
+
+  function openLastHandDialog(trigger) {
+    var dialog = byId("last-hand-dialog");
+    if (!dialog || dialog.open || !state.player || !state.activeTableId) return;
+    var replay = state.lastHandReplay;
+    replay.requestId += 1;
+    replay.tableId = String(state.activeTableId);
+    replay.playerId = String(state.player.id || "");
+    replay.hand = null;
+    replay.streetIndex = 0;
+    replay.loading = true;
+    replay.error = "";
+    replay.trigger = trigger || byId("last-hand-button");
+    dialog.showModal();
+    syncLastHandButton();
+    renderLastHandReplay();
+    fetchLastHand(replay.requestId, replay.tableId, replay.playerId);
+  }
+
+  function closeLastHandDialog(restoreFocus) {
+    var dialog = byId("last-hand-dialog");
+    var replay = state.lastHandReplay;
+    var trigger = replay.trigger;
+    replay.requestId += 1;
+    replay.tableId = "";
+    replay.playerId = "";
+    replay.hand = null;
+    replay.streetIndex = 0;
+    replay.loading = false;
+    replay.error = "";
+    replay.trigger = null;
+    if (dialog && dialog.open) dialog.close();
+    var content = byId("last-hand-content");
+    if (content) {
+      content.removeAttribute("aria-busy");
+      content.replaceChildren();
+    }
+    var streetLabel = byId("last-hand-street");
+    if (streetLabel) streetLabel.textContent = "Preflop";
+    var previous = byId("last-hand-prev");
+    var next = byId("last-hand-next");
+    if (previous) previous.disabled = true;
+    if (next) next.disabled = true;
+    syncLastHandButton();
+    if (restoreFocus && trigger && trigger.isConnected && trigger.getClientRects().length) {
+      trigger.focus({ preventScroll: true });
+    }
+  }
+
+  function moveLastHandStreet(delta) {
+    var replay = state.lastHandReplay;
+    if (!replay.hand || replay.loading) return;
+    var streets = replayStreets(replay.hand);
+    var nextIndex = replay.streetIndex + delta;
+    if (nextIndex < 0 || nextIndex >= streets.length) return;
+    replay.streetIndex = nextIndex;
+    renderLastHandReplay();
+  }
+
   function clearNotice() {
     showNotice("", "info", true);
   }
 
   function setLoggedOut(message) {
+    closeLastHandDialog(false);
     state.player = null;
     state.showBigBlinds = false;
     document.body.classList.remove("gameplay-active");
@@ -474,8 +668,7 @@
     if (stack > 0) return true;
     var folded = Boolean(seat.folded || seat.is_folded);
     var allIn = Boolean(seat.all_in || seat.is_all_in);
-    var street = String(view && view.street || "").toLowerCase();
-    return Boolean(view && view.status === "playing" && street !== "showdown" && allIn && !folded);
+    return Boolean(view && view.status === "playing" && allIn && !folded);
   }
 
   function tournamentPlayerCount(view) {
@@ -546,9 +739,6 @@
         if (id && Array.isArray(hand.cards)) fx.revealed[id] = hand.cards;
       });
     } else if (event.type === "showdown_result" || event.type === "payout") {
-      fx.awards = Array.isArray(event.winners) ? event.winners : [];
-      fx.pots = Array.isArray(event.pots) ? event.pots : [];
-      fx.returns = Array.isArray(event.returns) ? event.returns : [];
       (Array.isArray(event.showdown) ? event.showdown : []).forEach(function (hand) {
         var id = String(hand && hand.player_id || "");
         if (id && Array.isArray(hand.cards)) fx.revealed[id] = hand.cards;
@@ -563,9 +753,6 @@
     fx.actions = {};
     fx.street = "";
     fx.revealed = {};
-    fx.awards = [];
-    fx.pots = [];
-    fx.returns = [];
     fx.displayWagers = {};
     fx.wagerPositions = {};
     fx.eventAware = Array.isArray(events);
@@ -588,7 +775,6 @@
     var fx = state.tableFx;
     var handId = String(view.hand_id || (number(view.hand_no, 0) ? "hand:" + number(view.hand_no, 0) : ""));
     var events = Array.isArray(view.events) ? view.events : null;
-    if (Array.isArray(view.returns)) fx.returns = view.returns;
     var baseSeq = number(view.event_base_seq, 0);
     var firstView = fx.handId === null;
     var handChanged = !firstView && handId !== fx.handId;
@@ -602,9 +788,6 @@
         fx.generation += 1;
         fx.actions = {};
         fx.revealed = {};
-        fx.awards = [];
-        fx.pots = [];
-        fx.returns = [];
         fx.displayWagers = {};
         fx.wagerPositions = {};
         fx.queue = [];
@@ -615,7 +798,6 @@
           rememberTableEvent(event);
           if (event && event.type === "action" && number(event.amount, 0) > 0) fx.queue.push({ type: "action", event: event });
           else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
-          else if (event && (event.type === "showdown_result" || event.type === "payout")) fx.queue.push({ type: "payout", event: event });
           fx.lastSeq = Math.max(fx.lastSeq, seq);
         });
         fx.street = String(view.street || fx.street || "");
@@ -647,7 +829,6 @@
       rememberTableEvent(event);
       if (event && event.type === "action" && number(event.amount, 0) > 0) fx.queue.push({ type: "action", event: event });
       else if (event && event.type === "sweep") fx.queue.push({ type: "sweep", event: event });
-      else if (event && (event.type === "showdown_result" || event.type === "payout")) fx.queue.push({ type: "payout", event: event });
       fx.lastSeq = Math.max(fx.lastSeq, seq);
     });
     fx.street = visibleStreet || fx.street;
@@ -892,52 +1073,6 @@
       return;
     }
 
-    if (item.type === "payout") {
-      var payoutEvent = item.event || {};
-      var payoutLayer = byId("chip-layer");
-      var payoutSourceNode = byId("pot-amount");
-      var payoutSourceRect = payoutSourceNode && payoutSourceNode.getBoundingClientRect();
-      var payoutStart = payoutSourceRect
-        ? { x: payoutSourceRect.left + payoutSourceRect.width / 2, y: payoutSourceRect.top + payoutSourceRect.height / 2 }
-        : null;
-      var seatNodes = Array.prototype.slice.call(byId("seat-grid").querySelectorAll(".seat-card[data-player-id]"));
-      function recipientNode(recipient) {
-        var recipientId = String(recipient && recipient.player_id || "");
-        if (!recipientId) return null;
-        return seatNodes.find(function (node) {
-          return String(node.getAttribute("data-player-id") || "") === recipientId;
-        }) || null;
-      }
-      var transferCount = (payoutEvent.pots || []).length + ((payoutEvent.returns || []).length ? 1 : 0);
-      var flightMs = Math.min(570, 2100 / Math.max(1, transferCount));
-      function transferStep(recipients, isReturn) {
-        if (!stillCurrent() || state.tableView !== view && (!state.tableView || state.tableView.hand_id !== view.hand_id)) return Promise.resolve();
-        var motions = [];
-        (recipients || []).forEach(function (recipient) {
-          var amount = number(recipient && recipient.amount, 0);
-          var targetNode = recipientNode(recipient);
-          var targetRect = targetNode && targetNode.getBoundingClientRect();
-          if (amount <= 0 || !targetRect) return;
-          var target = { x: targetRect.left + targetRect.width / 2, y: targetRect.top + targetRect.height / 2 };
-          var label = (isReturn ? "RETURN +" : "+") + tableChips(amount);
-          motions.push(animateChip(payoutLayer, payoutStart, target, amount, flightMs, label, isReturn ? "return" : "payout"));
-        });
-        return Promise.all(motions);
-      }
-      var pots = Array.isArray(payoutEvent.pots) ? payoutEvent.pots.slice() : [];
-      if (!pots.length && Array.isArray(payoutEvent.winners) && payoutEvent.winners.length) {
-        pots.push({ recipients: payoutEvent.winners });
-      }
-      pots.sort(function (a, b) { return number(a && a.pot_index, 0) - number(b && b.pot_index, 0); });
-      var sequence = Promise.resolve();
-      pots.forEach(function (pot) {
-        var recipients = Array.isArray(pot && pot.recipients) ? pot.recipients : [];
-        sequence = sequence.then(function () { return transferStep(recipients, false); });
-      });
-      var returns = Array.isArray(payoutEvent.returns) ? payoutEvent.returns : [];
-      sequence.then(function () { return transferStep(returns, true); }).then(complete);
-      return;
-    }
     complete();
   }
   function renderSeats(view) {
@@ -1058,12 +1193,12 @@
 
       var tags = bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '';
       var tagsMarkup = tags ? '<div class="seat-tags">' + tags + '</div>' : '';
-      html += '<div class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
+      html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
         tagsMarkup +
         stackHtml +
         '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        cardHtml + equityHtml +
+        (isMe ? equityHtml + cardHtml : cardHtml + equityHtml) +
       '</div>';
       if (dealer) html += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
       if (actionState) {
@@ -1091,90 +1226,32 @@
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });
     }
     var compact = window.innerWidth <= 820 || grid.clientWidth < 500;
-    var heroHasActionSpace = currentHand && Boolean(ownSeat);
-    var portraitSeats = {
-      2: [[50, 91], [50, 9]],
-      3: [[50, 91], [8, 18], [92, 18]],
-      4: [[50, 91], [7, 74], [50, 10], [93, 74]],
-      5: [[50, 91], [30, 68], [0, 32], [100, 32], [70, 68]],
-      6: [[50, 91], [30, 68], [0, 32], [50, 10], [100, 32], [70, 68]],
-      7: [[50, 91], [30, 68], [0, 32], [15, 10], [85, 10], [100, 32], [70, 68]],
-      8: [[50, 91], [30, 68], [0, 32], [15, 10], [50, 10], [85, 10], [100, 32], [70, 68]],
-      9: [[50, 90], [30, 61], [5, 84], [5, 31], [27, 10], [73, 10], [95, 31], [95, 84], [70, 61]]
-    };
-    var actionSeats = {
-      2: [[50, 52], [50, 9]],
-      3: [[50, 52], [8, 18], [92, 18]],
-      4: [[50, 62], [15, 44], [50, 8], [85, 44]],
-      5: [[50, 62], [15, 44], [20, 8], [80, 8], [85, 44]],
-      6: [[50, 62], [15, 44], [14, 8], [50, 8], [86, 8], [85, 44]],
-      7: [[50, 52], [14, 31], [0, 14], [15, 8], [85, 8], [100, 14], [86, 31]],
-      8: [[50, 52], [14, 31], [0, 14], [15, 8], [50, 8], [85, 8], [100, 14], [86, 31]],
-      9: [[50, 64], [16, 48], [5, 35], [12, 8], [38, 8], [62, 8], [88, 8], [95, 35], [84, 48]]
-    };
-    var phoneActionSeats = {
-      2: [[15, 78], [96, 8]],
-      3: [[15, 78], [50, 10], [92, 43]],
-      4: [[15, 78], [5, 48], [50, 8], [95, 48]],
-      5: [[15, 78], [5, 48], [25, 8], [75, 8], [95, 48]],
-      6: [[15, 78], [5, 48], [15, 8], [50, 8], [85, 8], [95, 48]],
-      7: [[15, 78], [5, 45], [15, 20], [38, 8], [62, 8], [85, 20], [95, 45]],
-      8: [[15, 78], [5, 44], [15, 20], [32, 8], [50, 8], [68, 8], [85, 20], [95, 44]],
-      9: [[15, 84], [10, 64], [10, 44], [10, 20], [35, 8], [60, 8], [85, 8], [95, 44], [95, 64]]
-    };
-    var desktopActionSeats = {
-      2: [[24, 78], [76, 18]],
-      3: [[24, 78], [50, 12], [88, 54]],
-      4: [[24, 78], [8, 46], [50, 12], [92, 46]],
-      5: [[24, 78], [7, 53], [26, 12], [70, 12], [92, 48]],
-      6: [[24, 78], [7, 55], [18, 21], [50, 10], [82, 21], [93, 55]],
-      7: [[24, 78], [7, 56], [17, 28], [38, 10], [66, 10], [85, 28], [93, 56]],
-      8: [[24, 78], [7, 56], [16, 34], [31, 10], [50, 8], [69, 10], [84, 34], [93, 56]],
-      9: [[20, 78], [5, 58], [5, 38], [15, 8], [38, 8], [62, 8], [85, 8], [95, 18], [95, 38]]
-    };
+    var gridRect = grid.getBoundingClientRect();
     felt.classList.toggle("exposed-ring", positionCount >= 5 && Boolean((view.runout_odds || []).length));
     felt.dataset.compactLayout = compact ? "true" : "false";
     felt.classList.toggle("is-crowded", positionCount >= 7);
-    felt.classList.toggle("has-action-space", heroHasActionSpace);
     felt.classList.toggle("is-playing", currentHand);
     felt.dataset.seatCount = String(positionCount);
-    var usePhoneActionSeats = (window.innerWidth >= 381 && window.innerWidth <= 640) ||
-      (positionCount >= 7 && window.innerWidth <= 360 && window.innerHeight <= 650);
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
-      var x;
-      var y;
-      var viewportActionSeats = compact
-        ? (usePhoneActionSeats ? phoneActionSeats : actionSeats)
-        : desktopActionSeats;
-      if (heroHasActionSpace && viewportActionSeats[positionCount]) {
-        x = viewportActionSeats[positionCount][relativeIndex][0];
-        y = viewportActionSeats[positionCount][relativeIndex][1];
-      } else if (compact && portraitSeats[positionCount]) {
-        x = portraitSeats[positionCount][relativeIndex][0];
-        y = portraitSeats[positionCount][relativeIndex][1];
-      } else {
-        var angle = (90 + relativeIndex * 360 / max) * Math.PI / 180;
-        x = 50 + 50 * Math.cos(angle);
-        y = 50 + 40 * Math.sin(angle);
+      if (node.classList.contains("is-me")) {
+        // The hero seat is anchored by CSS at six o’clock; collision fitting may not move it.
+        node.style.removeProperty("left");
+        node.style.removeProperty("top");
+        return;
       }
-      var gridRect = grid.getBoundingClientRect();
+      var angle = Math.PI / 2 + relativeIndex * Math.PI * 2 / positionCount;
+      var x = 50 + 43 * Math.cos(angle);
+      var y = 50 + 36 * Math.sin(angle);
       var halfWidth = node.offsetWidth / 2;
       var insetPercent = gridRect.width ? halfWidth / gridRect.width * 100 : 0;
       x = Math.max(insetPercent + 1, Math.min(99 - insetPercent, x));
       var halfHeightPercent = grid.clientHeight ? (node.offsetHeight / 2) / grid.clientHeight * 100 : 0;
-      y = Math.max(halfHeightPercent + 1, Math.min(99 - halfHeightPercent, y));
+      y = Math.max(halfHeightPercent + 1, Math.min(98 - halfHeightPercent, y));
       node.style.left = x.toFixed(2) + "%";
       node.style.top = y.toFixed(2) + "%";
     });
-
-    var gridRect = grid.getBoundingClientRect();
     var blockers = [];
-    var dock = boxForNode(byId("action-panel"), gridRect);
-    var dockKey = view.id + ":" + Math.round(gridRect.width) + ":" + Math.round(gridRect.height);
-    if (dock) state.seatDock = {key:dockKey, box:dock};
-    else if (heroHasActionSpace && state.seatDock?.key === dockKey) dock = state.seatDock.box;
-    if (dock) blockers.push(dock);
     if (currentHand && window.SitNgoLayout && gridRect.width && gridRect.height) {
       var avoid = ["board-cards", "board-caption", "pot-display", "street-label", "blind-strip"].map(function (id) {
         return boxForNode(byId(id), gridRect);
@@ -1187,6 +1264,7 @@
       });
       var fitted = window.SitNgoLayout.fit({width:gridRect.width,height:gridRect.height,seats:seatsToFit,blockers:avoid});
       fitted.forEach(function (p,i) {
+        if (nodes[i].classList.contains("is-me")) return;
         nodes[i].style.left = (p.x/gridRect.width*100).toFixed(3) + "%";
         nodes[i].style.top = (p.y/gridRect.height*100).toFixed(3) + "%";
       });
@@ -1265,74 +1343,13 @@
     }
     byId("board-cards").innerHTML = slots.join("");
 
-    var fx = state.tableFx;
     var pot = number(view.pot, view.hand && view.hand.pot);
-    var awards = Array.isArray(fx.awards) ? fx.awards : [];
-    var pots = Array.isArray(fx.pots) ? fx.pots : [];
-    var returns = Array.isArray(fx.returns) ? fx.returns : [];
-    var hasSettlement = awards.length > 0 || pots.length > 0 || returns.length > 0;
-    var payoutPending = Boolean((fx.currentItem && fx.currentItem.type === "payout") ||
-      (fx.queue || []).some(function (item) { return item && item.type === "payout"; }));
-    var payoutAmount = pots.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0) +
-      returns.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0);
-    if (!payoutAmount) {
-      payoutAmount = awards.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0) +
-        returns.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0);
-    }
-    byId("pot-amount").textContent = tableChips(payoutPending && pot === 0 ? payoutAmount : pot);
+    byId("pot-amount").textContent = tableChips(pot);
     byId("pot-label").textContent = "Pot";
-    byId("pot-display").hidden = Boolean(hasSettlement && pot === 0 && !payoutPending);
+    byId("pot-display").hidden = !(inProgress && pot > 0);
     byId("street-label").textContent = view.street && view.street !== "lobby" ? String(view.street).replace(/_/g, " ").toUpperCase() : "";
-
-    var resultNode = byId("hand-result");
-    if (hasSettlement) {
-      function nameFor(record) {
-        var id = String(record && record.player_id || "");
-        var seat = (Array.isArray(view.seats) ? view.seats : []).find(function (candidate) {
-          return String(candidate.id || candidate.player_id || "") === id;
-        });
-        return String(record && (record.actor_label || record.name) || (seat && seat.name) || "Player");
-      }
-      function recipientMarkup(record, isReturn) {
-        var amount = number(record && record.amount, 0);
-        var id = String(record && record.player_id || "");
-        var rank = String(record && record.rank || "");
-        return '<span class="hand-result-recipient' + (isReturn ? ' is-return' : '') + '\"' +
-          (id ? ' data-player-id=\"' + esc(id) + '\"' : '') + '><strong>' + esc(nameFor(record)) + '</strong><b>' +
-          (isReturn ? 'Returned ' : '+') + tableChips(amount) + (isReturn ? '' : '') + '</b>' +
-          (rank ? '<small>' + esc(rank) + '</small>' : '') + '</span>';
-      }
-
-      var resultParts = ['<span class="hand-result-title">HAND PAYOUT</span>'];
-      if (pots.length) {
-        pots.forEach(function (potRow, index) {
-          var recipients = Array.isArray(potRow && potRow.recipients) ? potRow.recipients : [];
-          var potIndex = number(potRow && potRow.pot_index, index);
-          var title = potIndex === 0 ? "Main pot" : "Side pot " + (potIndex + 1);
-          var amount = number(potRow && potRow.amount, recipients.reduce(function (sum, recipient) {
-            return sum + number(recipient && recipient.amount, 0);
-          }, 0));
-          resultParts.push('<div class="hand-result-pot"><span class="hand-result-pot-title"><strong>' + esc(title) +
-            '</strong><b>' + tableChips(amount) + '</b></span><span class="hand-result-recipients">' +
-            recipients.map(function (recipient) { return recipientMarkup(recipient, false); }).join("") + '</span></div>');
-        });
-      } else if (awards.length) {
-        var fallbackAmount = awards.reduce(function (sum, award) { return sum + number(award && award.amount, 0); }, 0);
-        resultParts.push('<div class="hand-result-pot"><span class="hand-result-pot-title"><strong>Pot payout</strong><b>' +
-          tableChips(fallbackAmount) + '</b></span><span class="hand-result-recipients">' +
-          awards.map(function (award) { return recipientMarkup(award, false); }).join("") + '</span></div>');
-      }
-      if (returns.length) {
-        resultParts.push('<div class="hand-result-returns"><span class="hand-result-returns-title">Uncalled chips returned</span><span class="hand-result-recipients">' +
-          returns.map(function (record) { return recipientMarkup(record, true); }).join("") + '</span></div>');
-      }
-      resultNode.hidden = false;
-      resultNode.innerHTML = resultParts.join("");
-    } else {
-      resultNode.hidden = true;
-      resultNode.innerHTML = "";
-    }
   }
+
   function renderBlindStrip(view) {
     var b = blindParts(view);
     var remaining = clockRemaining(b);
@@ -1441,63 +1458,52 @@
     return [state.activeTableId, number(view.hand_no, 0), number(view.turn_version, 0)].join(":");
   }
 
+  function viewerSeat(view) {
+    var viewer = view && view.viewer || {};
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    if (!playerId) return null;
+    return (Array.isArray(view && view.seats) ? view.seats : []).find(function (seat) {
+      return String(seat.id || seat.player_id || "") === playerId;
+    }) || null;
+  }
+
+  function viewerCanAct(view) {
+    var viewer = view && view.viewer || {};
+    var seat = viewerSeat(view);
+    var street = String(view && view.street || "").toLowerCase();
+    return Boolean(view && view.status === "playing" && street !== "showdown" &&
+      viewer.can_act && seat && !seat.folded && !seat.is_folded &&
+      !seat.all_in && !seat.is_all_in && number(seat.stack, 0) > 0);
+  }
+
   function actionIntentIsCurrent(intent) {
     var view = state.tableView;
-    var viewer = view && view.viewer || {};
-    return Boolean(intent && state.activeTableId === intent.tableId && view &&
-      view.status === "playing" && viewer.can_act &&
+    return Boolean(intent && String(state.activeTableId) === intent.tableId && view &&
+      viewerCanAct(view) &&
       number(view.hand_no, 0) === intent.payload.expected_hand &&
       number(view.turn_version, 0) === intent.payload.expected_turn_version);
   }
 
-  function checkFoldEligible(view) {
-    if (!view || view.status !== "playing" || tournamentPlayerCount(view) <= 2) return false;
-    var street = String(view.street || "").toLowerCase();
-    var actorId = String(view.actor_id || view.to_act_id || "");
-    if (!actorId || street === "showdown") return false;
-    var viewer = view.viewer || {};
-    if (viewer.can_act) return false;
-    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    if (!playerId) return false;
-    var seat = (view.seats || []).find(function (item) {
-      return String(item.id || item.player_id || "") === playerId;
-    });
-    if (!seat || seat.folded || seat.is_folded || seat.all_in || seat.is_all_in || number(seat.stack, 0) <= 0) return false;
-    var holeCards = cardArray(viewer.hole_cards);
-    if (!holeCards.length) holeCards = cardArray(seat.hole_cards);
-    return holeCards.length >= 2;
-  }
-
-  function checkFoldIntentIsCurrent(intent) {
-    var view = state.tableView;
-    return Boolean(intent && String(state.activeTableId) === intent.tableId && view &&
-      actionTokenKey(view) === intent.key && checkFoldEligible(view));
-  }
-
-  function checkFoldPendingForCurrentView(view) {
-    return Boolean(state.preActionPending && view &&
-      String(state.preActionPending.tableId) === String(state.activeTableId) &&
-      state.preActionPending.payload.expected_hand === view.hand_no && checkFoldEligible(view));
-  }
-
-  function dismissAllInConfirmation(restoreFocus) {
-    var intent = state.actionConfirmation;
-    if (!intent) return;
-    state.actionConfirmation = null;
-    var dialog = byId("allInConfirm");
-    if (dialog && dialog.open) dialog.close();
-    if (!restoreFocus) return;
-    window.setTimeout(function () {
-      var panel = byId("action-panel");
-      if (actionIntentIsCurrent(intent) && intent.trigger && intent.trigger.isConnected && panel && !panel.hidden && !intent.trigger.disabled) {
-        intent.trigger.focus({ preventScroll: true });
-      } else if (panel && !panel.hidden && panel.getClientRects().length) {
-        var first = byId("action-controls").querySelector("button:not(:disabled), input:not(:disabled)");
-        if (first) first.focus({ preventScroll: true });
-      } else if (intent.trigger && intent.trigger.isConnected && document.activeElement === intent.trigger) {
-        intent.trigger.blur();
-      }
-    }, 0);
+  function ensureActionControls() {
+    var controls = byId("action-controls");
+    if (!controls || controls.dataset.initialized === "true") return;
+    controls.innerHTML =
+      '<div class="action-buttons" role="group" aria-label="Poker actions">' +
+        '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>' +
+        '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>' +
+        '<button class="button button-primary" type="button" data-poker-action="raise_to">Bet</button>' +
+      '</div>' +
+      '<div class="raise-control" role="group" aria-labelledby="raise-label">' +
+        '<label id="raise-label" for="raise-amount">Bet or raise amount</label>' +
+        '<div class="raise-presets" role="group" aria-label="Bet size presets">' +
+          '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">½ pot</button>' +
+          '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">¾ pot</button>' +
+          '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">Pot</button>' +
+        '</div>' +
+        '<input id="raise-amount" type="range" min="0" max="0" step="1" value="0" aria-describedby="raise-range">' +
+        '<span class="raise-range" id="raise-range"></span>' +
+      '</div>';
+    controls.dataset.initialized = "true";
   }
 
   function updateRaisePreview() {
@@ -1508,88 +1514,74 @@
     var min = number(input.min, 0);
     var max = number(input.max, 0);
     var viewer = view.viewer || {};
-    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var seat = (view.seats || []).find(function (item) {
-      return String(item.id || item.player_id || "") === playerId;
-    });
+    var seat = viewerSeat(view);
     var stack = number(seat && seat.stack, 0);
     var ownBet = number(seat && seat.bet, 0);
+    var currentBet = number(view.current_bet, 0);
+    var actionName = currentBet > 0 ? "Raise" : "Bet";
     var valid = Number.isInteger(target) && target >= min && target <= max;
-    var paid = Math.min(stack, Math.max(0, target - ownBet));
-    var actionName = number(view.current_bet, 0) > 0 ? "Raise" : "Bet";
-    var isAllInTarget = stack > 0 && target === max && max === ownBet + stack;
     var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
+    var actionAllowed = viewerCanAct(view) && viewer.raise_rights !== false && stack > 0 &&
+      max > currentBet && min <= max;
     input.setAttribute("aria-valuetext", valid
-      ? actionName + " to " + tableChips(target) + " total; adds " + tableChips(paid) + (isAllInTarget ? "; all-in" : "")
-      : "Choose an amount from " + tableChips(min) + " to " + tableChips(max));
+      ? actionName + " to " + actionChips(target) + " total; adds " + actionChips(Math.max(0, target - ownBet))
+      : "Choose an amount from " + actionChips(min) + " to " + actionChips(max));
     if (button) {
-      var label = valid
-        ? actionName + " to " + tableChips(target) + (isAllInTarget ? " · all-in" : "")
-        : actionName + " amount";
+      var label = valid ? actionName + " to " + actionChips(target) : actionName;
       button.textContent = label;
-      button.setAttribute("aria-label", valid ? label.replace(" · all-in", "") + (isAllInTarget ? ", all-in" : "") : label);
-      button.disabled = Boolean(state.actionPending || state.actionConfirmation ||
-        checkFoldPendingForCurrentView(view) || !valid);
+      button.setAttribute("aria-label", label);
+      button.disabled = Boolean(state.actionPending || state.actionSubmittedKey === actionTokenKey(view) ||
+        !actionAllowed || !valid);
     }
     byId("action-controls").querySelectorAll("[data-raise-preset]").forEach(function (preset) {
       preset.setAttribute("aria-pressed", String(number(preset.getAttribute("data-target"), -1) === target));
+      preset.disabled = Boolean(state.actionPending || state.actionSubmittedKey === actionTokenKey(view) || !actionAllowed);
     });
   }
 
   function renderActions(view) {
     var panel = byId("action-panel");
+    var controls = byId("action-controls");
+    if (!panel || !controls) return;
+    ensureActionControls();
+
     var viewer = view.viewer || {};
+    var seat = viewerSeat(view);
     var playing = view.status === "playing";
-    var canAct = playing && Boolean(viewer.can_act);
+    var seated = Boolean(seat);
+    var panelVisible = playing && seated;
+    var canAct = viewerCanAct(view);
     var currentKey = actionTokenKey(view);
-    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var seat = (view.seats || []).find(function (item) {
-      return String(item.id || item.player_id || "") === playerId;
-    });
-    var stack = number(seat && seat.stack, 0);
-    var ownBet = number(seat && seat.bet, 0);
-    var canPreAct = checkFoldEligible(view);
-    var panelVisible = canAct || canPreAct;
-    var preActionPendingForCurrentView = checkFoldPendingForCurrentView(view);
+    if (state.actionSubmittedKey && state.actionSubmittedKey !== currentKey) state.actionSubmittedKey = "";
+    if (state.actionPending && state.actionPending.tableId !== String(state.activeTableId)) state.actionPending = null;
 
     if (state.actionPending && state.actionPending.accepted && !actionIntentIsCurrent(state.actionPending)) {
       state.actionPending = null;
     }
-    if (state.actionConfirmation && !actionIntentIsCurrent(state.actionConfirmation)) {
-      dismissAllInConfirmation(true);
-      showNotice("That turn changed, so the all-in confirmation was canceled. Review the updated action.", "info", false);
-    }
-
     panel.hidden = !panelVisible;
-    panel.setAttribute("aria-busy", String(Boolean(state.actionPending || preActionPendingForCurrentView)));
-    if (!playing || !panelVisible) {
-      state.actionRenderKey = "";
-      return;
-    }
+    panel.setAttribute("aria-busy", String(Boolean(state.actionPending || state.actionSubmittedKey === currentKey)));
+    if (!playing || !panelVisible) return;
 
-    var toCall = number(viewer.to_call, 0);
-    var currentBet = number(view.current_bet, 0);
+    var stack = number(seat && seat.stack, 0);
+    var ownBet = number(seat && seat.bet, 0);
+    var toCall = Math.max(0, number(viewer.to_call, 0));
     var callAmount = Math.min(stack, toCall);
-    var callIsAllIn = stack > 0 && callAmount === stack && toCall > 0;
-    var canRaise = viewer.raise_rights !== false;
+    var currentBet = number(view.current_bet, 0);
     var maxRaise = viewer.max_raise_to == null ? ownBet + stack : number(viewer.max_raise_to, ownBet + stack);
     var minRaise = viewer.min_raise_to == null
-      ? currentBet + number(view.min_raise, 0)
-      : number(viewer.min_raise_to, currentBet + number(view.min_raise, 0));
-    var hasRaiseSlider = canAct && stack > 0 && canRaise && maxRaise > currentBet;
-    var shortAllInRaise = hasRaiseSlider && minRaise > maxRaise;
-    var rangeMin = shortAllInRaise ? maxRaise : Math.max(currentBet + 1, minRaise);
+      ? currentBet + Math.max(1, number(view.min_raise, 1))
+      : number(viewer.min_raise_to, currentBet + Math.max(1, number(view.min_raise, 1)));
+    var rangeMax = Math.max(0, Math.floor(maxRaise));
+    var shortAllInRaise = minRaise > maxRaise;
+    var rangeMin = shortAllInRaise ? rangeMax : Math.max(currentBet + 1, Math.floor(minRaise));
+    if (rangeMin > rangeMax) rangeMin = rangeMax;
+    var raiseAllowed = canAct && viewer.raise_rights !== false && stack > 0 &&
+      maxRaise > currentBet && rangeMax >= currentBet + 1;
     var draftKey = actionTokenKey(view);
     if (state.raiseDraftKey !== draftKey) {
       state.raiseDraftKey = draftKey;
       state.raiseDraftValue = null;
     }
-
-    var suggested = Math.min(maxRaise, Math.max(rangeMin, number(viewer.suggested_raise_to, rangeMin)));
-    if (!Number.isInteger(suggested)) suggested = Math.round(suggested);
-    var draft = state.raiseDraftValue === null ? suggested : Number(state.raiseDraftValue);
-    if (!Number.isInteger(draft) || draft < rangeMin || draft > maxRaise) draft = suggested;
-    if (state.raiseDraftValue !== null && String(draft) !== state.raiseDraftValue) state.raiseDraftValue = String(draft);
 
     var street = String(view.street || "").toLowerCase();
     var preflop = street ? street === "preflop" : cardArray(view.board).length === 0;
@@ -1597,91 +1589,69 @@
     var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
     var presetSpecs = preflop
       ? [{ label: "2.5 BB", bb: 2.5 }, { label: "3 BB", bb: 3 }, { label: "4 BB", bb: 4 }]
-      : [{ label: "1/2 pot", fraction: 0.5 }, { label: "3/4 pot", fraction: 0.75 }, { label: "Pot", fraction: 1 }];
+      : [{ label: "½ pot", fraction: 0.5 }, { label: "¾ pot", fraction: 0.75 }, { label: "Pot", fraction: 1 }];
     presetSpecs = presetSpecs.map(function (preset) {
       var rawTarget = preflop
         ? Math.round(bigBlind * preset.bb)
         : currentBet + Math.round(potAfterCall * preset.fraction);
-      var target = Math.max(rangeMin, Math.min(maxRaise, rawTarget));
+      var target = Math.max(rangeMin, Math.min(rangeMax, rawTarget));
       var adjusted = target !== rawTarget;
       return {
         label: preset.label,
         target: target,
-        ariaLabel: "Set raise-to amount to " + tableChips(target) + " with the " + preset.label + " preset" +
+        ariaLabel: "Set raise-to amount to " + actionChips(target) + " with the " + preset.label + " preset" +
           (preflop ? "" : " after calling") + (adjusted ? "; adjusted to the legal range" : "")
       };
     });
-    var actionKey = canPreAct ? "waiting:" + view.id + ":" + view.hand_no : JSON.stringify([
-      state.activeTableId, canAct, canPreAct, state.showBigBlinds, number(view.hand_no, 0), number(view.turn_version, 0),
-      street, number(view.pot, 0), bigBlind, presetSpecs.map(function (preset) { return preset.target; }),
-      toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
-      minRaise, maxRaise, hasRaiseSlider, shortAllInRaise, rangeMin, suggested
-    ]);
-    var controls = "";
-    if (canPreAct) {
-      var preSelected = Boolean(viewer.check_fold_selected);
-      var preLabel = preSelected
-        ? "Check/Fold on. Automatically check when free and fold facing a bet."
-        : "Check/Fold off. Turn on to automatically check when free and fold facing a bet.";
-      controls += '<button class="button button-outline preaction-toggle" type="button" data-preaction="check-fold" aria-pressed="' +
-        String(preSelected) + '" aria-describedby="preaction-help" aria-label="' + esc(preLabel) + '">' +
-        '<span class="preaction-name">Check/Fold</span><span class="preaction-state">' + (preSelected ? "On" : "Off") + '</span></button>' +
-        '<p class="preaction-help" id="preaction-help">Checks when free; folds facing a bet.</p>';
-    } else if (toCall > 0) {
-      var callLabel = "Call " + tableChips(callAmount) + (callIsAllIn ? " · all-in" : "");
-      controls += '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>';
-      controls += '<button class="button button-outline call-button" type="button" data-poker-action="call" aria-label="' + esc(callLabel) + '">' + esc(callLabel) + '</button>';
-    } else {
-      controls += '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>';
+
+    var suggested = Math.min(rangeMax, Math.max(rangeMin, number(viewer.suggested_raise_to, rangeMin)));
+    if (!Number.isInteger(suggested)) suggested = Math.round(suggested);
+    var draft = state.raiseDraftValue === null ? suggested : Number(state.raiseDraftValue);
+    if (!Number.isInteger(draft) || draft < rangeMin || draft > rangeMax) draft = suggested;
+    if (state.raiseDraftValue !== null && String(draft) !== state.raiseDraftValue) state.raiseDraftValue = String(draft);
+
+    var callButton = controls.querySelector('[data-poker-action="check"], [data-poker-action="call"]');
+    var foldButton = controls.querySelector('[data-poker-action="fold"]');
+    var raiseButton = controls.querySelector('[data-poker-action="raise_to"]');
+    var input = byId("raise-amount");
+    var blocked = Boolean(state.actionPending || state.actionSubmittedKey === currentKey);
+    if (foldButton) foldButton.disabled = blocked || !canAct || toCall <= 0;
+    if (callButton) {
+      callButton.setAttribute("data-poker-action", toCall > 0 ? "call" : "check");
+      callButton.textContent = toCall > 0 ? "Call " + actionChips(callAmount) : "Check";
+      callButton.setAttribute("aria-label", toCall > 0 ? "Call " + actionChips(callAmount) : "Check");
+      callButton.disabled = blocked || !canAct;
     }
 
-    if (hasRaiseSlider) {
-      var actionName = currentBet > 0 ? "Raise" : "Bet";
-      var maxIsAllIn = stack > 0 && maxRaise === ownBet + stack;
-      var rangeText = shortAllInRaise
-        ? "Short all-in · max " + tableChips(maxRaise)
-        : "Min " + tableChips(rangeMin) + "–" + tableChips(maxRaise) + (maxIsAllIn ? " · all-in" : "");
-      var presetMarkup = '<div class="raise-presets" role="group" aria-label="' +
-        (preflop ? "Preflop raise sizes in big blinds" : "Postflop pot-size raises") + '">' +
-        presetSpecs.map(function (preset) {
-          return '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true" data-target="' +
-            preset.target + '" aria-pressed="false" aria-label="' + esc(preset.ariaLabel) + '" title="' +
-            esc(preset.ariaLabel) + '">' + esc(preset.label) + '</button>';
-        }).join("") + '</div>';
-      controls += '<div class="raise-control" role="group" aria-labelledby="raise-label">' +
-        '<label id="raise-label" for="raise-amount">' + actionName + ' amount</label>' +
-        presetMarkup +
-        '<input id="raise-amount" type="range" min="' + rangeMin + '" max="' + maxRaise + '" step="1" value="' + draft + '" aria-describedby="raise-range">' +
-        '<span class="raise-range" id="raise-range">' + esc(rangeText) + '</span>' +
-        '<button class="button button-primary" type="button" data-poker-action="raise_to" aria-label="' + actionName + ' to ' + esc(tableChips(draft)) + '">' + actionName + ' to ' + esc(tableChips(draft)) + '</button></div>';
+    input.min = String(rangeMin);
+    input.max = String(rangeMax);
+    if (document.activeElement !== input || Number(input.value) < rangeMin || Number(input.value) > rangeMax) {
+      input.value = String(draft);
     }
+    input.disabled = blocked || !raiseAllowed;
+    input.setAttribute("aria-valuetext", "Bet or raise to " + actionChips(draft));
+    if (raiseButton) raiseButton.textContent = (currentBet > 0 ? "Raise" : "Bet") + " to " + actionChips(draft);
 
-    if (state.actionRenderKey !== actionKey) {
-      var keepRaiseFocus = document.activeElement && document.activeElement.id === "raise-amount";
-      byId("action-controls").innerHTML = controls;
-      state.actionRenderKey = actionKey;
-      if (keepRaiseFocus) {
-        var newInput = byId("raise-amount");
-        if (newInput) newInput.focus({ preventScroll: true });
-      }
-    }
-    var blocked = Boolean(state.actionPending || state.actionConfirmation);
-    byId("action-controls").querySelectorAll("button[data-poker-action], button[data-raise-preset]").forEach(function (button) {
-      if (button.getAttribute("data-poker-action") !== "raise_to") button.disabled = blocked;
+    controls.querySelectorAll("[data-raise-preset]").forEach(function (preset, index) {
+      var spec = presetSpecs[index];
+      if (!spec) return;
+      preset.textContent = spec.label;
+      preset.setAttribute("data-target", String(spec.target));
+      preset.setAttribute("aria-label", spec.ariaLabel);
+      preset.setAttribute("title", spec.ariaLabel);
+      preset.setAttribute("aria-pressed", String(spec.target === draft));
+      preset.disabled = blocked || !raiseAllowed;
     });
-    var preActionToggle = byId("action-controls").querySelector('[data-preaction="check-fold"]');
-    if (preActionToggle) {
-      var selected = Boolean(viewer.check_fold_selected);
-      var stateLabel = preActionToggle.querySelector(".preaction-state");
-      preActionToggle.setAttribute("aria-pressed", String(selected));
-      preActionToggle.setAttribute("aria-label", selected
-        ? "Check/Fold on. Automatically check when free and fold facing a bet."
-        : "Check/Fold off. Turn on to automatically check when free and fold facing a bet.");
-      preActionToggle.disabled = preActionPendingForCurrentView;
-      if (stateLabel) stateLabel.textContent = preActionPendingForCurrentView ? "Saving…" : (selected ? "On" : "Off");
+
+    var rangeText = shortAllInRaise
+      ? "Short all-in · max " + actionChips(rangeMax)
+      : "Min " + actionChips(rangeMin) + "–" + actionChips(rangeMax);
+    byId("raise-range").textContent = rangeText;
+    byId("raise-label").textContent = (currentBet > 0 ? "Raise" : "Bet") + " amount";
+    if (raiseButton) {
+      raiseButton.setAttribute("aria-label", (currentBet > 0 ? "Raise" : "Bet") + " to " + actionChips(draft));
+      raiseButton.disabled = blocked || !raiseAllowed || draft < rangeMin || draft > rangeMax;
     }
-    var raiseInput = byId("raise-amount");
-    if (raiseInput) raiseInput.disabled = blocked;
     updateRaisePreview();
   }
 
@@ -1790,8 +1760,8 @@
     byId("table-view").hidden = !hasTable;
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
-      if (state.actionConfirmation) dismissAllInConfirmation(true);
-      state.actionRenderKey = "";
+      syncLastHandButton();
+      state.actionSubmittedKey = "";
       byId("results-panel").hidden = true;
       byId("reopen-results-button").hidden = true;
       clearSeatTurnClock();
@@ -1804,6 +1774,7 @@
       return;
     }
 
+    syncLastHandButton();
     consumeTableEvents(view);
     syncSeatTurnClock(view);
     var status = view.status || "lobby";
@@ -1842,6 +1813,9 @@
   }
 
   function enterApp(player, csrf, sessionProof) {
+    var previousPlayerId = String(state.player && state.player.id || "");
+    var nextPlayerId = String(player && player.id || "");
+    if (previousPlayerId && previousPlayerId !== nextPlayerId) closeLastHandDialog(false);
     state.player = player || null;
     if (typeof sessionProof === "string" && sessionProof) state.sessionProof = sessionProof;
     if (typeof csrf === "string" && csrf) state.csrf = csrf;
@@ -1887,19 +1861,6 @@
     if (previous && previous.id === tableId) {
       var previousViewer = previous.viewer || {};
       var incomingViewer = view.viewer || {};
-      var samePrivateView = number(view.version, 0) === number(previous.version, 0) &&
-        number(view.hand_no, 0) === number(previous.hand_no, 0) &&
-        String(incomingViewer.player_id || "") !== "" &&
-        String(incomingViewer.player_id || "") === String(previousViewer.player_id || "");
-      if (samePrivateView) {
-        var oldRevision = number(previousViewer.check_fold_revision, 0);
-        var newRevision = number(incomingViewer.check_fold_revision, 0);
-        if (newRevision < oldRevision) return false;
-        if (newRevision > oldRevision) {
-          state.tableView = view;
-          return true;
-        }
-      }
       // A poll sent before an action can arrive after its response. Never
       // rewind the board, odds, action controls, private preference, or countdown.
       if (number(view.version, 0) < number(previous.version, 0) ||
@@ -1932,6 +1893,7 @@
             return table.viewer_seated;
           });
           if (resume) {
+            closeLastHandDialog(false);
             state.activeTableId = String(resume.id || "");
             if (state.activeTableId) setHashTable(state.activeTableId);
           }
@@ -1950,6 +1912,7 @@
           if (err.status === 404) {
             clearBlindAnnouncement(true);
             closeRecentActionDialog();
+            closeLastHandDialog(false);
             state.activeTableId = "";
             state.tableView = null;
             setHashTable("");
@@ -1965,10 +1928,17 @@
       state.refreshBusy = false;
       var activeHand = Boolean(state.tableView && state.tableView.status === "playing");
       var visibleDelay = activeHand ? 900 : 2800;
-      if (activeHand && state.tableView.runout_at) {
-        // Fetch just after the next deal, even at a one-second card pace.
-        var untilDeal = (state.tableView.runout_at - state.tableView.server_now) * 1000;
-        visibleDelay = Math.max(120, Math.min(visibleDelay, untilDeal + 35));
+      if (activeHand) {
+        var liveView = state.tableView;
+        var street = String(liveView.street || "").toLowerCase();
+        var dueAt = street === "showdown"
+          ? (liveView.next_hand_at || (liveView.hand && liveView.hand.next_hand_at))
+          : (liveView.runout_at || (liveView.hand && liveView.hand.runout_at));
+        if (dueAt) {
+          // Fetch just after the next deal/runout, including the short hand-complete pause.
+          var untilDeal = epochMilliseconds(dueAt) - (epochMilliseconds(liveView.server_now) || Date.now());
+          visibleDelay = Math.max(40, Math.min(visibleDelay, untilDeal + 35));
+        }
       }
       var delay = state.refreshPending ? 0 : (document.hidden ? 8000 : visibleDelay);
       state.refreshPending = false;
@@ -2056,12 +2026,9 @@
     if (adoptSnapshot(data.table || data, selectedTableId)) renderTable();
   }
 
-  function actionIntentFor(action, view, trigger) {
+  function actionIntentFor(action, view) {
     var viewer = view.viewer || {};
-    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var seat = (view.seats || []).find(function (item) {
-      return String(item.id || item.player_id || "") === playerId;
-    });
+    var seat = viewerSeat(view);
     var stack = number(seat && seat.stack, 0);
     var ownBet = number(seat && seat.bet, 0);
     var currentBet = number(view.current_bet, 0);
@@ -2072,7 +2039,6 @@
     };
     var paid = 0;
     var target = ownBet;
-    var usesWholeStack = false;
 
     if (action === "raise_to") {
       var input = byId("raise-amount");
@@ -2087,17 +2053,14 @@
       payload.amount = amount;
       paid = amount - ownBet;
       target = amount;
-      usesWholeStack = stack > 0 && paid === stack && amount === number(viewer.max_raise_to, ownBet + stack);
     } else {
       payload.action = action;
       if (action === "call") {
         paid = Math.min(toCall, stack);
         target = ownBet + paid;
-        usesWholeStack = stack > 0 && paid === stack;
       } else if (action === "all_in") {
         paid = stack;
         target = ownBet + stack;
-        usesWholeStack = stack > 0;
       }
     }
 
@@ -2110,106 +2073,31 @@
       description = "check";
       successMessage = "Check recorded.";
     } else if (action === "call") {
-      description = "call for " + tableChips(paid) + (usesWholeStack ? " · all-in" : "");
-      successMessage = "Call recorded: " + tableChips(paid) + (usesWholeStack ? " · all-in." : ".");
+      var allInCall = stack > 0 && paid === stack;
+      description = "call for " + actionChips(paid) + (allInCall ? " · all-in" : "");
+      successMessage = "Call recorded: " + actionChips(paid) + (allInCall ? " · all-in." : ".");
     } else if (action === "all_in") {
       if (target > currentBet) {
         var allInVerb = currentBet > 0 ? "raise" : "bet";
-        description = "all-in " + allInVerb + " to " + tableChips(target);
-        successMessage = "All-in " + allInVerb + " recorded: " + tableChips(paid) + " added to reach " + tableChips(target) + " total.";
+        description = "all-in " + allInVerb + " to " + actionChips(target);
+        successMessage = "All-in " + allInVerb + " recorded: " + actionChips(paid) + " added to reach " + actionChips(target) + " total.";
       } else {
-        description = "all-in call for " + tableChips(paid);
-        successMessage = "All-in call recorded: " + tableChips(paid) + ".";
+        description = "all-in call for " + actionChips(paid);
+        successMessage = "All-in call recorded: " + actionChips(paid) + ".";
       }
     } else {
       var raiseVerb = payload.action === "raise" ? "raise" : "bet";
-      description = raiseVerb + " to " + tableChips(target) + " total (adds " + tableChips(paid) + ")";
-      successMessage = (payload.action === "raise" ? "Raise" : "Bet") + " recorded: " + tableChips(paid) + " added to reach " + tableChips(target) + " total.";
-    }
-
-    var confirmationMessage = "";
-    if (usesWholeStack) {
-      if (action === "call") {
-        confirmationMessage = "Calling " + tableChips(paid) + " uses your entire remaining stack. Continue with the all-in call?";
-      } else if (action === "all_in" && target > currentBet) {
-        confirmationMessage = "This all-in " + (currentBet > 0 ? "raise" : "bet") + " adds " + tableChips(paid) + " to reach " + tableChips(target) + " total on this street. It uses your entire remaining stack. Continue?";
-      } else if (action === "all_in") {
-        confirmationMessage = "This call puts all " + tableChips(paid) + " left in your stack into the pot. Continue with the all-in call?";
-      } else {
-        confirmationMessage = "This " + (payload.action === "raise" ? "raise" : "bet") + " adds " + tableChips(paid) + " to reach " + tableChips(target) + " total on this street. It uses your entire remaining stack. Continue with the all-in?";
-      }
+      description = raiseVerb + " to " + actionChips(target) + " total (adds " + actionChips(paid) + ")";
+      successMessage = (payload.action === "raise" ? "Raise" : "Bet") + " recorded: " + actionChips(paid) + " added to reach " + actionChips(target) + " total.";
     }
 
     return {
-      tableId: state.activeTableId,
-      payload: payload,
-      action: action,
-      paid: paid,
-      target: target,
-      wholeStackAmount: stack,
-      usesWholeStack: usesWholeStack,
-      confirmationMessage: confirmationMessage,
-      pendingMessage: "Submitting " + description + "…",
-      successMessage: successMessage,
-      trigger: trigger
-    };
-  }
-
-  async function submitCheckFoldIntent() {
-    var view = state.tableView;
-    var tableId = String(state.activeTableId || "");
-    if (checkFoldPendingForCurrentView(view)) return;
-    if (!view || !checkFoldEligible(view)) {
-      showNotice("The hand or turn changed before Check/Fold was updated. Review the table.", "info", false);
-      try { await refreshSelected(); } catch (err) {}
-      return;
-    }
-    var intent = {
-      tableId: tableId,
+      tableId: String(state.activeTableId),
       key: actionTokenKey(view),
-      payload: {
-        selected: !Boolean(view.viewer && view.viewer.check_fold_selected),
-        expected_revision: number(view.viewer.check_fold_revision, 0),
-        expected_hand: number(view.hand_no, 0),
-        expected_turn_version: number(view.turn_version, 0)
-      }
+      payload: payload,
+      pendingMessage: "Submitting " + description + "…",
+      successMessage: successMessage
     };
-    if (!checkFoldIntentIsCurrent(intent)) {
-      showNotice("The hand or turn changed before Check/Fold was updated. Review the table.", "info", false);
-      try { await refreshSelected(); } catch (err) {}
-      return;
-    }
-
-    state.preActionPending = intent;
-    renderActions(view);
-    try {
-      var data = await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/preaction", intent.payload);
-      if (String(state.activeTableId) !== intent.tableId || !state.tableView ||
-          state.tableView.hand_no !== intent.payload.expected_hand) {
-        try { await refreshSelected(); } catch (refreshError) {}
-        return;
-      }
-      var updated = data.table || data;
-      if (!updated || String(updated.id || "") !== intent.tableId) {
-        try { await refreshSelected(); } catch (refreshError) {}
-        return;
-      }
-      if (adoptSnapshot(updated, intent.tableId)) renderTable();
-      else if (state.tableView) renderTable();
-    } catch (err) {
-      var stillCurrent = checkFoldIntentIsCurrent(intent);
-      if (err.status === 409) {
-        if (stillCurrent) showNotice("The hand or turn changed before Check/Fold was updated. Review the refreshed table.", "info", false);
-      } else if (stillCurrent) {
-        showNotice(err.message, "error", false);
-      }
-      try { await refreshSelected(); } catch (refreshError) {}
-    } finally {
-      if (state.preActionPending === intent) {
-        state.preActionPending = null;
-        if (state.tableView) renderActions(state.tableView);
-      }
-    }
   }
 
   async function submitActionIntent(intent) {
@@ -2226,6 +2114,7 @@
     try {
       await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/action", intent.payload);
       intent.accepted = true;
+      state.actionSubmittedKey = intent.key;
       showActionFeedback(intent.successMessage, "success", false);
       try {
         await refreshSelected();
@@ -2253,24 +2142,13 @@
   }
 
   function beginActionIntent(intent) {
-    if (!intent || state.actionPending || state.actionConfirmation) return;
+    if (!intent || state.actionPending || state.actionSubmittedKey === intent.key) return;
     if (!actionIntentIsCurrent(intent)) {
       showNotice("That turn changed before the action was sent. Review the refreshed table.", "info", false);
       refreshSelected().catch(function () {});
       return;
     }
-    if (!intent.usesWholeStack) {
-      submitActionIntent(intent);
-      return;
-    }
-    state.actionConfirmation = intent;
-    byId("allInConfirmDescription").textContent = intent.confirmationMessage;
-    byId("confirm-all-in-button").textContent = "Commit " + tableChips(intent.wholeStackAmount);
-    var dialog = byId("allInConfirm");
-    if (typeof dialog.showModal === "function") dialog.showModal();
-    else dialog.setAttribute("open", "");
-    renderActions(state.tableView);
-    byId("cancel-all-in-button").focus();
+    submitActionIntent(intent);
   }
 
   byId("login-form").addEventListener("submit", async function (event) {
@@ -2316,7 +2194,6 @@
     if (e.type === "reveal") return "Cards shown: " + (e.hands || []).map(function (h) {return h.actor_label + " " + historyCards(h.cards);}).join(" · ");
     if (e.type === "payout" || e.type === "showdown_result") {
       var lines=(e.winners || []).map(function (w) {return w.actor_label + " won " + chips(w.amount) + (w.rank ? " (" + w.rank + ")" : "");});
-      (e.returns || []).forEach(function (w) {lines.push("Uncalled: " + chips(w.amount) + " returned to " + (w.actor_label || "player"));});
       return lines.join(" · ");
     }
     return "";
@@ -2364,6 +2241,23 @@
       el.dataset.table = id || "";
     } catch (err) { if (gen === historyGeneration) el.textContent = err.message; }
   }
+  byId("last-hand-button").addEventListener("click", function (event) {
+    openLastHandDialog(event.currentTarget);
+  });
+  byId("last-hand-close").addEventListener("click", function () {
+    closeLastHandDialog(true);
+  });
+  byId("last-hand-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeLastHandDialog(true);
+  });
+  byId("last-hand-prev").addEventListener("click", function () {
+    moveLastHandStreet(-1);
+  });
+  byId("last-hand-next").addEventListener("click", function () {
+    moveLastHandStreet(1);
+  });
+
   byId("history-button").addEventListener("click", function () {byId("history-dialog").showModal(); loadHistory("");});
   byId("history-close").addEventListener("click", function () {byId("history-dialog").close();});
 
@@ -2423,6 +2317,7 @@
         runout_seconds: number(byId("runout-seconds").value, 2.5)
       });
       var table = data.table || data;
+      closeLastHandDialog(false);
       state.activeTableId = String(table.id || "");
       state.tableView = table.id ? table : null;
       if (state.activeTableId) setHashTable(state.activeTableId);
@@ -2508,6 +2403,7 @@
       await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/cancel", {});
       clearBlindAnnouncement(true);
       closeRecentActionDialog();
+      closeLastHandDialog(false);
       state.activeTableId = "";
       state.skipAutoResume = true;
       state.tableView = null;
@@ -2550,6 +2446,7 @@
     lobbyPane("games");
     clearBlindAnnouncement(true);
     closeRecentActionDialog();
+    closeLastHandDialog(false);
     state.activeTableId = "";
     state.skipAutoResume = true;
     state.tableView = null;
@@ -2599,6 +2496,7 @@
     if (!button) return;
     clearBlindAnnouncement(true);
     closeRecentActionDialog();
+    closeLastHandDialog(false);
     state.activeTableId = button.getAttribute("data-open-table") || "";
     state.skipAutoResume = false;
     state.tableView = null;
@@ -2658,19 +2556,14 @@
   });
 
   byId("action-controls").addEventListener("click", function (event) {
-    var preAction = event.target.closest('[data-preaction="check-fold"]');
-    if (preAction) {
-      if (preAction.disabled || checkFoldPendingForCurrentView(state.tableView)) return;
-      submitCheckFoldIntent();
-      return;
-    }
     var preset = event.target.closest("[data-raise-preset]");
     if (preset) {
-      if (preset.disabled || state.actionPending || state.actionConfirmation) return;
       var presetView = state.tableView;
       var raiseInput = byId("raise-amount");
       var presetTarget = Number(preset.getAttribute("data-target"));
-      if (!presetView || !presetView.viewer || !presetView.viewer.can_act || !raiseInput || !Number.isInteger(presetTarget)) return;
+      if (preset.disabled || !presetView || !viewerCanAct(presetView) ||
+          state.actionPending || state.actionSubmittedKey === actionTokenKey(presetView) ||
+          !raiseInput || !Number.isInteger(presetTarget)) return;
       state.raiseDraftKey = actionTokenKey(presetView);
       state.raiseDraftValue = String(presetTarget);
       raiseInput.value = String(presetTarget);
@@ -2678,40 +2571,11 @@
       return;
     }
     var button = event.target.closest("[data-poker-action]");
-    if (!button || button.disabled || state.actionPending || state.actionConfirmation) return;
+    if (!button || button.disabled || state.actionPending) return;
     var view = state.tableView;
-    if (!view || !view.viewer || !view.viewer.can_act) return;
-    var intent = actionIntentFor(button.getAttribute("data-poker-action"), view, button);
+    if (!viewerCanAct(view) || state.actionSubmittedKey === actionTokenKey(view)) return;
+    var intent = actionIntentFor(button.getAttribute("data-poker-action"), view);
     if (intent) beginActionIntent(intent);
-  });
-
-  byId("allInConfirm").addEventListener("click", function (event) {
-    var button = event.target.closest("[data-action]");
-    if (!button) return;
-    var action = button.getAttribute("data-action");
-    var intent = state.actionConfirmation;
-    if (action === "cancel-all-in") {
-      dismissAllInConfirmation(false);
-      if (state.tableView) renderActions(state.tableView);
-      if (intent && intent.trigger && intent.trigger.isConnected && !intent.trigger.disabled) intent.trigger.focus();
-      return;
-    }
-    if (action !== "confirm-all-in" || !intent || state.actionPending) return;
-    if (!actionIntentIsCurrent(intent)) {
-      dismissAllInConfirmation(true);
-      showNotice("That turn changed, so the all-in was canceled. Review the refreshed action.", "info", false);
-      refreshSelected().catch(function () {});
-      return;
-    }
-    dismissAllInConfirmation(false);
-    submitActionIntent(intent);
-  });
-
-  byId("allInConfirm").addEventListener("cancel", function () {
-    var intent = state.actionConfirmation;
-    state.actionConfirmation = null;
-    if (state.tableView) renderActions(state.tableView);
-    if (intent && intent.trigger && intent.trigger.isConnected && !intent.trigger.disabled) intent.trigger.focus();
   });
 
   window.addEventListener("resize", function () {

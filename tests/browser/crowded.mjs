@@ -110,7 +110,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   if (!actingPlayer) throw Error('The live hand has no seated actor');
   await signIn(activePage, actingPlayer);
   await openTable(activePage, tableName);
-  await wait(activePage, visible, '#felt > #action-panel #action-controls [data-raise-preset]');
+  await wait(activePage, visible, '.table-surface > #action-panel #action-controls [data-raise-preset]');
 
   const before = await req(tablePath, actingPlayer);
   if (before.actor_id !== actingPlayer.player.id || !before.viewer?.can_act) throw Error('Seated browser did not receive the active turn');
@@ -120,10 +120,17 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     turn_version: before.turn_version,
     event_seq: before.event_seq,
   };
-  const activeWidths = [320, 390, 1366];
+  const activeViewports = [
+    {width: 320, height: 740},
+    {width: 320, height: 568},
+    {width: 390, height: 844},
+    {width: 667, height: 375},
+    {width: 844, height: 390},
+    {width: 1366, height: 768},
+  ];
   const failures = [];
-  for (const width of activeWidths) {
-    await activePage.resize(width, 850);
+  for (const {width, height} of activeViewports) {
+    await activePage.resize(width, height);
     await sleep(220);
     await ev(activePage, () => document.querySelector('#felt').scrollIntoView({ block: 'center' }));
     await sleep(80);
@@ -131,16 +138,49 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const expected = ${seatsCount};
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}; };
       const area = (a,b) => Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)) * Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
-      const felt=document.querySelector('#felt'), boardNode=document.querySelector('#board-cards'), panel=document.querySelector('#action-panel');
+      const surface=document.querySelector('.table-surface'), felt=document.querySelector('#felt');
+      const boardNode=document.querySelector('#board-cards'), panel=document.querySelector('#action-panel');
+      const heroPair=document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
       const seats=[...document.querySelectorAll('.seat-card[data-player-id]')], heroes=[...document.querySelectorAll('.seat-card.is-me .seat-cards.is-viewer-cards .mini-card')];
+      const actionButtons=[...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
       const presets=[...document.querySelectorAll('#action-panel [data-raise-preset]')], controls=[...document.querySelectorAll('#action-panel button:not([disabled]),#action-panel input:not([disabled])')];
       const errors=[], boardOverlapSeats=[], seatOverlaps=[], panelOverlapSeats=[];
       if(seats.length!==expected) errors.push('active seat count '+seats.length);
       if(heroes.length!==2) errors.push('hero hole-card count '+heroes.length);
-      if(!panel || panel.hidden || !felt?.contains(panel)) errors.push('action panel not visible inside felt');
+      if(!surface?.contains(panel) || !panel || panel.hidden) errors.push('action panel not visible inside table surface');
+      if(felt?.contains(panel)) errors.push('action panel is inside the felt');
+      if(actionButtons.length!==3) errors.push('primary action button count '+actionButtons.length);
+      if(actionButtons.some(button=>button.disabled)) errors.push('active player has a disabled primary action');
       if(presets.length!==3) errors.push('preset count '+presets.length);
+      if(document.querySelector('#allInConfirm,[data-action="confirm-all-in"],#hand-result')) errors.push('obsolete confirmation or payout box remains');
+      if(/uncalled/i.test(document.body.innerText)) errors.push('uncalled-bet UI remains');
       if(document.documentElement.scrollWidth>innerWidth+1) errors.push('page overflow');
-      const board=rect(boardNode), panelBox=panel?rect(panel):null;
+      const board=rect(boardNode), panelBox=panel?rect(panel):null, surfaceBox=surface?rect(surface):null;
+      const centerNodes=["#board-caption","#pot-display","#street-label"].map(id=>[id,document.querySelector(id)])
+        .filter(([,node])=>node && !node.hidden && node.offsetWidth);
+      const centerLabelOverlaps=[];
+      for(const [label,node] of centerNodes) for(let i=0;i<seats.length;i++) {
+        if(area(rect(node),rect(seats[i]))>5) {
+          errors.push(label+' overlaps seat '+i);
+          centerLabelOverlaps.push({label,index:i,seatNo:seats[i].dataset.seatNo});
+        }
+      }
+      const heroPairBox=heroPair?rect(heroPair):null;
+      const footerLimit=innerWidth>innerHeight?72:80;
+      if(panelBox && panelBox.height>footerLimit+1) errors.push('action footer exceeds '+footerLimit+'px: '+panelBox.height.toFixed(1));
+      if(panelBox && surfaceBox && (
+        panelBox.left<surfaceBox.left-1 || panelBox.right>surfaceBox.right+1 ||
+        panelBox.top<surfaceBox.top-1 || panelBox.bottom>surfaceBox.bottom+1
+      )) errors.push('action footer escapes table surface');
+      const feltBox=felt?rect(felt):null;
+      const heroCenterOffset=heroPairBox&&feltBox?{
+        x:+(((heroPairBox.left+heroPairBox.right)-(feltBox.left+feltBox.right))/2).toFixed(1),
+        y:+(((heroPairBox.top+heroPairBox.bottom)-(feltBox.top+feltBox.bottom))/2).toFixed(1),
+      }:null;
+      const heroBottomGap=heroPairBox&&feltBox?+(feltBox.bottom-heroPairBox.bottom).toFixed(1):null;
+      if(heroCenterOffset && Math.abs(heroCenterOffset.x)>2) errors.push('hero card pair is not horizontally centered on felt: '+heroCenterOffset.x+'px');
+      if(heroCenterOffset && heroCenterOffset.y<0) errors.push('hero card pair is not in the lower half of the felt: '+heroCenterOffset.y+'px');
+      if(heroBottomGap!=null && (heroBottomGap < -1 || heroBottomGap > 24)) errors.push('hero card pair is too far from felt bottom: '+heroBottomGap+'px');
       for(let i=0;i<seats.length;i++) {
         const seat=rect(seats[i]);
         const seatRef={index:i,seatNo:seats[i].dataset.seatNo,relativeSeat:seats[i].dataset.relativeSeat,rect:seat};
@@ -162,9 +202,26 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
         if(!r.width || !r.height || r.left<0 || r.right>innerWidth+1 || r.top<0 || r.bottom>innerHeight+1 || !hit) errors.push('control hit test failed '+(node.textContent||node.id||node.tagName).trim());
         return {label:(node.textContent||node.id||node.tagName).trim(),hit};
       });
-      return {errors, actionDock:panel?{
-        left:+panelBox.left.toFixed(1),top:+panelBox.top.toFixed(1),width:+panelBox.width.toFixed(1),height:+panelBox.height.toFixed(1)
-      }:null, board, boardOverlapSeats, seatOverlaps, panelOverlapSeats, heroCards:heroes.length, presetHits:hits.filter(item=>item.label), seatCount:seats.length};
+      return {
+        errors,
+        actionDock:panelBox?{
+          left:+panelBox.left.toFixed(1),top:+panelBox.top.toFixed(1),
+          width:+panelBox.width.toFixed(1),height:+panelBox.height.toFixed(1),
+          maxHeight:footerLimit,
+        }:null,
+        heroPair:heroPairBox,
+        heroCenterOffset,
+        heroBottomGap,
+        board,
+        boardOverlapSeats,
+        centerLabelOverlaps,
+        seatOverlaps,
+        panelOverlapSeats,
+        heroCards:heroes.length,
+        actionButtons:actionButtons.length,
+        presetHits:hits.filter(item=>item.label),
+        seatCount:seats.length,
+      };
     })()`);
     console.log('Active', seatsCount, 'seat layout at', width, 'px:', JSON.stringify(metrics));
     if (metrics.errors.length) failures.push('Active layout at ' + width + 'px: ' + metrics.errors.join(', '));
@@ -186,7 +243,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       throw Error('Raise preset submitted or changed the active turn');
     }
     console.log('Preset', selected, 'selected at', width, 'px without submitting');
-    await activePage.screenshot('active-' + width);
+    await activePage.screenshot('active-' + width + 'x' + height);
   }
 
   for (let i = 0; i < seatsCount + 2 && view.actor_id; i++) {
@@ -198,6 +255,62 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   }
   if (view.actor_id) throw Error('The forced all-in round did not close');
   if (view.runout_odds?.length !== seatsCount) throw Error('All live hands were not exposed');
+
+  await wait(activePage, count => document.querySelectorAll('.seat-equity').length === count, seatsCount);
+  for (const {width, height} of [{width:320,height:568},{width:667,height:375},{width:844,height:390}]) {
+    await activePage.resize(width, height);
+    await sleep(240);
+    await ev(activePage, () => document.querySelector('#felt').scrollIntoView({ block: 'center' }));
+    await sleep(80);
+    const runout = await ev(activePage, (expected) => {
+      const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+      const area=(a,b)=>Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+      const surface=document.querySelector('.table-surface'), felt=document.querySelector('#felt'), panel=document.querySelector('#action-panel');
+      const hero=document.querySelector('.seat-card.is-me'), pair=document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
+      const equity=hero?.querySelector('.seat-equity'), heroes=[...document.querySelectorAll('.seat-card.is-me .seat-cards.is-viewer-cards .mini-card')];
+      const seats=[...document.querySelectorAll('.seat-card[data-player-id]')];
+      const actions=[...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
+      const labels=["#board-caption","#pot-display","#street-label"].map(id=>[id,document.querySelector(id)])
+        .filter(([,node])=>node && !node.hidden && node.offsetWidth);
+      const errors=[], labelOverlaps=[], seatContentOverflows=[];
+      if(seats.length!==expected) errors.push('runout seat count '+seats.length);
+      if(heroes.length!==2) errors.push('runout hero card count '+heroes.length);
+      if(!surface?.contains(panel) || !panel || panel.hidden || felt?.contains(panel)) errors.push('runout action footer missing/outside surface');
+      if(actions.length!==3 || actions.some(button=>!button.disabled)) errors.push('runout footer is not three disabled actions');
+      if(!equity?.offsetWidth) errors.push('hero equity badge missing during runout');
+      const footer=panel?rect(panel):null, surfaceBox=surface?rect(surface):null, feltBox=felt?rect(felt):null, pairBox=pair?rect(pair):null;
+      const limit=innerWidth>innerHeight?72:80;
+      if(footer && footer.height>limit+1) errors.push('runout footer exceeds '+limit+'px');
+      if(footer && surfaceBox && (footer.left<surfaceBox.left-1 || footer.right>surfaceBox.right+1 || footer.top<surfaceBox.top-1 || footer.bottom>surfaceBox.bottom+1)) errors.push('runout footer escapes surface');
+      const center=pairBox&&feltBox?{
+        x:+(((pairBox.left+pairBox.right)-(feltBox.left+feltBox.right))/2).toFixed(1),
+        y:+(((pairBox.top+pairBox.bottom)-(feltBox.top+feltBox.bottom))/2).toFixed(1),
+        bottomGap:+(feltBox.bottom-pairBox.bottom).toFixed(1),
+      }:null;
+      if(center && (Math.abs(center.x)>2 || center.y<0 || center.bottomGap< -1 || center.bottomGap>24)) errors.push('runout hero is not at six o clock '+JSON.stringify(center));
+      for(const [label,node] of labels) for(let i=0;i<seats.length;i++) {
+        if(area(rect(node),rect(seats[i]))>5) {
+          errors.push(label+' overlaps runout seat '+i);
+          labelOverlaps.push({label,index:i,seatNo:seats[i].dataset.seatNo});
+        }
+      }
+      for(let i=0;i<seats.length;i++) {
+        const parent=rect(seats[i]);
+        for(const child of seats[i].querySelectorAll('.mini-card,.seat-equity strong')) {
+          if(!child.offsetWidth) continue;
+          const box=rect(child);
+          if(box.left<parent.left-1 || box.right>parent.right+1 || box.top<parent.top-1 || box.bottom>parent.bottom+1) {
+            errors.push(child.matches('.mini-card')?'hole card escapes seat '+i:'equity value escapes seat '+i);
+            seatContentOverflows.push({index:i,seatNo:seats[i].dataset.seatNo,child:child.matches('.mini-card')?'mini-card':'equity-value',parent,box});
+          }
+        }
+      }
+      return {errors,viewport:[innerWidth,innerHeight],footer,limit,hero:center,equity:equity?rect(equity):null,labelOverlaps,seatContentOverflows};
+    }, seatsCount);
+    console.log('Active all-in runout at', width, 'x', height, JSON.stringify(runout));
+    if(runout.errors.length) failures.push('Active runout at '+width+'x'+height+': '+runout.errors.join(', '));
+    await activePage.screenshot('runout-'+width+'x'+height);
+  }
 
   await signIn(spectatorPage, spectator);
   const spectatorView = await req(tablePath, spectator);

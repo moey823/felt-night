@@ -1016,6 +1016,153 @@ class ServerAuthTests(unittest.TestCase):
                 self.assertEqual(status, 409, body)
                 self.assertEqual(body["error"]["code"], "table_started")
 
+    def test_last_hand_replay_is_authenticated_sanitized_and_selects_latest_completed(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Replay Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Replay Guest")
+        folded_cookie, folded_proof, folded_csrf, folded = self.login("Folded Player")
+        spectator_cookie, spectator_proof, spectator_csrf, spectator = self.login("Replay Spectator")
+
+        # Authentication and empty history use the same table-read conventions.
+        empty_status, _, empty_table = self.create_table(
+            spectator_cookie, spectator_proof, spectator_csrf, name="Empty replay",
+        )
+        self.assertEqual(empty_status, 201, empty_table)
+        empty_path = "/poker/api/tables/" + empty_table["table"]["id"] + "/last-hand"
+        status, _, unauthenticated = self.request("GET", empty_path)
+        self.assertEqual(status, 401)
+        status, _, empty = self.request(
+            "GET", empty_path, cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, empty)
+        self.assertEqual(empty, {"hand": None})
+
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Replay privacy", max_seats=3,
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        table_path = "/poker/api/tables/" + table_id
+
+        for session, seat_no in (
+            ((guest_cookie, guest_proof, guest_csrf), 1),
+            ((folded_cookie, folded_proof, folded_csrf), 2),
+        ):
+            status, _, seated = self.request(
+                "POST", table_path + "/seat", {"seat_no": seat_no},
+                cookie=session[0], proof=session[1], csrf=session[2],
+            )
+            self.assertEqual(status, 200, seated)
+
+        with patch.object(
+            server.engine.random.SystemRandom,
+            "choice",
+            side_effect=lambda seats: next(
+                seat for seat in seats if seat["player_id"] == host["id"]
+            ),
+        ):
+            status, _, started = self.request(
+                "POST", table_path + "/start", {},
+                cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+            )
+        self.assertEqual(status, 200, started)
+        status, _, removed_route = self.request(
+            "POST", table_path + "/preaction", {"selected": True},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 404)
+        status, _, live_view = self.request(
+            "GET", table_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, live_view)
+        self.assertNotIn("check_fold_selected", live_view["table"]["viewer"])
+        self.assertNotIn("check_fold_revision", live_view["table"]["viewer"])
+
+        folded_cards = {}
+
+        def complete_hand(state):
+            hand = state["hand"]
+            player_ids = list(hand["holes"])
+            used = {card for cards in hand["holes"].values() for card in cards}
+            hand["board"] = [
+                card for card in server.engine._deck() if card not in used
+            ][:5]
+            hand["street"] = "river"
+            hand["folded"] = [folded["id"]]
+            hand["contrib"] = {player_id: 10 for player_id in player_ids}
+            hand["bets"] = {player_id: 0 for player_id in player_ids}
+            hand["current_bet"] = 0
+            for seat in state["seats"]:
+                seat["stack"] = state["config"]["starting_stack"] - 10
+            folded_cards["cards"] = list(hand["holes"][folded["id"]])
+            server.engine._settle_showdown(state, now=time.time())
+            return state
+
+        finished = self.app.store.mutate_table(table_id, complete_hand, time.time())
+        self.assertEqual(finished["hand"]["street"], "showdown")
+        self.assertEqual(finished["hand"]["folded"], [folded["id"]])
+        completed_cards = {
+            player_id: list(cards)
+            for player_id, cards in finished["hand"]["holes"].items()
+        }
+
+        # A live hand can follow the completed hand without becoming the replay.
+        next_hand_at = finished["hand"]["next_hand_at"]
+        self.assertIsNotNone(next_hand_at)
+        current = self.app.store.mutate_table(table_id, lambda state: state, next_hand_at)
+        self.assertEqual(current["hand"]["number"], 2)
+        self.assertNotEqual(current["hand"]["street"], "showdown")
+
+        replay_path = table_path + "/last-hand"
+        status, _, replay = self.request(
+            "GET", replay_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, replay)
+        hand = replay["hand"]
+        self.assertEqual((hand["id"], hand["number"]), (table_id + ":1", 1))
+        self.assertEqual(
+            [item["name"] for item in hand["streets"]],
+            ["preflop", "flop", "turn", "river", "showdown"],
+        )
+        self.assertEqual(hand["board"], finished["hand"]["board"])
+        players = {item["player_id"]: item for item in hand["players"]}
+        self.assertEqual(players[host["id"]]["cards"], completed_cards[host["id"]])
+        self.assertEqual(players[host["id"]]["cards_source"], "own")
+        self.assertEqual(players[guest["id"]]["cards"], completed_cards[guest["id"]])
+        self.assertEqual(players[guest["id"]]["cards_source"], "revealed")
+        self.assertEqual(players[folded["id"]]["cards"], [])
+        self.assertNotIn("events", hand)
+        self.assertTrue(
+            set(folded_cards["cards"]).isdisjoint(
+                set(hand["board"]) |
+                {card for player in hand["players"] for card in player["cards"]}
+            )
+        )
+
+        # Spectators receive public reveals but never anyone else's hidden cards.
+        status, _, spectator_replay = self.request(
+            "GET", replay_path, cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, spectator_replay)
+        spectator_players = {
+            item["player_id"]: item for item in spectator_replay["hand"]["players"]
+        }
+        self.assertEqual(spectator_players[host["id"]]["cards"], completed_cards[host["id"]])
+        self.assertEqual(spectator_players[guest["id"]]["cards"], completed_cards[guest["id"]])
+        self.assertEqual(spectator_players[folded["id"]]["cards"], [])
+        self.assertTrue(all(
+            item.get("cards_source") == "revealed"
+            for player_id, item in spectator_players.items()
+            if player_id in (host["id"], guest["id"])
+        ))
+
+        unknown_id = server.uuid.uuid4().hex
+        status, _, unknown = self.request(
+            "GET", "/poker/api/tables/" + unknown_id + "/last-hand",
+            cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(unknown["error"]["code"], "table_not_found")
+
     def test_tables_are_isolated_and_lobbies_survive_app_restart(self):
         cookie, proof, csrf, host = self.login("Persistent host")
         status, _, first = self.create_table(

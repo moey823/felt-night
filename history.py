@@ -466,3 +466,79 @@ def get_for_player(conn, table_id, player_id, offset=0, limit=PAGE_SIZE):
         "hands": hands,
         "next_offset": end if end < total else None,
     }
+
+
+def _safe_card_list(value, allowed_lengths):
+    """Validate card codes before placing stored history in a public response."""
+    if not isinstance(value, list) or len(value) not in allowed_lengths:
+        return []
+    if any(
+        not isinstance(card, str) or len(card) != 2
+        or card[0] not in "23456789TJQKA" or card[1] not in "shdc"
+        for card in value
+    ) or len(set(value)) != len(value):
+        return []
+    return list(value)
+
+
+def last_completed_hand(conn, table_id, viewer_player_id):
+    """Return a sanitized replay snapshot for the latest completed hand."""
+    row = conn.execute(
+        """SELECT * FROM hand_history
+           WHERE table_id=? AND ended IS NOT NULL
+           ORDER BY number DESC LIMIT 1""",
+        (table_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    board = _safe_card_list(_loads(row["board_json"], []), (0, 3, 4, 5))
+    result = _loads(row["result_json"], {})
+    if not isinstance(result, dict):
+        result = {}
+    player_rows = conn.execute(
+        """SELECT player_id,name,seat_no,cards_json,revealed_cards_json
+           FROM hand_history_players WHERE hand_id=?
+           ORDER BY CASE WHEN seat_no IS NULL THEN 1 ELSE 0 END,seat_no,name""",
+        (row["hand_id"],),
+    ).fetchall()
+    players = []
+    for item in player_rows:
+        cards = []
+        source = None
+        if item["player_id"] == viewer_player_id:
+            cards = _safe_card_list(_loads(item["cards_json"], []), (2,))
+            if cards:
+                source = "own"
+        elif item["revealed_cards_json"] is not None:
+            cards = _safe_card_list(_loads(item["revealed_cards_json"], []), (2,))
+            if cards:
+                source = "revealed"
+        public_player = {
+            "player_id": item["player_id"],
+            "name": item["name"],
+            "seat_no": item["seat_no"],
+            "cards": cards,
+        }
+        if source is not None:
+            public_player["cards_source"] = source
+        players.append(public_player)
+
+    streets = [{"name": "preflop", "board": []}]
+    if len(board) >= 3:
+        streets.append({"name": "flop", "board": board[:3]})
+    if len(board) >= 4:
+        streets.append({"name": "turn", "board": board[:4]})
+    if len(board) >= 5:
+        streets.append({"name": "river", "board": board[:5]})
+    showdown = result.get("showdown")
+    if isinstance(showdown, list) and showdown:
+        streets.append({"name": "showdown", "board": list(board)})
+
+    return {
+        "id": row["hand_id"],
+        "number": row["number"],
+        "board": board,
+        "players": players,
+        "streets": streets,
+    }
