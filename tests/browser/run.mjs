@@ -7,7 +7,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const game = (mode === 'crowded'
+const game = (mode === 'interactions'
+  ? await import('./interactions.mjs')
+  : mode === 'crowded'
   ? await import('./crowded.mjs')
   : mode === 'ux'
     ? await import('./ux.mjs')

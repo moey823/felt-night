@@ -185,6 +185,8 @@
                   <button id="last-hand-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="last-hand-dialog" aria-expanded="false" hidden>Last hand</button>
                   <button id="recent-action-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="recent-action-dialog" aria-expanded="false">Recent action</button>
                   <button id="reopen-results-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
+                  <button id="chat-button" class="button button-outline button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
+                  <button id="sit-out-button" class="button button-outline button-small" type="button" aria-pressed="false" hidden>Sit out</button>
                   <button id="copy-invite-button" class="button button-outline button-small" type="button">Copy invite link</button>
                   <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to all tables">All tables <span aria-hidden="true">↗</span></button>
                 </div>
@@ -210,12 +212,29 @@
                   <h3 id="action-title" class="visually-hidden">Betting actions</h3>
                   <div id="action-controls" class="action-controls"></div>
                 </section>
-                <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
+                <div id="action-feedback" class="action-feedback" role="alert" aria-live="assertive" hidden></div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
                   <span id="button-caption"></span>
                 </div>
               </div>
+
+              <section id="chat-panel" class="panel chat-panel" role="region" aria-labelledby="chat-title" hidden>
+                <div class="chat-panel-heading">
+                  <div><div class="panel-kicker">TABLE CHAT</div><h3 id="chat-title">Live chat</h3></div>
+                  <button id="chat-close-button" class="button button-quiet button-small" type="button">Close</button>
+                </div>
+                <p id="chat-error" class="chat-error" role="alert" aria-live="assertive" hidden></p>
+                <ol id="chat-messages" class="chat-messages" role="log" aria-label="Table chat messages" aria-live="polite" aria-relevant="additions"></ol>
+                <form id="chat-form" class="chat-form">
+                  <label class="visually-hidden" for="chat-input">Message, up to 500 characters</label>
+                  <textarea id="chat-input" name="message" maxlength="500" rows="2" placeholder="Say something to the table…" aria-describedby="chat-character-count"></textarea>
+                  <div class="chat-compose-actions">
+                    <span id="chat-character-count" class="chat-character-count">0 / 500</span>
+                    <button id="chat-send-button" class="button button-primary button-small" type="submit">Send</button>
+                  </div>
+                </form>
+              </section>
 
               <section id="lobby-seat-panel" class="panel lobby-panel" aria-labelledby="seat-status-title" hidden>
                 <div class="lobby-panel-copy">

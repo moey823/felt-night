@@ -566,6 +566,256 @@ class ServerAuthTests(unittest.TestCase):
                 self.assertEqual(status, 403, body)
                 self.assertEqual(body["error"]["code"], "host_only")
 
+    def test_sit_out_route_checks_csrf_ownership_and_persists_toggle(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Sitout Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Sitout Guest")
+        outsider_cookie, outsider_proof, outsider_csrf, outsider = self.login("Sitout Outsider")
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Sit-out table",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        path = "/poker/api/tables/" + table_id
+        status, _, joined = self.request(
+            "POST", path + "/join", {}, cookie=guest_cookie,
+            proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, joined)
+        status, _, started = self.request(
+            "POST", path + "/start", {}, cookie=host_cookie,
+            proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, started)
+
+        status, _, detail = self.request(
+            "GET", path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, detail)
+        actor_id = detail["table"]["actor_id"]
+        actor_auth = (
+            (host_cookie, host_proof, host_csrf)
+            if actor_id == host["id"]
+            else (guest_cookie, guest_proof, guest_csrf)
+        )
+
+        status, _, body = self.request(
+            "POST", path + "/sit-out", {"sitting_out": True},
+            cookie=actor_auth[0], proof=actor_auth[1],
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"]["code"], "csrf_failed")
+        status, _, body = self.request(
+            "POST", path + "/sit-out", {"sitting_out": True},
+            cookie=actor_auth[0], proof=actor_auth[1], csrf=actor_auth[2],
+            origin="https://unrelated.example",
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"]["code"], "origin_rejected")
+
+        status, _, body = self.request(
+            "POST", path + "/sit-out", {"sitting_out": 1},
+            cookie=actor_auth[0], proof=actor_auth[1], csrf=actor_auth[2],
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "invalid_sitting_out")
+
+        status, _, body = self.request(
+            "POST", path + "/sit-out", {"sitting_out": True},
+            cookie=outsider_cookie, proof=outsider_proof, csrf=outsider_csrf,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"]["code"], "not_seated")
+
+        status, _, changed = self.request(
+            "POST", path + "/sit-out", {"sitting_out": True},
+            cookie=actor_auth[0], proof=actor_auth[1], csrf=actor_auth[2],
+        )
+        self.assertEqual(status, 200, changed)
+        actor_seat = next(item for item in changed["table"]["seats"] if item["id"] == actor_id)
+        self.assertTrue(actor_seat["sitting_out"])
+        self.assertTrue(actor_seat["folded"])
+        self.assertNotEqual(changed["table"]["actor_id"], actor_id)
+
+        reopened = server.Store(str(self.data_dir), self.password)
+        conn = reopened.connect()
+        try:
+            row = conn.execute("SELECT state FROM tables WHERE id=?", (table_id,)).fetchone()
+            persisted = json.loads(row["state"])
+        finally:
+            conn.close()
+        self.assertTrue(next(seat for seat in persisted["seats"] if seat["player_id"] == actor_id)["sitting_out"])
+
+        status, _, returned = self.request(
+            "POST", path + "/sit-out", {"sitting_out": False},
+            cookie=actor_auth[0], proof=actor_auth[1], csrf=actor_auth[2],
+        )
+        self.assertEqual(status, 200, returned)
+        actor_seat = next(item for item in returned["table"]["seats"] if item["id"] == actor_id)
+        self.assertFalse(actor_seat["sitting_out"])
+        self.assertTrue(actor_seat["folded"])
+
+    def test_chat_is_table_scoped_available_to_spectators_and_independent_of_game_tokens(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Chat Host")
+        player_cookie, player_proof, player_csrf, _ = self.login("Chat Player")
+        spectator_cookie, spectator_proof, spectator_csrf, spectator = self.login("Chat Spectator")
+        status, _, first = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Chat first",
+        )
+        self.assertEqual(status, 201, first)
+        first_id = first["table"]["id"]
+        first_path = "/poker/api/tables/" + first_id
+        status, _, joined = self.request(
+            "POST", first_path + "/join", {}, cookie=player_cookie,
+            proof=player_proof, csrf=player_csrf,
+        )
+        self.assertEqual(status, 200, joined)
+        status, _, started = self.request(
+            "POST", first_path + "/start", {}, cookie=host_cookie,
+            proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, started)
+
+        status, _, second = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Chat second",
+        )
+        self.assertEqual(status, 201, second)
+        second_path = "/poker/api/tables/" + second["table"]["id"]
+
+        status, _, unauthenticated = self.request(
+            "GET", first_path + "/chat",
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(unauthenticated["error"]["code"], "authentication_required")
+
+        status, _, before = self.request(
+            "GET", first_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, before)
+        turn_version = before["table"]["turn_version"]
+
+        chat_path = first_path + "/chat"
+        message_text = "<b>hello</b>\nsecond line"
+        status, _, missing_csrf = self.request(
+            "POST", chat_path, {"text": message_text},
+            cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(missing_csrf["error"]["code"], "csrf_failed")
+        status, _, wrong_origin = self.request(
+            "POST", chat_path, {"text": message_text},
+            cookie=spectator_cookie, proof=spectator_proof,
+            csrf=spectator_csrf, origin="https://unrelated.example",
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(wrong_origin["error"]["code"], "origin_rejected")
+
+        status, _, created_message = self.request(
+            "POST", chat_path,
+            {"text": message_text, "name": "Spoofed", "player_id": "spoofed"},
+            cookie=spectator_cookie, proof=spectator_proof, csrf=spectator_csrf,
+        )
+        self.assertEqual(status, 201, created_message)
+        message = created_message["message"]
+        self.assertIsInstance(message["id"], int)
+        self.assertEqual(message["player_id"], spectator["id"])
+        self.assertEqual(message["name"], spectator["name"])
+        self.assertEqual(message["text"], message_text)
+        self.assertIsInstance(message["created_at"], (int, float))
+
+        status, _, limited = self.request(
+            "POST", second_path + "/chat", {"text": "too soon"},
+            cookie=spectator_cookie, proof=spectator_proof, csrf=spectator_csrf,
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(limited["error"]["code"], "chat_rate_limited")
+
+        for invalid_text in ("  \n ", "x" * 501, "bad" + chr(0) + "text"):
+            status, _, invalid = self.request(
+                "POST", chat_path, {"text": invalid_text},
+                cookie=player_cookie, proof=player_proof, csrf=player_csrf,
+            )
+            self.assertEqual(status, 400)
+            self.assertEqual(invalid["error"]["code"], "invalid_chat_message")
+
+        status, _, first_messages = self.request(
+            "GET", chat_path, cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, first_messages)
+        self.assertEqual(first_messages["messages"], [message])
+        self.assertIsInstance(first_messages["server_now"], (int, float))
+        status, _, second_messages = self.request(
+            "GET", second_path + "/chat", cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, second_messages)
+        self.assertEqual(second_messages["messages"], [])
+
+        status, _, after = self.request(
+            "GET", first_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, after)
+        self.assertEqual(after["table"]["turn_version"], turn_version)
+
+        unknown = "/poker/api/tables/" + ("a" * 32) + "/chat"
+        status, _, body = self.request(
+            "GET", unknown, cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 404)
+        self.assertEqual(body["error"]["code"], "table_not_found")
+
+    def test_chat_storage_is_bounded_and_rate_limit_insert_is_atomic(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Chat Storage")
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Bounded chat",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+
+        for index in range(101):
+            self.app.store.add_chat_message(
+                table_id, host["id"], host["name"], "message %d" % index,
+                now=1000 + index,
+            )
+        conn = self.app.store.connect()
+        try:
+            stored_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM chat_messages WHERE table_id=?",
+                (table_id,),
+            ).fetchone()["n"]
+        finally:
+            conn.close()
+        self.assertEqual(stored_count, 100)
+
+        page = self.app.store.list_chat_messages(table_id)
+        self.assertEqual(len(page), server.CHAT_READ_LIMIT)
+        self.assertEqual(page[0]["text"], "message 51")
+        self.assertEqual(page[-1]["text"], "message 100")
+        self.assertEqual([item["id"] for item in page], sorted(item["id"] for item in page))
+
+        barrier = threading.Barrier(2)
+        results = []
+        def insert_simultaneously(message_text):
+            barrier.wait(timeout=2)
+            try:
+                self.app.store.add_chat_message(
+                    table_id, host["id"], host["name"], message_text, now=2000,
+                )
+                results.append(("created", None))
+            except server.AppError as exc:
+                results.append(("error", exc.status, exc.code))
+
+        workers = [
+            threading.Thread(target=insert_simultaneously, args=("parallel 1",)),
+            threading.Thread(target=insert_simultaneously, args=("parallel 2",)),
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=3)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(sum(result[0] == "created" for result in results), 1)
+        self.assertIn(("error", 429, "chat_rate_limited"), results)
+        self.assertEqual(len(self.app.store.list_chat_messages(table_id)), 50)
+
     def test_additive_migration_preserves_legacy_data_and_backfills_private_history(self):
         legacy_dir = self.data_dir.parent / "legacy-data"
         legacy_dir.mkdir(mode=0o700)

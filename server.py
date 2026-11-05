@@ -32,6 +32,10 @@ SESSION_TTL = 30 * 24 * 60 * 60
 LOGIN_WINDOW = 15 * 60
 LOGIN_LIMIT = 5
 MAX_BODY = 16 * 1024
+CHAT_MAX_LENGTH = 500
+CHAT_READ_LIMIT = 50
+CHAT_TABLE_LIMIT = 100
+CHAT_RATE_SECONDS = 1.0
 MAX_ACTIVE_TABLES = 32
 MAX_SESSIONS = 256
 GLOBAL_LOGIN_LIMIT = 50
@@ -194,6 +198,18 @@ class Store:
                     updated REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS tables_updated ON tables(updated);
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_id TEXT NOT NULL REFERENCES tables(id) ON DELETE CASCADE,
+                    player_id TEXT NOT NULL REFERENCES players(id),
+                    name TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS chat_messages_table_order
+                    ON chat_messages(table_id, id DESC);
+                CREATE INDEX IF NOT EXISTS chat_messages_player_order
+                    ON chat_messages(player_id, id DESC);
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     client_key TEXT NOT NULL,
                     attempted REAL NOT NULL
@@ -513,6 +529,78 @@ class Store:
                 )
                 summaries.append(summary)
             return summaries
+        finally:
+            conn.close()
+
+    def list_chat_messages(self, table_id):
+        conn = self.connect()
+        try:
+            exists = conn.execute("SELECT 1 FROM tables WHERE id=?", (table_id,)).fetchone()
+            if exists is None:
+                raise AppError(404, "table_not_found", "Table not found.")
+            rows = conn.execute(
+                """SELECT id, player_id, name, text, created_at
+                   FROM chat_messages WHERE table_id=?
+                   ORDER BY id DESC LIMIT ?""",
+                (table_id, CHAT_READ_LIMIT),
+            ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "player_id": row["player_id"],
+                    "name": row["name"],
+                    "text": row["text"],
+                    "created_at": row["created_at"],
+                }
+                for row in reversed(rows)
+            ]
+        finally:
+            conn.close()
+
+    def add_chat_message(self, table_id, player_id, name, message_text, now):
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            exists = conn.execute("SELECT 1 FROM tables WHERE id=?", (table_id,)).fetchone()
+            if exists is None:
+                conn.rollback()
+                raise AppError(404, "table_not_found", "Table not found.")
+
+            previous = conn.execute(
+                """SELECT created_at FROM chat_messages WHERE player_id=?
+                   ORDER BY id DESC LIMIT 1""",
+                (player_id,),
+            ).fetchone()
+            if previous is not None and now - previous["created_at"] < CHAT_RATE_SECONDS:
+                conn.rollback()
+                raise AppError(429, "chat_rate_limited", "Please wait before sending another message.")
+
+            cursor = conn.execute(
+                """INSERT INTO chat_messages(table_id,player_id,name,text,created_at)
+                   VALUES(?,?,?,?,?)""",
+                (table_id, player_id, name, message_text, now),
+            )
+            message_id = cursor.lastrowid
+            conn.execute(
+                """DELETE FROM chat_messages
+                   WHERE table_id=? AND id NOT IN (
+                       SELECT id FROM chat_messages
+                       WHERE table_id=? ORDER BY id DESC LIMIT ?
+                   )""",
+                (table_id, table_id, CHAT_TABLE_LIMIT),
+            )
+            conn.commit()
+            return {
+                "id": message_id,
+                "player_id": player_id,
+                "name": name,
+                "text": message_text,
+                "created_at": now,
+            }
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -907,6 +995,12 @@ class Handler(BaseHTTPRequestHandler):
                 player, _ = self._require_player()
                 self._json(200, {"tables": self.app.store.list_tables(time.time(), player["id"])})
                 return
+            match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/chat", path)
+            if match:
+                self._require_player()
+                messages = self.app.store.list_chat_messages(match.group(1))
+                self._json(200, {"messages": messages, "server_now": time.time()})
+                return
             match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/last-hand", path)
             if match:
                 player, _ = self._require_player()
@@ -1030,6 +1124,47 @@ class Handler(BaseHTTPRequestHandler):
             if not player.get("account"):
                 raise AppError(403, "account_required",
                                "Claim this legacy seat or sign in with a personal account.")
+
+            chat_match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/chat", path,
+            )
+            if chat_match:
+                raw_text = body.get("text")
+                if not isinstance(raw_text, str):
+                    raise AppError(400, "invalid_chat_message", "Enter a message.")
+                message_text = raw_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+                if (
+                    not message_text
+                    or len(message_text) > CHAT_MAX_LENGTH
+                    or any(not char.isprintable() and char != "\n" for char in message_text)
+                ):
+                    raise AppError(
+                        400, "invalid_chat_message",
+                        "Messages must be 1 to 500 printable characters.",
+                    )
+                message = self.app.store.add_chat_message(
+                    chat_match.group(1), player["id"], player["name"], message_text, now,
+                )
+                self._json(201, {"message": message})
+                return
+
+            sit_out_match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/sit-out", path,
+            )
+            if sit_out_match:
+                sitting_out = body.get("sitting_out")
+                if type(sitting_out) is not bool:
+                    raise AppError(400, "invalid_sitting_out", "Choose whether to sit out.")
+                table_id = sit_out_match.group(1)
+                state = self.app.store.mutate_table(
+                    table_id,
+                    lambda value: engine.set_sitting_out(
+                        value, player["id"], sitting_out, now,
+                    ),
+                    now,
+                )
+                self._json(200, {"table": engine.public_view(state, player["id"])})
+                return
 
             if path == "/poker/api/tables":
                 name = body.get("name")

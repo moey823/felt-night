@@ -505,9 +505,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   const initialView = await request(headsUp.path, headsUpActor);
   const hero = initialView.seats.find(seat => seat.id === headsUpActor.player.id);
   const bigBlind = initialView.blinds?.big || headsUp.config.big_blind;
-  const expectedBb = hero.stack / bigBlind >= 1
-    ? Math.floor(hero.stack / bigBlind)
-    : Number((hero.stack / bigBlind).toFixed(1));
+  const expectedBb = Number((hero.stack / bigBlind).toFixed(1));
   await checkViewports(one, 2, 'heads-up', true);
 
   const initialStackText = await evaluate(one, () =>
@@ -523,7 +521,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   );
   const bbAmount = bbStackText.match(/([\d,]+(?:\.\d+)?)\s*BB/i);
   assert(
-    bbAmount && Number(bbAmount[1].replace(/,/g, '')) === expectedBb,
+    bbAmount && /\.\d$/.test(bbAmount[1]) && Number(bbAmount[1].replace(/,/g, '')) === expectedBb,
     'Wrong BB rounding: ' + bbStackText + ' from ' + hero.stack + ' chips'
   );
 
@@ -577,7 +575,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]').innerText.trim()
   );
   assert(restoredStack.includes(String(updatedStack)), 'Chip stack did not restore: ' + restoredStack);
-  console.log('Hero stack toggles to BB, rounds down, restores chips, and sends chip payloads.');
+  console.log('Hero stack toggles to one-decimal BB, restores chips, and sends chip payloads.');
 
   // A sub-big-blind stack displays one decimal place.
   const fractional = await createTable('UX Fractional BB ' + stamp, users.slice(2, 4), {
@@ -608,7 +606,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     'Sub-BB value did not use one decimal: ' + fractionalText
   );
 
-  // Three players retain Check/Fold; zero-stack all-ins stay visible until settlement.
+  // Zero-stack all-ins stay visible through their final hand.
   const multiway = await createTable('UX Multiway ' + stamp, users.slice(4, 7), {
     starting_stack: 100,
     small_blind: 1,
@@ -731,16 +729,39 @@ export default async function ux([one, two], sleep, roomPassword) {
     };
   });
   assert(
-    finalLayout.seats.length === 1 && finalLayout.empty === 0,
-    'Eliminated seats did not reflow: ' + JSON.stringify(finalLayout)
+    finalLayout.seats.length === current.seats.filter(seat => seat.in_hand).length && finalLayout.empty === 0,
+    'Final-hand participants were removed: ' + JSON.stringify(finalLayout)
   );
-  const survivor = finalLayout.seats[0];
+  const survivor = finalLayout.seats.find(seat => seat.id === current.seats.find(row => row.stack > 0).id);
   assert(
     survivor.left >= finalLayout.felt.left - 1 && survivor.right <= finalLayout.felt.right + 1 &&
     survivor.top >= finalLayout.felt.top - 1 && survivor.bottom <= finalLayout.felt.bottom + 1,
     'Survivor is outside the felt after reflow: ' + JSON.stringify(finalLayout)
   );
-  console.log('Zero-stack all-in stayed visible; eliminated seats reflowed without empty seats.');
+  console.log('Zero-stack all-ins and final-hand participants stayed visible without empty seats.');
+
+  const losingUser = findUser(multiway.entrants, current.seats.find(seat => seat.in_hand && seat.stack === 0).id);
+  await switchUser(one, losingUser);
+  await openTable(one, multiway.name);
+  await one.resize(390, 844);
+  await wait(one, () => /complete/i.test(document.querySelector('#view-status')?.innerText || ''));
+  const finalLoser = await evaluate(one, () => {
+    const felt = document.querySelector('#felt').getBoundingClientRect();
+    const hero = document.querySelector('.seat-card.is-me')?.getBoundingClientRect();
+    return {
+      board: document.querySelector('#board-cards')?.innerText,
+      cards: document.querySelector('.seat-card.is-me .seat-cards')?.innerText,
+      x: hero ? (hero.left + hero.right - felt.left - felt.right) / 2 : null,
+      bottom: hero ? felt.bottom - hero.bottom : null,
+      participantCount: document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length,
+    };
+  });
+  assert(finalLoser.x !== null && Math.abs(finalLoser.x) <= 2 && finalLoser.bottom >= 0 && finalLoser.bottom < 40,
+    'Eliminated viewer lost their six oclock position: ' + JSON.stringify(finalLoser));
+  assert(finalLoser.participantCount === current.seats.filter(seat => seat.in_hand).length && finalLoser.cards?.trim(),
+    'Eliminated viewer lost their final cards or opponents: ' + JSON.stringify(finalLoser));
+  await one.screenshot('completed-losing-viewer-390x844');
+
 
   // A completed all-in hand is replayable while the next hand is live.
   const replayUsers = users.slice(4, 7);
@@ -955,6 +976,23 @@ export default async function ux([one, two], sleep, roomPassword) {
       wasVisible = isVisible;
     }, 80);
   });
+  // Passing the deadline must not change the level during a live hand.
+  const untilDeadline = nineSeats.started.blinds.next_level_at * 1000 - Date.now();
+  if (untilDeadline > 0) await sleep(untilDeadline + 200);
+  let boundaryState = await request(nineSeats.path, nineActor);
+  assert(boundaryState.blinds.level === 1 && boundaryState.street !== 'showdown',
+    'Blinds advanced during a live hand: ' + JSON.stringify(boundaryState.blinds));
+  assert(await evaluate(one, () => window.uxBlindTransitions.length === 0),
+    'A blind announcement appeared during the hand');
+  while (boundaryState.actor_id && boundaryState.street !== 'showdown') {
+    boundaryState = await request(nineSeats.path + '/action',
+      findUser(nineSeats.entrants, boundaryState.actor_id), {
+        action: 'fold', expected_hand: boundaryState.hand_no,
+        expected_turn_version: boundaryState.turn_version,
+      });
+  }
+  assert(boundaryState.street === 'showdown' && boundaryState.blinds.level === 2,
+    'Pending blind level was not applied between hands');
   await waitLong(one, () => {
     const node = document.querySelector('#blind-announcement');
     return Boolean(
@@ -1004,7 +1042,9 @@ export default async function ux([one, two], sleep, roomPassword) {
     announcementClosed && announcementCount === 1,
     'Blind announcement failed to close or replayed during polling: ' + announcementCount
   );
-  console.log('Blind level 2 announced 20/40 once, auto-closed, and did not replay on table open or poll.');
+  const dealt = await request(nineSeats.path, nineActor);
+  assert(dealt.street !== 'showdown' && dealt.blinds.level === 2, 'New level was not used for the next hand');
+  console.log('Blinds stayed fixed during play, announced once between hands, and cleared before the next deal.');
 
   if (layoutFailures.length) {
     throw Error('Responsive layout regressions: ' + layoutFailures.join(' || '));

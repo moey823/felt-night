@@ -6,6 +6,10 @@ Felt Night is a self-hosted, play-chip No-Limit Texas Hold’em room for private
 
 Players create private accounts, return to a seat after reconnecting, and review tournament results and hand histories. Hosts can run 2–9 player freezeouts with configurable stacks, blinds, blind levels, clocks, buy-ins, and payouts. The server validates actions and keeps the deck and opponents’ hidden cards private. Play credits have no cash value; there are no deposits, cash-outs, prizes, or rebuys.
 
+Players join at an empty seat on the felt; hosts can add bots there too. Each table has live chat for players and spectators. Sit-out persists until switched off and immediately checks when free or folds facing a bet. Blind levels change only between hands. The completed table keeps the final board and participants visible, and the last-hand viewer steps through each street. Chip counts can toggle to big blinds, always shown to one decimal place.
+
+Bots use an adapted [PokerForBots complex strategy](https://github.com/lox/pokerforbots/tree/main/sdk/bots/complex): position ranges, hand and draw categories, pot odds, and stack-aware sizing. Decisions use only the bot’s own cards and public information; no service or model calls are involved. See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution.
+
 A modified browser cannot choose cards or bypass server rules, but no online room can prevent collusion, shared credentials, or dishonest operation. Felt Night has no public shuffle proof or independent fairness certification. See the [fair play and security guide](static/security.html).
 
 ## Run locally
@@ -40,7 +44,7 @@ Changing the room invite and restarting invalidates existing sessions. Player ac
 
 ## Tests
 
-Run the Python suite with `python3 -m unittest discover -s tests`. With a Chromium headless shell installed, run `BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs`; append `crowded` to check the active player and spectator layouts. The suites use isolated test data and a dummy invite.
+Run the Python suite with `python3 -m unittest discover -s tests`. With a Chromium headless shell installed, run `BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs`; append `crowded` to check the active player and spectator layouts, `ux` for gameplay/replay/blind-boundary checks, or `interactions` for felt seating, live chat, and sit-out. The suites use isolated test data and a dummy invite.
 
 ## License
 

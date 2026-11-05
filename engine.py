@@ -292,6 +292,7 @@ def create_lobby(
                 "seat_no": 0,
                 "stack": starting_stack,
                 "is_bot": False,
+                "sitting_out": False,
             }
         ],
         "created_at": timestamp,
@@ -353,6 +354,7 @@ def join(
     state["seats"].append({
         "player_id": str(player_id), "name": player_name, "seat_no": requested,
         "stack": state["config"]["starting_stack"], "is_bot": False,
+        "sitting_out": False,
     })
     state["seats"].sort(key=lambda item: item["seat_no"])
     timestamp = _now(now)
@@ -458,6 +460,7 @@ def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[fl
     state["seats"].append({
         "player_id": bot_id, "name": "Bot %d" % (requested + 1),
         "seat_no": requested, "stack": state["config"]["starting_stack"], "is_bot": True,
+        "sitting_out": False,
     })
     state["seats"].sort(key=lambda item: item["seat_no"])
     timestamp = _now(now)
@@ -481,6 +484,44 @@ def remove_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional
     timestamp = _now(now)
     state["last_activity_at"] = timestamp
     _log(state, "%s left the table." % seat["name"], timestamp)
+    _bump(state)
+    return state
+
+
+def set_sitting_out(
+    state: Dict[str, Any],
+    actor_id: str,
+    sitting_out: bool,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Toggle the authenticated human player's persistent seat preference."""
+    if type(sitting_out) is not bool:
+        raise GameError("invalid_sitting_out", "Choose whether to sit out.")
+    seat = _seat_by_id(state, actor_id)
+    if seat is None:
+        raise GameError("not_seated", "You do not have a seat at this table.", 409)
+    if seat.get("is_bot", False):
+        raise GameError("human_seat_required", "Only a seated player can change this setting.", 403)
+    if bool(seat.get("sitting_out", False)) == sitting_out:
+        return state
+
+    seat["sitting_out"] = sitting_out
+    timestamp = _now(now)
+    state["last_activity_at"] = timestamp
+    text = "%s is sitting out." % seat["name"] if sitting_out else "%s is back at the table." % seat["name"]
+    _log(state, text, timestamp)
+
+    hand = state.get("hand")
+    if (
+        sitting_out
+        and state.get("status") == "playing"
+        and hand is not None
+        and hand.get("street") != "showdown"
+        and hand.get("to_act") == actor_id
+    ):
+        action = "check" if _to_call(hand, actor_id) == 0 else "fold"
+        _perform_action(state, actor_id, action, None, timestamp, sitting_out=True)
+
     _bump(state)
     return state
 
@@ -719,27 +760,79 @@ def _arm_turn(state: Dict[str, Any], hand: Dict[str, Any], player_id: str, now: 
 def _set_next_actor(state: Dict[str, Any], after_id: Optional[str], now: float) -> None:
     hand = state["hand"]
     assert hand is not None
-    contenders = _hand_live_ids(hand)
-    if len(contenders) <= 1:
-        _award_without_showdown(state, contenders[0] if contenders else None, now)
+    # Sit-out actions are applied inline. The fixed bound covers at most one
+    # action for every dealt player on each of four streets, plus street edges.
+    max_steps = 4 * max(1, len(hand.get("holes", {}))) + 4
+    for _ in range(max_steps):
+        if state.get("hand") is not hand or state.get("status") != "playing":
+            return
+        contenders = _hand_live_ids(hand)
+        if len(contenders) <= 1:
+            _award_without_showdown(state, contenders[0] if contenders else None, now)
+            return
+
+        able = _players_able_to_act(state, hand)
+        if len(able) == 1:
+            only_player = able[0]
+            opponent_bet = max(
+                (
+                    hand["bets"].get(player_id, 0)
+                    for player_id in contenders
+                    if player_id != only_player
+                ),
+                default=0,
+            )
+            if hand["bets"].get(only_player, 0) >= opponent_bet:
+                # No live opponent can match another chip. This also covers a
+                # short blind whose nominal bring-in exceeds its actual wager.
+                _advance_street(state, now, chain_actor=False)
+                if hand.get("street") == "showdown" or hand.get("runout_at") is not None:
+                    return
+                after_id = hand["button_id"]
+                continue
+
+        next_id = next(
+            (
+                seat["player_id"]
+                for seat in _clockwise_after(state, after_id)
+                if seat["player_id"] in hand["holes"]
+                and _pending(state, hand, seat["player_id"])
+            ),
+            None,
+        )
+        if next_id is None:
+            _advance_street(state, now, chain_actor=False)
+            if hand.get("street") == "showdown" or hand.get("runout_at") is not None:
+                return
+            after_id = hand["button_id"]
+            continue
+
+        seat = _seat_by_id(state, next_id)
+        if seat is not None and seat.get("sitting_out", False):
+            action = "check" if _to_call(hand, next_id) == 0 else "fold"
+            previous_street = hand.get("street")
+            hand["to_act"] = next_id
+            hand["turn_deadline"] = None
+            hand["bot_action_at"] = None
+            _perform_action(
+                state, next_id, action, None, now,
+                sitting_out=True, continue_turn=False,
+            )
+            if state.get("hand") is not hand or state.get("status") != "playing":
+                return
+            if hand.get("street") == "showdown" or hand.get("runout_at") is not None:
+                return
+            after_id = hand["button_id"] if hand.get("street") != previous_street else next_id
+            continue
+
+        _arm_turn(state, hand, next_id, now)
         return
 
-    able = _players_able_to_act(state, hand)
-    if len(able) == 1:
-        only_player = able[0]
-        if hand["bets"].get(only_player, 0) >= hand["current_bet"]:
-            # No opponent can call a further wager, so there is no dry-side-pot
-            # betting. Advance the board instead of forcing meaningless checks.
-            _advance_street(state, now)
-            return
-
-    for seat in _clockwise_after(state, after_id):
-        player_id = seat["player_id"]
-        if player_id in hand["holes"] and _pending(state, hand, player_id):
-            _arm_turn(state, hand, player_id, now)
-            return
-
-    _advance_street(state, now)
+    # A malformed legacy state must not recurse or spin forever while choosing
+    # actors. Clearing the expired actor lets later server ticks recover safely.
+    hand["to_act"] = None
+    hand["turn_deadline"] = None
+    hand["bot_action_at"] = None
 
 def _round_complete(state: Dict[str, Any], hand: Dict[str, Any]) -> bool:
     for player_id in _hand_live_ids(hand):
@@ -918,7 +1011,11 @@ def _advance_runout(state: Dict[str, Any], now: float) -> None:
     hand["runout_at"] = now + delay
 
 
-def _advance_street(state: Dict[str, Any], now: float) -> None:
+def _advance_street(
+    state: Dict[str, Any],
+    now: float,
+    chain_actor: bool = True,
+) -> None:
     hand = state["hand"]
     assert hand is not None
     live = _hand_live_ids(hand)
@@ -948,7 +1045,12 @@ def _advance_street(state: Dict[str, Any], now: float) -> None:
         else:
             _settle_showdown(state, now)
         return
-    _set_next_actor(state, hand["button_id"], now)
+    if chain_actor:
+        _set_next_actor(state, hand["button_id"], now)
+    else:
+        hand["to_act"] = None
+        hand["turn_deadline"] = None
+        hand["bot_action_at"] = None
 
 
 def _contribute(state: Dict[str, Any], hand: Dict[str, Any], player_id: str, amount: int) -> None:
@@ -1004,6 +1106,8 @@ def _perform_action(
     amount: Optional[int],
     now: float,
     timed_out: bool = False,
+    sitting_out: bool = False,
+    continue_turn: bool = True,
 ) -> None:
     hand = state["hand"]
     assert hand is not None
@@ -1103,7 +1207,8 @@ def _perform_action(
         )
     _log(state, text, now)
     _record_action_event(
-        state, hand, actor_id, action, paid, target=target, timed_out=timed_out,
+        state, hand, actor_id, action, paid, target=target,
+        timed_out=timed_out, sitting_out=sitting_out,
     )
 
     live = _hand_live_ids(hand)
@@ -1112,9 +1217,13 @@ def _perform_action(
         return
 
     if _round_complete(state, hand):
-        _advance_street(state, now)
-    else:
+        _advance_street(state, now, chain_actor=continue_turn)
+    elif continue_turn:
         _set_next_actor(state, actor_id, now)
+    else:
+        hand["to_act"] = None
+        hand["turn_deadline"] = None
+        hand["bot_action_at"] = None
 
 
 def apply_action(
@@ -1138,28 +1247,138 @@ def apply_action(
 
 
 
-def _choose_bot_action(state: Dict[str, Any], hand: Dict[str, Any], player_id: str) -> Tuple[str, Optional[int]]:
-    """Choose uniformly from legal action types without hand-strength strategy."""
+def _choose_bot_action(
+    state: Dict[str, Any],
+    hand: Dict[str, Any],
+    player_id: str,
+) -> Tuple[str, Optional[int]]:
+    """Ask the isolated policy using only hero and public hand information."""
     seat = _seat_by_id(state, player_id)
     if seat is None:
         raise GameError("cannot_act", "The bot no longer has a seat.", 409)
-    current = hand["current_bet"]
-    player_bet = hand["bets"].get(player_id, 0)
+
+    button = _seat_by_id(state, hand.get("button_id"))
+    participants = []
+    for public_seat in _seats_in_order(state):
+        public_id = public_seat["player_id"]
+        if public_id not in hand.get("holes", {}):
+            continue
+        folded = public_id in hand.get("folded", [])
+        participants.append({
+            "seat": public_seat["seat_no"],
+            "stack": public_seat["stack"],
+            "street_bet": hand.get("bets", {}).get(public_id, 0),
+            "folded": folded,
+            "all_in": bool(public_seat["stack"] == 0 and not folded),
+        })
+
+    context = {
+        "street": hand.get("street", "preflop"),
+        "hole_cards": list(hand.get("holes", {}).get(player_id, [])),
+        "board": list(hand.get("board", [])),
+        "hero_seat": seat["seat_no"],
+        "button_seat": button["seat_no"] if button is not None else seat["seat_no"],
+        "players": participants,
+        "small_blind": hand.get("small_blind", state["blinds"]["small"]),
+        "big_blind": hand.get("big_blind", state["blinds"]["big"]),
+        "pot": sum(hand.get("contrib", {}).values()),
+        "current_bet": hand.get("current_bet", 0),
+        "min_raise": hand.get("min_raise", hand.get("big_blind", 0)),
+        "raise_allowed": bool(
+            _has_raise_right(hand, player_id)
+            and _has_raise_opponent(state, hand, player_id)
+        ),
+    }
+
+    current = hand.get("current_bet", 0)
+    player_bet = hand.get("bets", {}).get(player_id, 0)
     to_call = max(0, current - player_bet)
     max_total = player_bet + seat["stack"]
-    choices: List[Tuple[str, Optional[int]]] = (
-        [("check", None)] if to_call == 0
-        else [("fold", None), ("call", None)]
+    raise_allowed = context["raise_allowed"]
+
+    def fallback() -> Tuple[str, Optional[int]]:
+        return ("check", None) if to_call == 0 else ("fold", None)
+
+    try:
+        import bot_strategy
+        proposed = bot_strategy.choose_action(
+            context, _rank_seven_fast, rng=random.SystemRandom(),
+        )
+    except Exception:
+        return fallback()
+
+    if not isinstance(proposed, (tuple, list)) or len(proposed) != 2:
+        return fallback()
+    action, amount = proposed
+    if not isinstance(action, str):
+        return fallback()
+    action = action.lower()
+    if action == "check":
+        return (action, None) if to_call == 0 else fallback()
+    if action == "fold":
+        return (action, None) if to_call > 0 else fallback()
+    if action == "call":
+        return (action, None) if to_call > 0 else fallback()
+    if action in ("bet", "raise"):
+        if (action == "bet") != (current == 0):
+            return fallback()
+        if type(amount) is not int:
+            return fallback()
+        minimum = current + hand.get("min_raise", 0) if current else hand.get("min_raise", 0)
+        if (
+            amount <= current
+            or amount > max_total
+            or not raise_allowed
+            or not _has_raise_right(hand, player_id)
+            or not _has_raise_opponent(state, hand, player_id)
+            or (amount < minimum and amount != max_total)
+        ):
+            return fallback()
+        return action, amount
+    if action == "all_in":
+        if max_total > current and (
+            not raise_allowed
+            or not _has_raise_right(hand, player_id)
+            or not _has_raise_opponent(state, hand, player_id)
+        ):
+            return fallback()
+        return action, None
+    return fallback()
+
+
+def _apply_due_blinds(state: Dict[str, Any], timestamp: float) -> bool:
+    """Apply every expired blind level at a hand boundary."""
+    if state.get("status") != "playing":
+        return False
+    blinds = state["blinds"]
+    deadline = blinds.get("next_level_at")
+    if deadline is None or timestamp < deadline:
+        return False
+
+    level_seconds = state["config"]["level_minutes"] * 60
+    passed = 1 + int((timestamp - deadline) // level_seconds)
+    blinds["level"] += passed
+    growth = 1 << min(passed, MAX_CHIPS.bit_length())
+    blinds["small"] = min(MAX_CHIPS, blinds["small"] * growth)
+    blinds["big"] = min(MAX_CHIPS, blinds["big"] * growth)
+    blinds["next_level_at"] = deadline + passed * level_seconds
+    _log(
+        state,
+        "Blind level %d: %d/%d." % (blinds["level"], blinds["small"], blinds["big"]),
+        timestamp,
     )
-    may_raise = _has_raise_right(hand, player_id) and _has_raise_opponent(state, hand, player_id)
-    if may_raise and max_total > current:
-        minimum = current + hand["min_raise"] if current else hand["min_raise"]
-        if minimum <= max_total:
-            choices.append(("raise" if current else "bet", minimum))
-        choices.append(("all_in", None))
-    elif to_call > 0 and max_total <= current:
-        choices.append(("all_in", None))
-    return random.SystemRandom().choice(choices)
+
+    hand = state.get("hand")
+    if hand is not None and hand.get("street") == "showdown":
+        _record_event(
+            state, hand, "blind_level_updated",
+            level=blinds["level"],
+            small_blind=blinds["small"],
+            big_blind=blinds["big"],
+            changed_at=timestamp,
+        )
+    return True
+
 
 def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
     """Advance blind clocks, turn timeouts, and the short showdown pause."""
@@ -1182,26 +1401,19 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
     if state["status"] != "playing":
         return state
 
-    blinds = state["blinds"]
-    level_seconds = state["config"]["level_minutes"] * 60
-    if blinds["next_level_at"] is not None and timestamp >= blinds["next_level_at"]:
-        # Catch up after sleep/restart without replaying every missed level.
-        passed = 1 + int((timestamp - blinds["next_level_at"]) // level_seconds)
-        blinds["level"] += passed
-        growth = 1 << min(passed, MAX_CHIPS.bit_length())
-        blinds["small"] = min(MAX_CHIPS, blinds["small"] * growth)
-        blinds["big"] = min(MAX_CHIPS, blinds["big"] * growth)
-        blinds["next_level_at"] += passed * level_seconds
-        _log(
-            state,
-            "Blind level %d: %d/%d." % (blinds["level"], blinds["small"], blinds["big"]),
-            timestamp,
-        )
-        changed = True
-
     hand = state["hand"]
     if hand is not None and hand.get("street") == "showdown":
+        remaining = sum(1 for seat in state["seats"] if seat["stack"] > 0)
         if (
+            state["status"] == "playing"
+            and remaining > 1
+            and _apply_due_blinds(state, timestamp)
+        ):
+            # Publish the new level during the between-hands state before
+            # allowing a deal, even if the previous pause already elapsed.
+            hand["next_hand_at"] = timestamp + HAND_COMPLETE_PAUSE_SECONDS
+            changed = True
+        elif (
             state["status"] == "playing"
             and hand.get("next_hand_at") is not None
             and timestamp >= hand["next_hand_at"]
@@ -1930,6 +2142,8 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["to_act"] = None
     hand["turn_deadline"] = None
     hand["bot_action_at"] = None
+    if len(remaining) > 1:
+        _apply_due_blinds(state, now)
     hand["next_hand_at"] = now + HAND_COMPLETE_PAUSE_SECONDS
     if len(remaining) <= 1:
         _set_results(state, remaining[0]["player_id"] if remaining else None, now)
@@ -2066,6 +2280,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "seat_no": seat["seat_no"],
             "stack": seat["stack"],
             "is_bot": bool(seat.get("is_bot", False)),
+            "sitting_out": bool(seat.get("sitting_out", False)),
+            "in_hand": in_hand,
             "folded": folded,
             "all_in": bool(in_hand and seat["stack"] == 0 and not folded),
             "bet": hand["bets"].get(player_id, 0) if hand else 0,
@@ -2141,7 +2357,21 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "big": blinds["big"],
             "next_level_at": next_level,
             "seconds_to_next": seconds_to_next,
+            "pending": bool(
+                state.get("status") == "playing"
+                and hand is not None
+                and hand.get("street") != "showdown"
+                and next_level is not None
+                and timestamp >= next_level
+            ),
         },
+        "hand_blinds": (
+            {
+                "small": hand.get("small_blind", blinds["small"]),
+                "big": hand.get("big_blind", blinds["big"]),
+            }
+            if hand else None
+        ),
         "hand_no": state["hand_no"],
         "hand_id": _hand_id(state, hand) if hand else None,
         "event_seq": int(hand.get("event_seq", 0)) if hand else 0,

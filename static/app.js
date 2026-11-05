@@ -58,7 +58,25 @@
     blindAnnouncementTimer: 0,
     blindLevelTableId: "",
     blindLevelValue: null,
+    blindHandId: "",
     showBigBlinds: false,
+    sitOutRequestId: 0,
+    sitOutPending: false,
+    chat: {
+      requestId: 0,
+      tableId: "",
+      playerId: "",
+      open: false,
+      trigger: null,
+      messages: [],
+      loaded: false,
+      sending: false,
+      postInFlight: false,
+      postRequestSerial: 0,
+      activePostId: 0,
+      error: "",
+      timer: 0
+    },
     actionPending: null,
     actionSubmittedKey: "",
     lastHandReplay: {
@@ -171,8 +189,7 @@
     if (!tableUsesBigBlinds(view)) return chips(value);
     var bigBlind = blindParts(view || state.tableView).big;
     var units = number(value, 0) / bigBlind;
-    if (units >= 0 && units < 1) return units.toFixed(1);
-    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Math.floor(units));
+    return new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(units);
   }
 
   function tableChips(value, view) {
@@ -184,7 +201,7 @@
     var bigBlind = Math.max(1, blindParts(view || state.tableView).big);
     var rawAmount = number(value, 0);
     var units = rawAmount / bigBlind;
-    var formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(units);
+    var formatted = new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(units);
     if (rawAmount > 0 && Number(formatted.replace(/,/g, "")) === 0) return chips(rawAmount) + " chips";
     return formatted + " BB";
   }
@@ -245,6 +262,7 @@
     if (resetTracking) {
       state.blindLevelTableId = "";
       state.blindLevelValue = null;
+      state.blindHandId = "";
     }
   }
 
@@ -453,6 +471,9 @@
 
   function setLoggedOut(message) {
     closeLastHandDialog(false);
+    clearChat();
+    state.sitOutRequestId += 1;
+    state.sitOutPending = false;
     state.player = null;
     state.showBigBlinds = false;
     document.body.classList.remove("gameplay-active");
@@ -538,6 +559,347 @@
     return data || {};
   }
 
+  function renderChatButton() {
+    var button = byId("chat-button");
+    var panel = byId("chat-panel");
+    if (!button || !panel) return;
+    button.hidden = !Boolean(state.player && state.activeTableId && state.tableView);
+    button.setAttribute("aria-expanded", String(Boolean(state.chat.open && !panel.hidden)));
+  }
+
+  function setChatError(message) {
+    var node = byId("chat-error");
+    if (!node) return;
+    state.chat.error = message || "";
+    node.textContent = state.chat.error;
+    node.hidden = !state.chat.error;
+  }
+
+  function chatRequestIsCurrent(requestId, tableId, playerId) {
+    return Boolean(state.chat.requestId === requestId && state.chat.open &&
+      state.chat.tableId === tableId && state.chat.playerId === playerId &&
+      state.activeTableId === tableId && String(state.player && state.player.id || "") === playerId);
+  }
+
+  function clearChat() {
+    var chat = state.chat;
+    chat.requestId += 1;
+    if (chat.timer) window.clearTimeout(chat.timer);
+    chat.timer = 0;
+    chat.tableId = "";
+    chat.playerId = "";
+    chat.open = false;
+    chat.trigger = null;
+    chat.messages = [];
+    chat.loaded = false;
+    chat.sending = false;
+    chat.postRequestSerial += 1;
+    chat.activePostId = chat.postRequestSerial;
+    chat.postInFlight = false;
+    chat.error = "";
+    var panel = byId("chat-panel");
+    var button = byId("chat-button");
+    var messages = byId("chat-messages");
+    var input = byId("chat-input");
+    var send = byId("chat-send-button");
+    var form = byId("chat-form");
+    if (panel) panel.hidden = true;
+    if (button) button.setAttribute("aria-expanded", "false");
+    if (messages) messages.replaceChildren();
+    if (input) {
+      input.value = "";
+      input.disabled = false;
+    }
+    if (send) send.disabled = true;
+    if (form) form.setAttribute("aria-busy", "false");
+    setChatError("");
+    updateChatCharacterCount();
+  }
+
+  function closeChat(restoreFocus) {
+    var chat = state.chat;
+    var trigger = chat.trigger || byId("chat-button");
+    chat.requestId += 1;
+    if (chat.timer) window.clearTimeout(chat.timer);
+    chat.timer = 0;
+    chat.open = false;
+    chat.sending = false;
+    var panel = byId("chat-panel");
+    var button = byId("chat-button");
+    var input = byId("chat-input");
+    var form = byId("chat-form");
+    if (panel) panel.hidden = true;
+    if (button) button.setAttribute("aria-expanded", "false");
+    if (input) input.disabled = false;
+    if (form) form.setAttribute("aria-busy", "false");
+    updateChatCharacterCount();
+    if (restoreFocus && trigger && trigger.isConnected) trigger.focus({ preventScroll: true });
+  }
+
+  function chatTimestamp(message) {
+    var stamp = number(message && message.created_at, 0);
+    if (stamp > 0 && stamp < 100000000000) stamp *= 1000;
+    return stamp;
+  }
+
+  function createChatMessageNode(message) {
+    var item = document.createElement("li");
+    item.className = "chat-message";
+    item.dataset.messageId = message.id;
+    var header = document.createElement("div");
+    header.className = "chat-message-header";
+    var name = document.createElement("span");
+    name.className = "chat-message-name";
+    name.textContent = message.name || "Player";
+    var time = document.createElement("time");
+    time.className = "chat-message-time";
+    var stamp = chatTimestamp(message);
+    if (stamp) {
+      var date = new Date(stamp);
+      time.dateTime = date.toISOString();
+      time.textContent = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+    header.append(name, time);
+    var body = document.createElement("p");
+    body.className = "chat-message-text";
+    body.textContent = message.text;
+    item.append(header, body);
+    return item;
+  }
+
+  function renderChatMessages(force, additions) {
+    var list = byId("chat-messages");
+    if (!list) return;
+    var wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight <= 28;
+    var oldScrollTop = list.scrollTop;
+    var anchorId = "";
+    var anchorOffset = 0;
+    if (!wasAtBottom) {
+      var listTop = list.getBoundingClientRect().top;
+      Array.prototype.some.call(list.children, function (child) {
+        var rect = child.getBoundingClientRect();
+        if (rect.bottom <= listTop) return false;
+        anchorId = child.getAttribute("data-message-id") || "";
+        anchorOffset = rect.top - listTop;
+        return true;
+      });
+    }
+    if (force) {
+      var fragment = document.createDocumentFragment();
+      state.chat.messages.forEach(function (message) {
+        fragment.appendChild(createChatMessageNode(message));
+      });
+      list.replaceChildren(fragment);
+      if (wasAtBottom) list.scrollTop = list.scrollHeight;
+      else {
+        var anchor = anchorId ? Array.prototype.find.call(list.children, function (child) {
+          return child.getAttribute("data-message-id") === anchorId;
+        }) : null;
+        if (anchor) {
+          var nextOffset = anchor.getBoundingClientRect().top - list.getBoundingClientRect().top;
+          list.scrollTop += nextOffset - anchorOffset;
+        } else {
+          list.scrollTop = Math.min(oldScrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
+        }
+      }
+      return;
+    }
+    (additions || []).forEach(function (message) {
+      list.appendChild(createChatMessageNode(message));
+    });
+    if (wasAtBottom && (additions || []).length) list.scrollTop = list.scrollHeight;
+    else list.scrollTop = oldScrollTop;
+  }
+
+  function mergeChatMessages(incoming, forceRender) {
+    var current = state.chat.messages.slice();
+    var known = Object.create(null);
+    current.forEach(function (message) { known[message.id] = true; });
+    var additions = [];
+    (Array.isArray(incoming) ? incoming : []).forEach(function (raw) {
+      if (!raw || raw.id == null) return;
+      var message = {
+        id: String(raw.id),
+        player_id: String(raw.player_id || ""),
+        name: String(raw.name || "Player"),
+        text: String(raw.text == null ? "" : raw.text),
+        created_at: raw.created_at
+      };
+      if (!message.id || known[message.id]) return;
+      known[message.id] = true;
+      additions.push(message);
+    });
+    var merged = current.concat(additions);
+    function compareIds(a, b) {
+      var aNumber = Number(a.id);
+      var bNumber = Number(b.id);
+      if (String(a.id).trim() !== "" && String(b.id).trim() !== "" &&
+          Number.isFinite(aNumber) && Number.isFinite(bNumber)) return aNumber - bNumber;
+      var aTime = chatTimestamp(a);
+      var bTime = chatTimestamp(b);
+      if (aTime !== bTime) return aTime - bTime;
+      return String(a.id).localeCompare(String(b.id));
+    }
+    var outOfOrder = Boolean(current.length && additions.some(function (message) {
+      return compareIds(message, current[current.length - 1]) < 0;
+    }));
+    merged.sort(compareIds);
+    var overflow = Math.max(0, merged.length - 100);
+    if (overflow) merged.splice(0, overflow);
+    state.chat.messages = merged;
+    if (forceRender || overflow || outOfOrder) renderChatMessages(true, []);
+    else renderChatMessages(false, additions);
+  }
+
+  function updateChatCharacterCount() {
+    var input = byId("chat-input");
+    var count = byId("chat-character-count");
+    if (!input || !count) return;
+    count.textContent = input.value.length + " / 500";
+    var send = byId("chat-send-button");
+    if (send) send.disabled = state.chat.sending || state.chat.postInFlight || !String(input.value || "").trim() ||
+      !state.chat.open || !state.activeTableId || !state.player;
+  }
+
+  function showChat() {
+    var tableId = String(state.activeTableId || "");
+    var playerId = String(state.player && state.player.id || "");
+    if (!tableId || !playerId || !state.tableView) return;
+    if (state.chat.tableId !== tableId || state.chat.playerId !== playerId) clearChat();
+    var chat = state.chat;
+    chat.requestId += 1;
+    chat.tableId = tableId;
+    chat.playerId = playerId;
+    chat.open = true;
+    chat.trigger = byId("chat-button");
+    var panel = byId("chat-panel");
+    panel.hidden = false;
+    byId("chat-button").setAttribute("aria-expanded", "true");
+    setChatError("");
+    updateChatCharacterCount();
+    byId("chat-input").disabled = false;
+    byId("chat-form").setAttribute("aria-busy", String(chat.postInFlight));
+    byId("chat-input").focus({ preventScroll: true });
+    fetchChat(chat.requestId, tableId, playerId);
+  }
+
+  function scheduleChatPoll(requestId, tableId, playerId) {
+    var chat = state.chat;
+    if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
+    if (chat.timer) window.clearTimeout(chat.timer);
+    chat.timer = window.setTimeout(function () {
+      chat.timer = 0;
+      fetchChat(requestId, tableId, playerId);
+    }, 2000);
+  }
+
+  async function fetchChat(requestId, tableId, playerId) {
+    if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
+    try {
+      var data = await request("/tables/" + encodeURIComponent(tableId) + "/chat");
+      if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
+      mergeChatMessages(data.messages, !state.chat.loaded);
+      state.chat.loaded = true;
+      setChatError("");
+      scheduleChatPoll(requestId, tableId, playerId);
+    } catch (err) {
+      if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
+      setChatError(err.message || "Chat could not be loaded.");
+      scheduleChatPoll(requestId, tableId, playerId);
+    }
+  }
+
+  async function sendChatMessage() {
+    var chat = state.chat;
+    var input = byId("chat-input");
+    var text = String(input && input.value || "").trim();
+    if (!text || chat.sending || chat.postInFlight || !chat.open || !state.activeTableId || !state.player) return;
+    var requestId = chat.requestId;
+    var tableId = chat.tableId;
+    var playerId = chat.playerId;
+    var postId = ++chat.postRequestSerial;
+    chat.activePostId = postId;
+    chat.postInFlight = true;
+    chat.sending = true;
+    setChatError("");
+    byId("chat-form").setAttribute("aria-busy", "true");
+    input.disabled = true;
+    updateChatCharacterCount();
+    try {
+      var data = await mutate("/tables/" + encodeURIComponent(tableId) + "/chat", { text: text });
+      if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
+      mergeChatMessages(data && data.message ? [data.message] : [], false);
+      input.value = "";
+    } catch (err) {
+      if (chatRequestIsCurrent(requestId, tableId, playerId)) setChatError(err.message || "Your message could not be sent.");
+    } finally {
+      if (chat.activePostId === postId && chat.tableId === tableId && chat.playerId === playerId &&
+          state.activeTableId === tableId && String(state.player && state.player.id || "") === playerId) {
+        chat.postInFlight = false;
+        chat.sending = false;
+        input.disabled = false;
+        byId("chat-form").setAttribute("aria-busy", "false");
+        updateChatCharacterCount();
+      }
+    }
+  }
+
+  function renderSitOutButton(view, seat) {
+    var button = byId("sit-out-button");
+    if (!button) return;
+    var viewer = view && view.viewer || {};
+    var canToggle = Boolean(state.player && state.activeTableId && view && seat &&
+      (view.status === "lobby" || view.status === "playing") &&
+      !isBotSeat(seat) && seat.connected !== false && !seat.disconnected &&
+      viewer.disconnected !== true && viewer.seated !== false);
+    button.hidden = !canToggle;
+    if (!canToggle) {
+      button.setAttribute("aria-pressed", "false");
+      button.disabled = true;
+      button.removeAttribute("aria-busy");
+      return;
+    }
+    var sittingOut = Boolean(seat.sitting_out);
+    button.textContent = sittingOut ? "Return to play" : "Sit out";
+    button.setAttribute("aria-label", sittingOut ? "Return to play" : "Sit out");
+    button.setAttribute("aria-pressed", String(sittingOut));
+    button.disabled = state.sitOutPending;
+    button.setAttribute("aria-busy", String(state.sitOutPending));
+  }
+
+  function sitOutRequestIsCurrent(requestId, tableId, playerId) {
+    return Boolean(state.sitOutRequestId === requestId && state.activeTableId === tableId &&
+      String(state.player && state.player.id || "") === playerId);
+  }
+
+  async function toggleSitOut() {
+    var view = state.tableView;
+    var seat = viewerSeat(view);
+    if (!view || !seat || state.sitOutPending) return;
+    var tableId = String(state.activeTableId || "");
+    var playerId = String(state.player && state.player.id || "");
+    if (!tableId || !playerId || isBotSeat(seat)) return;
+    var requestId = ++state.sitOutRequestId;
+    state.sitOutPending = true;
+    renderSitOutButton(view, seat);
+    try {
+      var data = await mutate("/tables/" + encodeURIComponent(tableId) + "/sit-out", {
+        sitting_out: !Boolean(seat.sitting_out)
+      });
+      if (!sitOutRequestIsCurrent(requestId, tableId, playerId)) return;
+      var updated = data && data.table ? data.table : data;
+      if (adoptSnapshot(updated, tableId)) renderTable();
+      refreshAll(true);
+    } catch (err) {
+      if (sitOutRequestIsCurrent(requestId, tableId, playerId)) showNotice(err.message, "error", false);
+    } finally {
+      if (sitOutRequestIsCurrent(requestId, tableId, playerId)) {
+        state.sitOutPending = false;
+        if (state.tableView) renderSitOutButton(state.tableView, viewerSeat(state.tableView));
+      }
+    }
+  }
+
   function statusName(status) {
     if (status === "playing") return "In progress";
     if (status === "completed") return "Complete";
@@ -551,6 +913,7 @@
       big: number(b.big != null ? b.big : (b.big_blind != null ? b.big_blind : (source && source.big_blind)), 0),
       level: number(b.level != null ? b.level : (source && source.level), 1),
       seconds: number(b.seconds_to_next != null ? b.seconds_to_next : (source && source.seconds_to_next), -1),
+      pending: Boolean(b.pending != null ? b.pending : (source && source.blinds_pending)),
       nextAt: b.next_level_at || b.level_ends_at || (source && (source.next_level_at || source.level_ends_at)) || ""
     };
   }
@@ -1079,9 +1442,12 @@
     var layout = seatLayout(view);
     var max = layout.max;
     var ringOnlySeated = view.status === "playing" || view.status === "completed";
-    var feltSeats = ringOnlySeated
-      ? layout.seats.filter(function (seat) { return seatCountsAsTournamentRemaining(view, seat); })
-      : layout.seats;
+    var hasInHandFlags = layout.seats.some(function (seat) { return typeof (seat && seat.in_hand) === "boolean"; });
+    var feltSeats = view.status === "completed" && hasInHandFlags
+      ? layout.seats.filter(function (seat) { return seat.in_hand === true; })
+      : (ringOnlySeated
+        ? layout.seats.filter(function (seat) { return seatCountsAsTournamentRemaining(view, seat); })
+        : layout.seats);
     var bySeat = Object.create(null);
     feltSeats.forEach(function (seat, index) {
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
@@ -1092,7 +1458,11 @@
     var ownSeat = feltSeats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === viewerId;
     });
+    var viewerHasSeat = layout.seats.some(function (seat) {
+      return String(seat.id || seat.player_id || "") === viewerId;
+    });
     var hostId = String(view.host_id || "");
+    var isHost = Boolean(viewerId && viewerId === hostId);
     var anchorSeat = ownSeat || feltSeats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === hostId;
     }) || feltSeats[0] || null;
@@ -1125,7 +1495,17 @@
         : (i - anchorSeatNo + max) % max;
       if (!seat) {
         if (!ringOnlySeated) {
-          html += '<div class="seat-card seat-empty" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true"><span>Seat ' + (i + 1) + '</span><span>Open</span></div>';
+          var emptySeatNo = i + 1;
+          var emptyActions = "";
+          if (!viewerHasSeat) {
+            emptyActions += '<button class="seat-empty-join" type="button" data-take-seat="' + i + '" aria-label="Take seat ' + emptySeatNo + '"><span>Take seat</span></button>';
+          } else {
+            emptyActions += '<span class="seat-empty-open">Open</span>';
+          }
+          var botAction = isHost
+            ? '<button class="seat-empty-bot" type="button" data-add-bot-seat="' + i + '" aria-label="Add test bot to seat ' + emptySeatNo + '">Add bot</button>'
+            : "";
+          html += '<div class="seat-card seat-empty' + (botAction ? ' has-secondary-action' : '') + '" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true">' + emptyActions + botAction + '</div>';
         }
         continue;
       }
@@ -1135,10 +1515,11 @@
       var bot = isBotSeat(seat);
       var folded = Boolean(seat.folded || seat.is_folded);
       var allIn = Boolean(seat.all_in || seat.is_all_in);
+      var sittingOut = Boolean(seat.sitting_out);
       var acting = actorId && id === actorId;
       var dealer = buttonId && id === buttonId;
       var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") + (folded ? " is-folded" : "") + (bot ? " is-bot" : "");
-      var label = folded ? "Folded" : (allIn ? "All in" : "");
+      var label = sittingOut ? "Sitting out" : (folded ? "Folded" : (allIn ? "All in" : ""));
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
       var seatNo = String(Math.floor(number(rawSeatNo, i)));
@@ -1191,10 +1572,12 @@
         cardHtml = '<div class="seat-cards">' + hiddenCardHTML(true, false) + hiddenCardHTML(true, false) + '</div>';
       }
 
-      var tags = bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '';
+      var tags = (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '') +
+        (sittingOut ? '<span class="seat-label sit-out-label">SITTING OUT</span>' : '');
       var tagsMarkup = tags ? '<div class="seat-tags">' + tags + '</div>' : '';
-      html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
-        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span><span class="seat-number">#' + (i + 1) + '</span></span></div>' +
+      var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
+      html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(i + 1) + ', ' + esc(seatName) + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
+        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' +
         tagsMarkup +
         stackHtml +
         '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
@@ -1230,7 +1613,7 @@
     felt.classList.toggle("exposed-ring", positionCount >= 5 && Boolean((view.runout_odds || []).length));
     felt.dataset.compactLayout = compact ? "true" : "false";
     felt.classList.toggle("is-crowded", positionCount >= 7);
-    felt.classList.toggle("is-playing", currentHand);
+    felt.classList.toggle("is-playing", currentHand || view.status === "completed");
     felt.dataset.seatCount = String(positionCount);
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
@@ -1252,7 +1635,7 @@
       node.style.top = y.toFixed(2) + "%";
     });
     var blockers = [];
-    if (currentHand && window.SitNgoLayout && gridRect.width && gridRect.height) {
+    if ((currentHand || view.status === "completed" || view.status === "lobby") && window.SitNgoLayout && gridRect.width && gridRect.height) {
       var avoid = ["board-cards", "board-caption", "pot-display", "street-label", "blind-strip"].map(function (id) {
         return boxForNode(byId(id), gridRect);
       }).filter(Boolean).concat(blockers);
@@ -1354,20 +1737,38 @@
     var b = blindParts(view);
     var remaining = clockRemaining(b);
     var tableId = String(view.id || state.activeTableId || "");
+    var handId = String(view.hand_id || (number(view.hand_no, 0) > 0 ? "hand:" + number(view.hand_no, 0) : ""));
+    var street = String(view.street || "").toLowerCase();
     if (state.blindLevelTableId !== tableId) {
       clearBlindAnnouncement(true);
       state.blindLevelTableId = tableId;
       state.blindLevelValue = b.level;
+      state.blindHandId = handId;
     } else {
-      if (state.blindLevelValue !== null && b.level > state.blindLevelValue && view.status === "playing") {
+      var previousHandId = state.blindHandId;
+      var handChanged = Boolean(previousHandId && handId && previousHandId !== handId);
+      if ((handChanged || street !== "showdown") && state.blindAnnouncementTimer) clearBlindAnnouncement(false);
+      if (state.blindLevelValue !== null && b.level > state.blindLevelValue &&
+          view.status === "playing" && street === "showdown") {
         announceBlindLevel(b);
       }
       state.blindLevelValue = b.level;
+      if (handId) state.blindHandId = handId;
     }
     var blindUnit = tableChipUnit(view);
     var blindsLabel = tableChipValue(b.small, view) + " / " + tableChipValue(b.big, view) + " " + blindUnit;
+    var handBlinds = view.status === "playing" && street !== "showdown" &&
+      view.hand_blinds && typeof view.hand_blinds === "object"
+      ? view.hand_blinds
+      : null;
+    if (handBlinds) {
+      var handSmall = number(handBlinds.small, b.small);
+      var handBig = number(handBlinds.big, b.big);
+      blindsLabel = tableChipValue(handSmall, view) + " / " + tableChipValue(handBig, view) + " " + blindUnit;
+    }
+    var levelNote = b.pending ? "Next hand" : (remaining >= 0 ? "Next in " + formatClock(remaining) : "Countdown unavailable");
     var entries = [
-      { label: "Level", value: String(b.level), note: remaining >= 0 ? "Next in " + formatClock(remaining) : "Countdown unavailable" },
+      { label: "Level", value: String(b.level), note: levelNote },
       { label: "Blinds", value: blindsLabel, note: tableUsesBigBlinds(view) ? "Small / big · BB" : "Small / big" }
     ];
     byId("blind-strip").innerHTML = entries.map(function (entry) {
@@ -1588,7 +1989,7 @@
     var bigBlind = Math.max(1, number(blindParts(view).big, number(view.config && view.config.big_blind, 1)));
     var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
     var presetSpecs = preflop
-      ? [{ label: "2.5 BB", bb: 2.5 }, { label: "3 BB", bb: 3 }, { label: "4 BB", bb: 4 }]
+      ? [{ label: "2.5 BB", bb: 2.5 }, { label: "3.0 BB", bb: 3 }, { label: "4.0 BB", bb: 4 }]
       : [{ label: "½ pot", fraction: 0.5 }, { label: "¾ pot", fraction: 0.75 }, { label: "Pot", fraction: 1 }];
     presetSpecs = presetSpecs.map(function (preset) {
       var rawTarget = preflop
@@ -1661,20 +2062,14 @@
     var standButton = byId("stand-button");
     var statusTitle = byId("seat-status-title");
     var statusDescription = byId("seat-status-description");
-    var visible = view.status === "lobby";
+    var visible = view.status === "lobby" && isSeated;
     panel.hidden = !visible;
     if (!visible) return;
 
     var viewer = view.viewer || {};
     if (isSeated) {
       statusTitle.textContent = host ? "You’re seated and hosting." : "You’re seated at the table.";
-      statusDescription.textContent = host ? "Your host controls stay with you if you stand up." : "Stand up any time to watch without a seat.";
-    } else if (host) {
-      statusTitle.textContent = "You’re hosting from the rail.";
-      statusDescription.textContent = "Your host controls stay yours. Choose a seat, or let guests watch.";
-    } else {
-      statusTitle.textContent = "You’re watching the table.";
-      statusDescription.textContent = "Choose an open seat to join, or keep watching as a guest.";
+      statusDescription.textContent = host ? "Add test bots from an open felt seat, or stand up to watch." : "Stand up any time to watch without a seat.";
     }
 
     standButton.hidden = !isSeated;
@@ -1682,19 +2077,14 @@
     for (var i = 0; i < layout.max; i += 1) {
       var occupant = layout.bySeat[i];
       var actions = "";
-      if (!occupant && !isSeated) {
-        actions += '<button class="button button-outline button-small" type="button" id="take-seat-' + i + '" data-take-seat="' + i + '">Take seat</button>';
-      }
-      if (host && !occupant) {
-        actions += '<button class="button button-quiet button-small" type="button" id="add-bot-' + i + '" data-add-bot-seat="' + i + '">Add test bot</button>';
-      } else if (host && occupant && isBotSeat(occupant)) {
+      if (host && occupant && isBotSeat(occupant)) {
         actions += '<button class="button button-quiet button-small" type="button" id="remove-bot-' + i + '" data-remove-bot-seat="' + i + '">Remove bot</button>';
       }
       if (!actions) continue;
       var label = occupant && isBotSeat(occupant) ? (occupant.name || "Test bot") : (occupant ? occupant.name || "Occupied" : "Open");
-      rows.push('<div class="seat-choice' + (occupant ? ' has-bot' : '') + '"><span class="seat-choice-label">Seat ' + (i + 1) + (occupant ? ' · ' + esc(label) : ' · Open') + '</span><span class="seat-choice-actions">' + actions + '</span></div>');
+      rows.push('<div class="seat-choice' + (occupant ? ' has-bot' : '') + '"><span class="seat-choice-label">' + esc(label) + '</span><span class="seat-choice-actions">' + actions + '</span></div>');
     }
-    controls.innerHTML = rows.length ? rows.join("") : '<p class="seat-controls-empty">' + (isSeated ? "No host seat changes are available right now." : "All seats are occupied. You can keep watching as a guest.") + '</p>';
+    controls.innerHTML = rows.length ? rows.join("") : '<p class="seat-controls-empty">' + (host ? "Add bots from the open seats on the table." : "Your seat is ready.") + '</p>';
   }
 
   function loadSettingsForm(view) {
@@ -1760,6 +2150,10 @@
     byId("table-view").hidden = !hasTable;
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
+      clearChat();
+      state.sitOutRequestId += 1;
+      state.sitOutPending = false;
+      renderSitOutButton(null, null);
       syncLastHandButton();
       state.actionSubmittedKey = "";
       byId("results-panel").hidden = true;
@@ -1807,6 +2201,8 @@
     }) || null;
     var seated = Boolean(viewer.seated || ownSeat);
     var host = String(view.host_id || "") === playerId;
+    renderSitOutButton(view, ownSeat);
+    renderChatButton();
     renderLobbyControls(view, host, ownSeat, seated, layout);
     renderSettingsPanel(view, host);
     updateHostReadiness(view, host);
@@ -1815,7 +2211,12 @@
   function enterApp(player, csrf, sessionProof) {
     var previousPlayerId = String(state.player && state.player.id || "");
     var nextPlayerId = String(player && player.id || "");
-    if (previousPlayerId && previousPlayerId !== nextPlayerId) closeLastHandDialog(false);
+    if (previousPlayerId !== nextPlayerId) {
+      closeLastHandDialog(false);
+      clearChat();
+      state.sitOutRequestId += 1;
+      state.sitOutPending = false;
+    }
     state.player = player || null;
     if (typeof sessionProof === "string" && sessionProof) state.sessionProof = sessionProof;
     if (typeof csrf === "string" && csrf) state.csrf = csrf;
@@ -1857,7 +2258,13 @@
 
   function adoptSnapshot(view, tableId) {
     if (!view || view.id !== tableId || state.activeTableId !== tableId) return false;
+    if ((state.chat.tableId && state.chat.tableId !== tableId) ||
+        (state.chat.playerId && state.chat.playerId !== String(state.player && state.player.id || ""))) clearChat();
     var previous = state.tableView;
+    if (previous && String(previous.id || "") !== tableId) {
+      state.sitOutRequestId += 1;
+      state.sitOutPending = false;
+    }
     if (previous && previous.id === tableId) {
       var previousViewer = previous.viewer || {};
       var incomingViewer = view.viewer || {};
@@ -2110,17 +2517,15 @@
 
     state.actionPending = intent;
     renderActions(state.tableView);
-    showActionFeedback(intent.pendingMessage, "info", true);
     try {
       await mutate("/tables/" + encodeURIComponent(intent.tableId) + "/action", intent.payload);
       intent.accepted = true;
       state.actionSubmittedKey = intent.key;
-      showActionFeedback(intent.successMessage, "success", false);
       try {
         await refreshSelected();
       } catch (refreshError) {
         if (refreshError.status !== 401) {
-          showActionFeedback(intent.successMessage + " The table is waiting for its next refresh.", "success", true);
+          showActionFeedback("Your action was sent, but the table could not refresh. " + refreshError.message, "error", true);
         }
       }
       try { await refreshAll(true); } catch (refreshError) {}
@@ -2330,9 +2735,12 @@
     }
   });
 
-  byId("seat-controls").addEventListener("click", async function (event) {
+  async function handleSeatControlClick(event) {
     var button = event.target.closest("[data-take-seat], [data-add-bot-seat], [data-remove-bot-seat]");
     if (!button || button.disabled || !state.activeTableId) return;
+    event.stopPropagation();
+    var tableId = String(state.activeTableId);
+    var playerId = String(state.player && state.player.id || "");
     var rawSeatNo = button.hasAttribute("data-take-seat") ? button.getAttribute("data-take-seat") :
       (button.hasAttribute("data-add-bot-seat") ? button.getAttribute("data-add-bot-seat") : button.getAttribute("data-remove-bot-seat"));
     var seatNo = number(rawSeatNo, -1);
@@ -2341,24 +2749,27 @@
     try {
       var message;
       if (button.hasAttribute("data-take-seat")) {
-        await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/seat", { seat_no: seatNo });
+        await mutate("/tables/" + encodeURIComponent(tableId) + "/seat", { seat_no: seatNo });
         message = "You took Seat " + (seatNo + 1) + ".";
       } else if (button.hasAttribute("data-add-bot-seat")) {
-        await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/bots", { seat_no: seatNo });
+        await mutate("/tables/" + encodeURIComponent(tableId) + "/bots", { seat_no: seatNo });
         message = "A test bot joined Seat " + (seatNo + 1) + ".";
       } else {
-        await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/bots/" + seatNo, undefined, "DELETE");
+        await mutate("/tables/" + encodeURIComponent(tableId) + "/bots/" + seatNo, undefined, "DELETE");
         message = "The test bot left Seat " + (seatNo + 1) + ".";
       }
+      if (state.activeTableId !== tableId || String(state.player && state.player.id || "") !== playerId) return;
       await refreshSelected();
       await refreshAll(true);
       showNotice(message, "success", false);
     } catch (err) {
-      showNotice(err.message, "error", false);
+      if (state.activeTableId === tableId) showNotice(err.message, "error", false);
     } finally {
       if (button.isConnected) button.disabled = false;
     }
-  });
+  }
+
+  byId("seat-controls").addEventListener("click", handleSeatControlClick);
 
   byId("stand-button").addEventListener("click", async function () {
     if (!state.activeTableId) return;
@@ -2531,12 +2942,38 @@
   });
 
   byId("seat-grid").addEventListener("click", function (event) {
+    var seatAction = event.target.closest("[data-take-seat], [data-add-bot-seat]");
+    if (seatAction) {
+      handleSeatControlClick(event);
+      return;
+    }
     var toggle = event.target.closest("[data-chip-display-toggle]");
     if (!toggle) return;
     state.showBigBlinds = !state.showBigBlinds;
     renderTable();
     var nextToggle = byId("seat-grid").querySelector("[data-chip-display-toggle]");
     if (nextToggle) nextToggle.focus({ preventScroll: true });
+  });
+
+  byId("chat-button").addEventListener("click", function () {
+    if (state.chat.open) closeChat(true);
+    else showChat();
+  });
+  byId("chat-close-button").addEventListener("click", function () { closeChat(true); });
+  byId("chat-input").addEventListener("input", function () {
+    setChatError("");
+    updateChatCharacterCount();
+  });
+  byId("chat-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    sendChatMessage();
+  });
+  byId("sit-out-button").addEventListener("click", toggleSitOut);
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape" || !state.chat.open || document.querySelector("dialog[open]")) return;
+    event.preventDefault();
+    closeChat(true);
   });
 
   byId("action-controls").addEventListener("input", function (event) {
@@ -2584,6 +3021,13 @@
 
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && state.polling) refreshAll(true);
+  });
+
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && state.chat.open) {
+      var chat = state.chat;
+      fetchChat(chat.requestId, chat.tableId, chat.playerId);
+    }
   });
 
   loadAuth();
