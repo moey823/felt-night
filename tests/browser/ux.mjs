@@ -141,6 +141,8 @@ export default async function ux([one, two], sleep, roomPassword) {
       level_minutes: 79,
       turn_seconds: 3600,
       runout_seconds: 1,
+      blind_announcement_seconds: 0,
+      elimination_announcement_seconds: 0,
       buy_in: 10,
       payout_percentages: [60, 25, 15],
       ...overrides,
@@ -955,6 +957,8 @@ export default async function ux([one, two], sleep, roomPassword) {
   // Nine live seats cover phone, short-landscape, and desktop viewports.
   const nineSeats = await createTable('UX Nine Seats ' + stamp, users.slice(7, 16), {
     level_minutes: 0.25,
+    blind_announcement_seconds: 3,
+    elimination_announcement_seconds: 0,
   });
   const nineActor = tableActor(nineSeats);
   const nineOther = nineSeats.entrants.find(user => user !== nineActor);
@@ -1021,26 +1025,52 @@ export default async function ux([one, two], sleep, roomPassword) {
     'Blind strip did not update to level 2 and 20/40: ' + blindStrip
   );
 
+  const activeAnnouncement = await request(nineSeats.path, nineActor);
+  const activeBlindAnnouncement = activeAnnouncement.blind_announcement;
+  const initialRemaining = activeBlindAnnouncement
+    ? activeBlindAnnouncement.until - activeAnnouncement.server_now
+    : 0;
+  assert(initialRemaining > 0 && initialRemaining <= 3.2,
+    'Blind announcement did not use its configured three-second hold: ' + JSON.stringify(activeBlindAnnouncement));
+
   await openTable(two, nineSeats.name);
   await sleep(300);
-  const replayedOnOpen = await evaluate(two, () => {
+  const visibleOnReconnect = await evaluate(two, () => {
     const node = document.querySelector('#blind-announcement');
     return Boolean(
       node && !node.hidden && getComputedStyle(node).display !== 'none' && node.getClientRects().length
     );
   });
-  assert(!replayedOnOpen, 'Opening a table replayed its blind announcement');
+  assert(visibleOnReconnect, 'Reconnecting during the blind hold did not show the active announcement');
+  const reconnectView = await request(nineSeats.path, nineOther);
+  const reconnectAnnouncement = reconnectView.blind_announcement;
+  const reconnectRemaining = reconnectAnnouncement
+    ? reconnectAnnouncement.until - reconnectView.server_now
+    : 0;
+  assert(
+    reconnectAnnouncement && Math.abs(reconnectAnnouncement.until - activeBlindAnnouncement.until) < 0.01 &&
+      reconnectRemaining > 0 && reconnectRemaining < initialRemaining,
+    'Reconnect restarted or extended the server blind hold: ' +
+      JSON.stringify({initialRemaining,reconnectRemaining,activeBlindAnnouncement,reconnectAnnouncement})
+  );
 
-  await sleep(3300);
-  const announcementClosed = await evaluate(one, () => {
+  await sleep(Math.ceil(reconnectRemaining * 1000) + 250);
+  const announcementClosedOnOne = await waitLong(one, () => {
     const node = document.querySelector('#blind-announcement');
     return !node || node.hidden || getComputedStyle(node).display === 'none' || !node.getClientRects().length;
   });
-  await sleep(1000);
+  const announcementClosedOnTwo = await waitLong(two, () => {
+    const node = document.querySelector('#blind-announcement');
+    return !node || node.hidden || getComputedStyle(node).display === 'none' || !node.getClientRects().length;
+  });
+  const expiredAnnouncement = await request(nineSeats.path, nineActor);
+  await sleep(400);
   const announcementCount = await evaluate(one, () => window.uxBlindTransitions.length);
   assert(
-    announcementClosed && announcementCount === 1,
-    'Blind announcement failed to close or replayed during polling: ' + announcementCount
+    announcementClosedOnOne && announcementClosedOnTwo && !expiredAnnouncement.blind_announcement &&
+      announcementCount === 1,
+    'Blind announcement failed to expire once without replay: ' +
+      JSON.stringify({announcementCount,expired:expiredAnnouncement.blind_announcement})
   );
   const dealt = await request(nineSeats.path, nineActor);
   assert(dealt.street !== 'showdown' && dealt.blinds.level === 2, 'New level was not used for the next hand');

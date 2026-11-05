@@ -31,6 +31,8 @@
   });
   var API_ROOT = "/poker/api";
   var AUTH_STORAGE_KEY = "sitngo.poker.session-proof.v1";
+  var PLAYER_PREFS_STORAGE_PREFIX = "felt-night.bet-presets.v1:";
+  var DEFAULT_PLAYER_PREFS = { preflop_bb: [2.5, 3, 4], postflop_percent: [50, 75, 100] };
   var state = {
     csrf: "",
     sessionProof: "",
@@ -51,11 +53,15 @@
     settingsTableId: "",
     settingsDirty: false,
     settingsSaving: false,
+    runtimeSettingsOpen: false,
     seatTurnClockKey: "",
     seatTurnRemainingMs: 0,
     seatTurnClockUpdatedAt: 0,
     seatTurnClockTimer: 0,
+    seatTurnClockPaused: false,
     blindAnnouncementTimer: 0,
+    eliminationAnnouncementTimer: 0,
+    pausePending: false,
     blindLevelTableId: "",
     blindLevelValue: null,
     blindHandId: "",
@@ -64,6 +70,7 @@
     sitOutPending: false,
     chat: {
       requestId: 0,
+      fetchRequestId: 0,
       tableId: "",
       playerId: "",
       open: false,
@@ -258,6 +265,7 @@
     if (node) {
       node.hidden = true;
       node.textContent = "";
+      delete node.dataset.secondsRemaining;
     }
     if (resetTracking) {
       state.blindLevelTableId = "";
@@ -266,18 +274,95 @@
     }
   }
 
-  function announceBlindLevel(blinds) {
-    var node = byId("blind-announcement");
-    if (!node) return;
-    if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
-    node.textContent = "Blind level " + blinds.level + ": small blind " + chips(blinds.small) +
-      " chips, big blind " + chips(blinds.big) + " chips.";
-    node.hidden = false;
-    state.blindAnnouncementTimer = window.setTimeout(function () {
+  function clearEliminationAnnouncement() {
+    if (state.eliminationAnnouncementTimer) {
+      window.clearTimeout(state.eliminationAnnouncementTimer);
+      state.eliminationAnnouncementTimer = 0;
+    }
+    var node = byId("announcement-banner");
+    if (node) {
       node.hidden = true;
       node.textContent = "";
-      state.blindAnnouncementTimer = 0;
-    }, 3000);
+      delete node.dataset.secondsRemaining;
+    }
+  }
+
+  function announcementRemainingMs(view, announcement) {
+    var until = epochMilliseconds(announcement && announcement.until);
+    var serverNow = epochMilliseconds(view && view.server_now) || Date.now();
+    return until ? Math.max(0, until - serverNow) : 0;
+  }
+
+  function announceBlindLevel(announcement, view) {
+    var node = byId("blind-announcement");
+    if (!node) return;
+    var remainingMs = announcementRemainingMs(view, announcement);
+    if (!announcement || remainingMs <= 0) {
+      clearBlindAnnouncement(false);
+      return;
+    }
+    if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
+    node.textContent = "Blind level " + number(announcement.level, 1) + ": small blind " +
+      chips(announcement.small) + " chips, big blind " + chips(announcement.big) +
+      " chips. The next hand waits until this announcement ends.";
+    node.dataset.secondsRemaining = String(Math.ceil(remainingMs / 1000));
+    node.hidden = false;
+    if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
+    state.blindAnnouncementTimer = 0;
+    if (!view.paused) {
+      var tableId = String(view && view.id || state.activeTableId || "");
+      state.blindAnnouncementTimer = window.setTimeout(function () {
+        state.blindAnnouncementTimer = 0;
+        if (String(state.activeTableId) === tableId) clearBlindAnnouncement(false);
+      }, remainingMs + 30);
+    }
+  }
+
+  function ordinal(place) {
+    var n = Math.max(1, Math.floor(number(place, 1)));
+    var suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] || "th");
+    return n + suffix;
+  }
+
+  function announceEliminations(view) {
+    var node = byId("announcement-banner");
+    if (!node) return;
+    var announcement = view && view.elimination_announcement;
+    var remainingMs = announcementRemainingMs(view, announcement);
+    if (!announcement || remainingMs <= 0) {
+      clearEliminationAnnouncement();
+      return;
+    }
+    if (state.eliminationAnnouncementTimer) window.clearTimeout(state.eliminationAnnouncementTimer);
+    state.eliminationAnnouncementTimer = 0;
+    var groups = Object.create(null);
+    (Array.isArray(announcement.players) ? announcement.players : []).forEach(function (player) {
+      if (!player || number(player.place, 0) < 1) return;
+      var place = Math.floor(number(player.place, 0));
+      if (!groups[place]) groups[place] = [];
+      groups[place].push(String(player.name || "Player"));
+    });
+    var lines = Object.keys(groups).map(function (place) {
+      var names = groups[place];
+      var nameText = names.length > 1 ? names.slice(0, -1).join(", ") + " and " + names[names.length - 1] : names[0];
+      return names.length > 1
+        ? nameText + " were eliminated in a tie for " + ordinal(place) + " place."
+        : nameText + " was eliminated in " + ordinal(place) + " place.";
+    });
+    node.textContent = lines.length ? lines.join(" ") : "A player was eliminated.";
+    node.dataset.secondsRemaining = String(Math.ceil(remainingMs / 1000));
+    node.hidden = false;
+    var tableId = String(view.id || state.activeTableId || "");
+    if (state.eliminationAnnouncementTimer) window.clearTimeout(state.eliminationAnnouncementTimer);
+    state.eliminationAnnouncementTimer = 0;
+    if (!view.paused) {
+      state.eliminationAnnouncementTimer = window.setTimeout(function () {
+        state.eliminationAnnouncementTimer = 0;
+        if (String(state.activeTableId) !== tableId) return;
+        clearEliminationAnnouncement();
+        if (state.tableView && String(state.tableView.id || "") === tableId) refreshAll(true);
+      }, remainingMs + 30);
+    }
   }
 
   function closeRecentActionDialog() {
@@ -562,9 +647,47 @@
   function renderChatButton() {
     var button = byId("chat-button");
     var panel = byId("chat-panel");
+    var preview = byId("chat-preview");
     if (!button || !panel) return;
-    button.hidden = !Boolean(state.player && state.activeTableId && state.tableView);
+    var available = Boolean(state.player && state.activeTableId && state.tableView);
+    button.hidden = !available;
+    if (preview) preview.hidden = !available;
     button.setAttribute("aria-expanded", String(Boolean(state.chat.open && !panel.hidden)));
+  }
+
+  function setChatPreviewLine(node, text, title, messageId) {
+    if (node.textContent !== text) node.textContent = text;
+    if (title == null) {
+      if (node.hasAttribute("title")) node.removeAttribute("title");
+    } else if (node.title !== title) {
+      node.title = title;
+    }
+    if (messageId == null) {
+      if (node.hasAttribute("data-message-id")) node.removeAttribute("data-message-id");
+    } else if (node.getAttribute("data-message-id") !== messageId) {
+      node.setAttribute("data-message-id", messageId);
+    }
+  }
+
+  function renderChatPreview() {
+    var preview = byId("chat-preview");
+    if (!preview) return;
+    var lines = preview.querySelectorAll(".chat-preview-line");
+    if (lines.length !== 2) return;
+    var messages = state.chat.messages.slice(-2);
+    if (!messages.length) {
+      setChatPreviewLine(lines[0], state.chat.error ? "Chat is unavailable." : (state.chat.loaded ? "No messages yet." : "Loading chat…"), null, null);
+      setChatPreviewLine(lines[1], "Open chat to start the conversation.", null, null);
+      return;
+    }
+    var offset = 2 - messages.length;
+    for (var i = 0; i < offset; i += 1) {
+      setChatPreviewLine(lines[i], "No earlier messages.", null, null);
+    }
+    messages.forEach(function (message, index) {
+      var text = String(message.name || "Player") + ": " + String(message.text || "");
+      setChatPreviewLine(lines[offset + index], text, text, message.id);
+    });
   }
 
   function setChatError(message) {
@@ -576,9 +699,28 @@
   }
 
   function chatRequestIsCurrent(requestId, tableId, playerId) {
-    return Boolean(state.chat.requestId === requestId && state.chat.open &&
+    return Boolean(state.chat.requestId === requestId &&
       state.chat.tableId === tableId && state.chat.playerId === playerId &&
       state.activeTableId === tableId && String(state.player && state.player.id || "") === playerId);
+  }
+
+  function ensureChatScope() {
+    var tableId = String(state.activeTableId || "");
+    var playerId = String(state.player && state.player.id || "");
+    var chat = state.chat;
+    if (!tableId || !playerId || !state.tableView) {
+      if (chat.tableId || chat.messages.length || chat.open) clearChat();
+      return;
+    }
+    if (chat.tableId !== tableId || chat.playerId !== playerId) {
+      clearChat();
+      chat.tableId = tableId;
+      chat.playerId = playerId;
+      chat.requestId += 1;
+    }
+    if (!chat.timer && chat.fetchRequestId !== chat.requestId) {
+      fetchChat(chat.requestId, tableId, playerId);
+    }
   }
 
   function clearChat() {
@@ -597,6 +739,7 @@
     chat.activePostId = chat.postRequestSerial;
     chat.postInFlight = false;
     chat.error = "";
+    chat.fetchRequestId = 0;
     var panel = byId("chat-panel");
     var button = byId("chat-button");
     var messages = byId("chat-messages");
@@ -606,6 +749,7 @@
     if (panel) panel.hidden = true;
     if (button) button.setAttribute("aria-expanded", "false");
     if (messages) messages.replaceChildren();
+    renderChatPreview();
     if (input) {
       input.value = "";
       input.disabled = false;
@@ -619,11 +763,7 @@
   function closeChat(restoreFocus) {
     var chat = state.chat;
     var trigger = chat.trigger || byId("chat-button");
-    chat.requestId += 1;
-    if (chat.timer) window.clearTimeout(chat.timer);
-    chat.timer = 0;
     chat.open = false;
-    chat.sending = false;
     var panel = byId("chat-panel");
     var button = byId("chat-button");
     var input = byId("chat-input");
@@ -702,6 +842,7 @@
           list.scrollTop = Math.min(oldScrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
         }
       }
+      renderChatPreview();
       return;
     }
     (additions || []).forEach(function (message) {
@@ -709,6 +850,7 @@
     });
     if (wasAtBottom && (additions || []).length) list.scrollTop = list.scrollHeight;
     else list.scrollTop = oldScrollTop;
+    if ((additions || []).length) renderChatPreview();
   }
 
   function mergeChatMessages(incoming, forceRender) {
@@ -794,18 +936,27 @@
   }
 
   async function fetchChat(requestId, tableId, playerId) {
-    if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
+    var chat = state.chat;
+    if (!chatRequestIsCurrent(requestId, tableId, playerId) || chat.fetchRequestId === requestId) return;
+    chat.fetchRequestId = requestId;
     try {
       var data = await request("/tables/" + encodeURIComponent(tableId) + "/chat");
       if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
-      mergeChatMessages(data.messages, !state.chat.loaded);
-      state.chat.loaded = true;
+      var firstLoad = !chat.loaded;
+      chat.loaded = true;
+      mergeChatMessages(data.messages, firstLoad);
       setChatError("");
-      scheduleChatPoll(requestId, tableId, playerId);
     } catch (err) {
       if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
-      setChatError(err.message || "Chat could not be loaded.");
-      scheduleChatPoll(requestId, tableId, playerId);
+      var message = err.message || "Chat could not be loaded.";
+      if (chat.open) setChatError(message);
+      else {
+        chat.error = message;
+        renderChatPreview();
+      }
+    } finally {
+      if (chat.fetchRequestId === requestId) chat.fetchRequestId = 0;
+      if (chatRequestIsCurrent(requestId, tableId, playerId)) scheduleChatPoll(requestId, tableId, playerId);
     }
   }
 
@@ -925,15 +1076,13 @@
     return String(mins).padStart(2, "0") + ":" + String(secs).padStart(2, "0");
   }
 
-  function clockRemaining(blinds) {
-    if (blinds.seconds >= 0) return blinds.seconds;
+  function clockRemaining(blinds, view) {
     if (blinds.nextAt) {
-      var stamp = typeof blinds.nextAt === "number" ? blinds.nextAt : Date.parse(blinds.nextAt);
-      if (Number.isFinite(stamp)) {
-        if (stamp < 100000000000) stamp *= 1000;
-        return Math.max(0, Math.floor((stamp - Date.now()) / 1000));
-      }
+      var nextAt = epochMilliseconds(blinds.nextAt);
+      var serverNow = epochMilliseconds(view && view.server_now) || Date.now();
+      if (nextAt) return Math.max(0, Math.floor((nextAt - serverNow) / 1000));
     }
+    if (blinds.seconds >= 0) return blinds.seconds;
     return -1;
   }
 
@@ -1309,6 +1458,7 @@
 
   function turnClockSecondsRemaining() {
     if (!state.seatTurnClockKey) return -1;
+    if (state.seatTurnClockPaused) return Math.max(0, Math.ceil(state.seatTurnRemainingMs / 1000));
     var elapsed = monotonicNow() - state.seatTurnClockUpdatedAt;
     return Math.max(0, Math.ceil((state.seatTurnRemainingMs - elapsed) / 1000));
   }
@@ -1331,6 +1481,7 @@
     state.seatTurnClockKey = "";
     state.seatTurnRemainingMs = 0;
     state.seatTurnClockUpdatedAt = 0;
+    state.seatTurnClockPaused = false;
   }
 
   function syncSeatTurnClock(view) {
@@ -1338,12 +1489,13 @@
     var deadline = epochMilliseconds(view && view.turn_deadline);
     var serverNow = epochMilliseconds(view && view.server_now);
     if (!serverNow) serverNow = Date.now();
+    var paused = Boolean(view && view.paused);
     var valid = Boolean(view && view.status === "playing" && actorId && deadline);
     if (!valid) {
       clearSeatTurnClock();
       return;
     }
-    var key = [view.id || "", view.hand_id || view.hand_no || "", view.street || "", actorId, view.turn_version || "", deadline].join("|");
+    var key = [view.id || "", view.hand_id || view.hand_no || "", view.street || "", actorId, view.turn_version || "", deadline, paused ? "paused" : "live"].join("|");
     if (key !== state.seatTurnClockKey) {
       if (state.seatTurnClockTimer) window.clearInterval(state.seatTurnClockTimer);
       state.seatTurnClockKey = key;
@@ -1351,6 +1503,7 @@
     }
     state.seatTurnRemainingMs = Math.max(0, deadline - serverNow);
     state.seatTurnClockUpdatedAt = monotonicNow();
+    state.seatTurnClockPaused = paused;
     updateSeatTurnClockNodes();
   }
 
@@ -1537,6 +1690,7 @@
       var exposed = Boolean(cards.length && !isMe && (fx.revealed[id] || seat.cards || seat.revealed_cards));
       var oddsRow = oddsByPlayer[id];
       if (oddsRow && cards.length && !folded && stack <= 0) { allIn = true; label = "All in"; }
+      if (allIn && stack <= 0) classes += " is-all-in is-zero-stack-all-in";
       var equityHtml = "";
       if (oddsRow && cards.length && (isMe || exposed)) {
         var winPct = number(oddsRow.win_pct, 0);
@@ -1660,6 +1814,10 @@
       var box = boxForNode(byId(id), gridRect);
       if (box) blockers.push(box);
     });
+    grid.querySelectorAll(".seat-equity").forEach(function (node) {
+      var box = boxForNode(node, gridRect);
+      if (box) blockers.push(box);
+    });
 
     var seatNodeFor = function (seatNo) {
       return grid.querySelector('.seat-card[data-seat-no="' + seatNo + '"]');
@@ -1735,26 +1893,9 @@
 
   function renderBlindStrip(view) {
     var b = blindParts(view);
-    var remaining = clockRemaining(b);
-    var tableId = String(view.id || state.activeTableId || "");
-    var handId = String(view.hand_id || (number(view.hand_no, 0) > 0 ? "hand:" + number(view.hand_no, 0) : ""));
+    var remaining = clockRemaining(b, view);
     var street = String(view.street || "").toLowerCase();
-    if (state.blindLevelTableId !== tableId) {
-      clearBlindAnnouncement(true);
-      state.blindLevelTableId = tableId;
-      state.blindLevelValue = b.level;
-      state.blindHandId = handId;
-    } else {
-      var previousHandId = state.blindHandId;
-      var handChanged = Boolean(previousHandId && handId && previousHandId !== handId);
-      if ((handChanged || street !== "showdown") && state.blindAnnouncementTimer) clearBlindAnnouncement(false);
-      if (state.blindLevelValue !== null && b.level > state.blindLevelValue &&
-          view.status === "playing" && street === "showdown") {
-        announceBlindLevel(b);
-      }
-      state.blindLevelValue = b.level;
-      if (handId) state.blindHandId = handId;
-    }
+    announceBlindLevel(view.blind_announcement, view);
     var blindUnit = tableChipUnit(view);
     var blindsLabel = tableChipValue(b.small, view) + " / " + tableChipValue(b.big, view) + " " + blindUnit;
     var handBlinds = view.status === "playing" && street !== "showdown" &&
@@ -1766,7 +1907,7 @@
       var handBig = number(handBlinds.big, b.big);
       blindsLabel = tableChipValue(handSmall, view) + " / " + tableChipValue(handBig, view) + " " + blindUnit;
     }
-    var levelNote = b.pending ? "Next hand" : (remaining >= 0 ? "Next in " + formatClock(remaining) : "Countdown unavailable");
+    var levelNote = view.paused ? "Paused" : (b.pending ? "Next hand" : (remaining >= 0 ? "Next in " + formatClock(remaining) : "Countdown unavailable"));
     var entries = [
       { label: "Level", value: String(b.level), note: levelNote },
       { label: "Blinds", value: blindsLabel, note: tableUsesBigBlinds(view) ? "Small / big · BB" : "Small / big" }
@@ -1803,7 +1944,7 @@
     var results = Array.isArray(view.standings) && view.standings.length
       ? view.standings.slice()
       : (Array.isArray(view.results) ? view.results.slice() : []);
-    if (view.status !== "completed" || !results.length) {
+    if (view.status !== "completed" || !results.length || announcementRemainingMs(view, view.elimination_announcement) > 0) {
       panel.hidden = true;
       reopen.hidden = true;
       reopen.setAttribute("aria-expanded", "false");
@@ -1872,7 +2013,7 @@
     var viewer = view && view.viewer || {};
     var seat = viewerSeat(view);
     var street = String(view && view.street || "").toLowerCase();
-    return Boolean(view && view.status === "playing" && street !== "showdown" &&
+    return Boolean(view && view.status === "playing" && !view.paused && street !== "showdown" &&
       viewer.can_act && seat && !seat.folded && !seat.is_folded &&
       !seat.all_in && !seat.is_all_in && number(seat.stack, 0) > 0);
   }
@@ -1883,6 +2024,69 @@
       viewerCanAct(view) &&
       number(view.hand_no, 0) === intent.payload.expected_hand &&
       number(view.turn_version, 0) === intent.payload.expected_turn_version);
+  }
+
+  function playerPrefsStorageKey() {
+    var playerId = String(state.player && state.player.id || "");
+    return playerId ? PLAYER_PREFS_STORAGE_PREFIX + encodeURIComponent(playerId) : "";
+  }
+
+  function validStoredPresetArray(value, min, max) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 5) return null;
+    var result = [];
+    for (var i = 0; i < value.length; i += 1) {
+      var amount = Number(value[i]);
+      if (!Number.isFinite(amount) || amount < min || amount > max || (i && amount <= result[i - 1])) return null;
+      result.push(amount);
+    }
+    return result;
+  }
+
+  function playerBetPreferences() {
+    var key = playerPrefsStorageKey();
+    if (!key) return { preflop_bb: DEFAULT_PLAYER_PREFS.preflop_bb.slice(), postflop_percent: DEFAULT_PLAYER_PREFS.postflop_percent.slice() };
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(key) || "{}");
+      return {
+        preflop_bb: validStoredPresetArray(saved.preflop_bb, 1, 200) || DEFAULT_PLAYER_PREFS.preflop_bb.slice(),
+        postflop_percent: validStoredPresetArray(saved.postflop_percent, 1, 1000) || DEFAULT_PLAYER_PREFS.postflop_percent.slice()
+      };
+    } catch (err) {
+      return { preflop_bb: DEFAULT_PLAYER_PREFS.preflop_bb.slice(), postflop_percent: DEFAULT_PLAYER_PREFS.postflop_percent.slice() };
+    }
+  }
+
+  function parsePlayerPresetInput(id, min, max) {
+    var parts = String(byId(id).value || "").trim().split(",").map(function (part) { return part.trim(); });
+    if (parts.length < 1 || parts.length > 5 || parts.some(function (part) { return !/^\d+(?:\.\d{1,2})?$/.test(part); })) {
+      throw Error("Enter 1 to 5 increasing values separated by commas.");
+    }
+    var values = parts.map(Number);
+    if (values.some(function (value, index) {
+      return !Number.isFinite(value) || value < min || value > max || (index > 0 && value <= values[index - 1]);
+    })) throw Error("Preset values must increase from " + min + " to " + max + ".");
+    return values;
+  }
+
+  function openPlayerPreferences() {
+    var dialog = byId("player-settings-dialog");
+    if (!dialog || !state.player) return;
+    var prefs = playerBetPreferences();
+    byId("prefs-preflop-bb").value = prefs.preflop_bb.join(", ");
+    byId("prefs-postflop-percent").value = prefs.postflop_percent.join(", ");
+    byId("player-prefs-error").hidden = true;
+    byId("player-prefs-error").textContent = "";
+    byId("player-settings-button").setAttribute("aria-expanded", "true");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  function closePlayerPreferences() {
+    var dialog = byId("player-settings-dialog");
+    if (dialog && dialog.open) dialog.close();
+    else if (dialog) dialog.removeAttribute("open");
+    var button = byId("player-settings-button");
+    if (button) button.setAttribute("aria-expanded", "false");
   }
 
   function ensureActionControls() {
@@ -1988,9 +2192,15 @@
     var preflop = street ? street === "preflop" : cardArray(view.board).length === 0;
     var bigBlind = Math.max(1, number(blindParts(view).big, number(view.config && view.config.big_blind, 1)));
     var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
+    var playerPrefs = playerBetPreferences();
     var presetSpecs = preflop
-      ? [{ label: "2.5 BB", bb: 2.5 }, { label: "3.0 BB", bb: 3 }, { label: "4.0 BB", bb: 4 }]
-      : [{ label: "½ pot", fraction: 0.5 }, { label: "¾ pot", fraction: 0.75 }, { label: "Pot", fraction: 1 }];
+      ? playerPrefs.preflop_bb.map(function (bb) {
+        return { label: Number.isInteger(bb) ? bb.toFixed(1) + " BB" : String(bb) + " BB", bb: bb };
+      })
+      : playerPrefs.postflop_percent.map(function (fraction) {
+        var label = fraction === 50 ? "½ pot" : (fraction === 75 ? "¾ pot" : (fraction === 100 ? "Pot" : String(fraction) + "% pot"));
+        return { label: label, fraction: fraction / 100 };
+      });
     presetSpecs = presetSpecs.map(function (preset) {
       var rawTarget = preflop
         ? Math.round(bigBlind * preset.bb)
@@ -2004,6 +2214,15 @@
           (preflop ? "" : " after calling") + (adjusted ? "; adjusted to the legal range" : "")
       };
     });
+    var presetGroup = controls.querySelector(".raise-presets");
+    while (presetGroup.children.length < presetSpecs.length) {
+      var presetButton = document.createElement("button");
+      presetButton.type = "button";
+      presetButton.className = "button button-quiet raise-preset";
+      presetButton.setAttribute("data-raise-preset", "true");
+      presetGroup.appendChild(presetButton);
+    }
+    while (presetGroup.children.length > presetSpecs.length) presetGroup.lastElementChild.remove();
 
     var suggested = Math.min(rangeMax, Math.max(rangeMin, number(viewer.suggested_raise_to, rangeMin)));
     if (!Number.isInteger(suggested)) suggested = Math.round(suggested);
@@ -2099,13 +2318,23 @@
     byId("settings-level-minutes").value = String(number(config.level_minutes, number(view.level_minutes, 5)));
     byId("settings-turn-seconds").value = String(number(config.turn_seconds, 30));
     byId("settings-runout-seconds").value = String(number(config.runout_seconds, 2.5));
+    byId("settings-blind-announcement-seconds").value = String(number(config.blind_announcement_seconds, 5));
+    byId("settings-elimination-announcement-seconds").value = String(number(config.elimination_announcement_seconds, 5));
   }
 
   function renderSettingsPanel(view, host) {
     var panel = byId("table-settings-form");
-    var visible = host && view.status === "lobby";
+    var lobby = view.status === "lobby";
+    var inGame = view.status === "playing";
+    var settingsButton = byId("runtime-settings-button");
+    if (settingsButton) {
+      settingsButton.hidden = !(host && inGame);
+      settingsButton.setAttribute("aria-expanded", String(Boolean(host && inGame && state.runtimeSettingsOpen)));
+      if (!host || !inGame) state.runtimeSettingsOpen = false;
+    }
+    var visible = host && (lobby || (inGame && state.runtimeSettingsOpen));
     panel.hidden = !visible;
-    if (!host || !visible) return;
+    if (!host || !(lobby || inGame)) return;
 
     var tableId = String(view.id || state.activeTableId || "");
     if (state.settingsTableId !== tableId) {
@@ -2116,15 +2345,28 @@
       loadSettingsForm(view);
     }
 
-    var locked = view.status !== "lobby";
-    var inputs = panel.querySelectorAll("input, select");
-    inputs.forEach(function (input) {
-      input.disabled = locked || state.settingsSaving;
+    panel.dataset.mode = inGame ? "runtime" : "lobby";
+    byId("table-settings-title").textContent = inGame ? "Game timing" : "Before you deal";
+    panel.querySelectorAll("[data-lobby-only]").forEach(function (field) {
+      field.hidden = inGame;
+      field.querySelectorAll("input, select").forEach(function (input) {
+        input.disabled = inGame || state.settingsSaving;
+      });
     });
-    byId("save-settings-button").disabled = locked || state.settingsSaving || !state.settingsDirty;
-    byId("settings-lock-note").textContent = locked ? "Settings lock when the first hand starts." : (state.settingsSaving ? "Saving table settings…" : (state.settingsDirty ? "Save changes before starting the freezeout." : "You can adjust this lobby until the first hand starts."));
+    panel.querySelectorAll("[data-runtime-only]").forEach(function (field) {
+      field.hidden = false;
+      field.querySelectorAll("input, select").forEach(function (input) {
+        input.disabled = state.settingsSaving || (inGame && !view.paused);
+      });
+    });
+    byId("save-settings-button").disabled = state.settingsSaving || !state.settingsDirty || (inGame && !view.paused);
+    var note = lobby
+      ? (state.settingsSaving ? "Saving table settings…" : (state.settingsDirty ? "Save changes before starting the freezeout." : "You can adjust this lobby until the first hand starts."))
+      : (state.settingsSaving ? "Saving game settings…" : (view.paused
+        ? (state.settingsDirty ? "Save timing changes before resuming." : "Adjust timing, then resume when ready.")
+        : "Pause the game before changing timing settings."));
+    byId("settings-lock-note").textContent = note;
   }
-
   function updateHostReadiness(view, host) {
     var hostPanel = byId("host-panel");
     var visible = host && view.status === "lobby";
@@ -2141,6 +2383,35 @@
     } else {
       byId("host-hint").textContent = "Everyone is seated. Start the freezeout when you’re ready.";
     }
+  }
+
+  function renderPauseControls(view, host) {
+    var button = byId("pause-button");
+    var banner = byId("paused-banner");
+    var playing = Boolean(view && view.status === "playing");
+    if (button) {
+      button.hidden = !(host && playing);
+      button.disabled = state.pausePending;
+      button.textContent = view && view.paused ? "Resume game" : "Pause game";
+      button.setAttribute("aria-pressed", String(Boolean(view && view.paused)));
+      button.setAttribute("aria-busy", String(state.pausePending));
+    }
+    if (!banner) return;
+    var paused = Boolean(view && view.paused && playing);
+    banner.hidden = !paused;
+    banner.dataset.paused = String(paused);
+    if (paused) {
+      var started = epochMilliseconds(view.paused_at);
+      var now = epochMilliseconds(view.server_now) || Date.now();
+      var elapsed = started ? Math.max(0, Math.floor((now - started) / 1000)) : 0;
+      banner.textContent = "Game paused by host" + (started ? " · Paused for " + formatClock(elapsed) : "") + ".";
+    } else {
+      banner.textContent = "";
+    }
+  }
+
+  function renderTableAnnouncements(view) {
+    announceEliminations(view);
   }
 
   function renderTable() {
@@ -2161,6 +2432,11 @@
       clearSeatTurnClock();
       document.body.classList.remove("gameplay-active");
       clearBlindAnnouncement(true);
+      clearEliminationAnnouncement();
+      byId("pause-button").hidden = true;
+      byId("runtime-settings-button").hidden = true;
+      byId("paused-banner").hidden = true;
+      byId("announcement-banner").hidden = true;
       closeRecentActionDialog();
       byId("lobby-seat-panel").hidden = true;
       byId("host-panel").hidden = true;
@@ -2174,15 +2450,16 @@
     var status = view.status || "lobby";
     document.body.classList.toggle("gameplay-active", status === "playing" || status === "completed");
     var statusNode = byId("view-status");
-    statusNode.textContent = statusName(status);
-    statusNode.className = "status-pill" + (status === "playing" ? " playing" : (status === "completed" ? " completed" : ""));
+    statusNode.textContent = view.paused ? "Paused" : statusName(status);
+    statusNode.className = "status-pill" + (view.paused ? " paused" : (status === "playing" ? " playing" : (status === "completed" ? " completed" : "")));
     byId("view-table-name").textContent = view.name || "Sit-and-go";
     var layout = seatLayout(view);
     var seats = layout.seats;
     var max = layout.max;
     byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats" + (view.prize_pool_cents == null ? "" : " · " + credits(view.prize_pool_cents) + " play credits in the pool") + (status === "lobby" && view.config ? " · Buy-in " + view.config.buy_in + " · " + view.config.payout_percentages.join(" / ") + "%" : "");
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
-    byId("hand-status-label").textContent = status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY");
+    byId("hand-status-label").textContent = view.paused ? "GAME PAUSED" : (status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY"));
+    renderTableAnnouncements(view);
     byId("table-player-count").textContent = seats.length + " seated";
     byId("button-caption").textContent = view.status === "playing" ? "" : "Play chips · No rebuys";
 
@@ -2202,7 +2479,9 @@
     var seated = Boolean(viewer.seated || ownSeat);
     var host = String(view.host_id || "") === playerId;
     renderSitOutButton(view, ownSeat);
+    ensureChatScope();
     renderChatButton();
+    renderPauseControls(view, host);
     renderLobbyControls(view, host, ownSeat, seated, layout);
     renderSettingsPanel(view, host);
     updateHostReadiness(view, host);
@@ -2366,6 +2645,15 @@
   }
   function credits(cents) {return new Intl.NumberFormat("en-US",{maximumFractionDigits:2}).format(cents/100);}
   function settingsPayload() {
+    var view = state.tableView || {};
+    var timing = {
+      level_minutes: number(byId("settings-level-minutes").value, 0),
+      turn_seconds: number(byId("settings-turn-seconds").value, 0),
+      runout_seconds: number(byId("settings-runout-seconds").value, 0),
+      blind_announcement_seconds: number(byId("settings-blind-announcement-seconds").value, -1),
+      elimination_announcement_seconds: number(byId("settings-elimination-announcement-seconds").value, -1)
+    };
+    if (view.status === "playing") return timing;
     return {
       buy_in: number(byId("settings-buy-in").value, 0),
       payout_percentages: payouts("settings-payout"),
@@ -2374,9 +2662,11 @@
       starting_stack: number(byId("settings-starting-stack").value, 0),
       small_blind: number(byId("settings-small-blind").value, 0),
       big_blind: number(byId("settings-big-blind").value, 0),
-      level_minutes: number(byId("settings-level-minutes").value, 0),
-      turn_seconds: number(byId("settings-turn-seconds").value, 0),
-      runout_seconds: number(byId("settings-runout-seconds").value, 0)
+      level_minutes: timing.level_minutes,
+      turn_seconds: timing.turn_seconds,
+      runout_seconds: timing.runout_seconds,
+      blind_announcement_seconds: timing.blind_announcement_seconds,
+      elimination_announcement_seconds: timing.elimination_announcement_seconds
     };
   }
 
@@ -2385,14 +2675,23 @@
     var payload;
     try { payload = settingsPayload(); } catch (err) { showNotice(err.message, "error", false); return; }
     var form = byId("table-settings-form");
-    if (!form.checkValidity() || !payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
-        payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind ||
-        payload.level_minutes < 0.01 || payload.turn_seconds < 1 || payload.runout_seconds < 1) {
-      showNotice("Check the table name, seats, stack, blinds, and timers.", "error", false);
+    var inGame = state.tableView.status === "playing";
+    if (inGame && !state.tableView.paused) {
+      showNotice("Pause the game before changing timing settings.", "error", false);
+      return;
+    }
+    var timingInvalid = payload.level_minutes < 0.01 || payload.turn_seconds < 1 ||
+      payload.runout_seconds < 1 || payload.blind_announcement_seconds < 0 ||
+      payload.blind_announcement_seconds > 60 || payload.elimination_announcement_seconds < 0 ||
+      payload.elimination_announcement_seconds > 60;
+    if (!form.checkValidity() || timingInvalid || (!inGame &&
+        (!payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
+        payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind))) {
+      showNotice(inGame ? "Check the game timing values." : "Check the table name, seats, stack, blinds, and timers.", "error", false);
       return;
     }
     var currentSeats = Array.isArray(state.tableView.seats) ? state.tableView.seats.length : 0;
-    if (payload.max_seats < currentSeats) {
+    if (!inGame && payload.max_seats < currentSeats) {
       showNotice("The table needs at least as many seats as the players already seated.", "error", false);
       return;
     }
@@ -2406,7 +2705,7 @@
       state.tableView = data.table || data;
       await refreshSelected();
       await refreshAll(true);
-      showNotice("Table settings saved.", "success", false);
+      showNotice(inGame ? "Game timing settings saved." : "Table settings saved.", "success", false);
     } catch (err) {
       showNotice(err.message, "error", false);
     } finally {
@@ -2688,6 +2987,46 @@
     else if (btn?.hasAttribute("data-history-list")) loadHistory("");
     else if (btn?.hasAttribute("data-history-offset")) loadHistory(byId("history-content").dataset.table, Number(btn.dataset.historyOffset));
   });
+  byId("player-settings-button").addEventListener("click", openPlayerPreferences);
+  byId("player-settings-close").addEventListener("click", closePlayerPreferences);
+  byId("player-prefs-cancel").addEventListener("click", closePlayerPreferences);
+  byId("player-settings-dialog").addEventListener("close", function () {
+    byId("player-settings-button").setAttribute("aria-expanded", "false");
+  });
+  byId("player-prefs-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var error = byId("player-prefs-error");
+    var key = playerPrefsStorageKey();
+    if (!key) return;
+    try {
+      var prefs = {
+        preflop_bb: parsePlayerPresetInput("prefs-preflop-bb", 1, 200),
+        postflop_percent: parsePlayerPresetInput("prefs-postflop-percent", 1, 1000)
+      };
+      window.localStorage.setItem(key, JSON.stringify(prefs));
+      error.hidden = true;
+      error.textContent = "";
+      closePlayerPreferences();
+      if (state.tableView) renderActions(state.tableView);
+      showNotice("Your bet presets were saved on this device.", "success", false);
+    } catch (err) {
+      error.textContent = err.message || "Could not save these preferences.";
+      error.hidden = false;
+      error.setAttribute("tabindex", "-1");
+      error.focus();
+    }
+  });
+
+  byId("runtime-settings-button").addEventListener("click", function () {
+    var view = state.tableView;
+    if (!view || view.status !== "playing") return;
+    state.runtimeSettingsOpen = !state.runtimeSettingsOpen;
+    if (state.runtimeSettingsOpen) clearNotice();
+    var playerId = String(state.player && state.player.id || "");
+    var host = String(view.host_id || "") === playerId;
+    renderSettingsPanel(view, host);
+  });
+
   byId("logout-button").addEventListener("click", async function () {
     try {
       await mutate("/logout", {});
@@ -2719,7 +3058,9 @@
         big_blind: big,
         level_minutes: number(byId("level-minutes").value, 5),
         turn_seconds: number(byId("turn-seconds").value, 30),
-        runout_seconds: number(byId("runout-seconds").value, 2.5)
+        runout_seconds: number(byId("runout-seconds").value, 2.5),
+        blind_announcement_seconds: number(byId("blind-announcement-seconds").value, 5),
+        elimination_announcement_seconds: number(byId("elimination-announcement-seconds").value, 5)
       });
       var table = data.table || data;
       closeLastHandDialog(false);
@@ -2827,6 +3168,30 @@
       showNotice(err.message, "error", false);
     } finally {
       button.disabled = false;
+    }
+  });
+
+  byId("pause-button").addEventListener("click", async function () {
+    var view = state.tableView;
+    if (!view || view.status !== "playing" || state.pausePending) return;
+    var playerId = String(state.player && state.player.id || "");
+    if (String(view.host_id || "") !== playerId) return;
+    var tableId = String(state.activeTableId);
+    var paused = !Boolean(view.paused);
+    state.pausePending = true;
+    renderPauseControls(view, true);
+    try {
+      var data = await mutate("/tables/" + encodeURIComponent(tableId) + "/pause", { paused: paused });
+      if (state.activeTableId !== tableId) return;
+      state.tableView = data.table || data;
+      renderTable();
+      await refreshAll(true);
+      if (!state.runtimeSettingsOpen) showNotice(paused ? "Game paused." : "Game resumed.", "success", false);
+    } catch (err) {
+      if (state.activeTableId === tableId) showNotice(err.message, "error", false);
+    } finally {
+      state.pausePending = false;
+      if (state.tableView) renderTable();
     }
   });
 
@@ -2983,6 +3348,25 @@
       updateRaisePreview();
     }
   });
+
+  byId("action-controls").addEventListener("wheel", function (event) {
+    if (!event.target.closest(".raise-control")) return;
+    var input = byId("raise-amount");
+    var view = state.tableView;
+    if (!input || input.disabled || !view || !viewerCanAct(view) || state.actionPending ||
+        state.actionSubmittedKey === actionTokenKey(view) || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+    var min = number(input.min, 0);
+    var max = number(input.max, 0);
+    if (max <= min) return;
+    event.preventDefault();
+    var bigBlind = Math.max(1, number(blindParts(view).big, 1));
+    var step = Math.max(1, Math.floor(bigBlind / 2));
+    var next = Math.max(min, Math.min(max, number(input.value, min) + (event.deltaY < 0 ? step : -step)));
+    state.raiseDraftKey = actionTokenKey(view);
+    state.raiseDraftValue = String(next);
+    input.value = String(next);
+    updateRaisePreview();
+  }, { passive: false });
 
   byId("action-controls").addEventListener("keydown", function (event) {
     if (event.key === "Enter" && event.target && event.target.id === "raise-amount") {

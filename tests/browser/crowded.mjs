@@ -97,6 +97,8 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     level_minutes: 54,
     turn_seconds: 3600,
     runout_seconds: 40,
+    blind_announcement_seconds: 0,
+    elimination_announcement_seconds: 0,
     buy_in: 10,
     payout_percentages: [60, 25, 15],
   });
@@ -162,7 +164,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       for(const [label,node] of centerNodes) for(let i=0;i<seats.length;i++) {
         if(area(rect(node),rect(seats[i]))>5) {
           errors.push(label+' overlaps seat '+i);
-          centerLabelOverlaps.push({label,index:i,seatNo:seats[i].dataset.seatNo});
+          centerLabelOverlaps.push({label,index:i,seatNo:seats[i].dataset.seatNo,labelRect:rect(node),seatRect:rect(seats[i])});
         }
       }
       const heroPairBox=heroPair?rect(heroPair):null;
@@ -291,7 +293,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       for(const [label,node] of labels) for(let i=0;i<seats.length;i++) {
         if(area(rect(node),rect(seats[i]))>5) {
           errors.push(label+' overlaps runout seat '+i);
-          labelOverlaps.push({label,index:i,seatNo:seats[i].dataset.seatNo});
+          labelOverlaps.push({label,index:i,seatNo:seats[i].dataset.seatNo,labelRect:rect(node),seatRect:rect(seats[i])});
         }
       }
       for(let i=0;i<seats.length;i++) {

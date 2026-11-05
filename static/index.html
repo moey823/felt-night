@@ -28,6 +28,7 @@
           <span class="identity-avatar" id="identity-avatar" aria-hidden="true">♠</span>
           <span id="welcome-name" class="welcome-name"></span>
           <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
+          <button id="player-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="player-settings-dialog" aria-expanded="false">Bet presets</button>
           <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
         </div>
       </div>
@@ -36,6 +37,15 @@
     <main>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title"><div class="section-heading"><div><div class="panel-kicker">PLAYER RECORD</div><h2 id="history-title">My history</h2></div><button type="button" class="button button-quiet button-small" id="history-close">Close</button></div><div id="history-content" aria-live="polite"></div></dialog>
+      <dialog id="player-settings-dialog" class="player-prefs" aria-labelledby="player-settings-title">
+        <div class="section-heading"><div><div class="panel-kicker">YOUR TABLE PREFERENCES</div><h2 id="player-settings-title">Bet presets</h2></div><button type="button" class="button button-quiet button-small" id="player-settings-close">Close</button></div>
+        <form id="player-prefs-form" class="player-prefs-form">
+          <div class="player-prefs-field"><label for="prefs-preflop-bb">Preflop raise presets (big blinds)</label><input id="prefs-preflop-bb" name="preflop_bb" type="text" maxlength="80" value="2.5, 3, 4" required aria-describedby="prefs-preflop-note"><small id="prefs-preflop-note" class="muted">Enter 1 to 5 increasing sizes, such as 2.5, 3, 4.</small></div>
+          <div class="player-prefs-field"><label for="prefs-postflop-percent">Postflop raise presets (percent of pot)</label><input id="prefs-postflop-percent" name="postflop_percent" type="text" maxlength="80" value="50, 75, 100" required aria-describedby="prefs-postflop-note"><small id="prefs-postflop-note" class="muted">Enter 1 to 5 increasing percentages from 1 to 1000.</small></div>
+          <p id="player-prefs-error" class="player-prefs-error" role="alert" hidden></p>
+          <div class="player-prefs-actions"><button id="player-prefs-cancel" class="button button-outline button-small" type="button">Cancel</button><button class="button button-primary button-small" type="submit">Save preferences</button></div>
+        </form>
+      </dialog>
 
       <section id="login-panel" class="login-layout" aria-labelledby="login-title" hidden>
         <div class="login-story">
@@ -134,8 +144,12 @@
                     <input id="turn-seconds" name="turn_seconds" type="number" min="1" max="3600" step="1" value="30" required>
                   </div>
                 </div>
-                <label for="runout-seconds">All-in street delay (seconds)</label>
-                <input id="runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required>
+                <div class="form-row">
+                  <div><label for="runout-seconds">All-in street delay (seconds)</label><input id="runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required></div>
+                  <div><label for="blind-announcement-seconds">Blind announcement (seconds)</label><input id="blind-announcement-seconds" name="blind_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
+                </div>
+                <label for="elimination-announcement-seconds">Elimination announcement (seconds)</label>
+                <input id="elimination-announcement-seconds" name="elimination_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required>
                 <button class="button button-primary button-wide" type="submit">
                   <span>Create table</span><span aria-hidden="true">↗</span>
                 </button>
@@ -184,6 +198,8 @@
                 <div class="table-heading-tools">
                   <button id="last-hand-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="last-hand-dialog" aria-expanded="false" hidden>Last hand</button>
                   <button id="recent-action-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="recent-action-dialog" aria-expanded="false">Recent action</button>
+                  <button id="pause-button" class="button button-outline button-small" type="button" aria-pressed="false" aria-busy="false" hidden>Pause game</button>
+                  <button id="runtime-settings-button" class="button button-outline button-small" type="button" aria-controls="table-settings-form" aria-expanded="false" hidden>Game settings</button>
                   <button id="reopen-results-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
                   <button id="chat-button" class="button button-outline button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
                   <button id="sit-out-button" class="button button-outline button-small" type="button" aria-pressed="false" hidden>Sit out</button>
@@ -192,6 +208,8 @@
                 </div>
               </div>
               <div class="table-surface panel">
+                <div id="paused-banner" class="paused-view" role="status" aria-live="polite" hidden></div>
+                <div id="announcement-banner" class="announcement-view" role="status" aria-live="polite" hidden></div>
                 <div class="felt-topline">
                   <span class="live-indicator"><span></span><span id="hand-status-label">TABLE LOBBY</span></span>
                   <span id="hand-number" class="hand-number"></span>
@@ -219,6 +237,10 @@
                 </div>
               </div>
 
+              <div id="chat-preview" class="chat-preview" role="region" aria-label="Latest table chat" aria-live="polite" hidden>
+                <div class="chat-preview-line" data-chat-preview-line="0">No messages yet.</div>
+                <div class="chat-preview-line" data-chat-preview-line="1">Open chat to start the conversation.</div>
+              </div>
               <section id="chat-panel" class="panel chat-panel" role="region" aria-labelledby="chat-title" hidden>
                 <div class="chat-panel-heading">
                   <div><div class="panel-kicker">TABLE CHAT</div><h3 id="chat-title">Live chat</h3></div>
@@ -259,17 +281,17 @@
 
               <form id="table-settings-form" class="panel settings-panel" hidden>
                 <div class="section-heading settings-heading">
-                  <div><div class="panel-kicker">HOST SETTINGS</div><h3>Before you deal</h3></div>
+                  <div><div class="panel-kicker">HOST SETTINGS</div><h3 id="table-settings-title">Before you deal</h3></div>
                   <span class="settings-lock-icon" aria-hidden="true">⚙</span>
                 </div>
                 <div class="settings-grid">
-<div class="settings-field"><label for="settings-buy-in">Buy-in (play credits)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
-                  <div class="settings-field"><label for="settings-payout">Payouts by place (%)</label><input id="settings-payout" type="text" maxlength="48" value="60, 25, 15" required aria-describedby="settings-payout-tip"><small id="settings-payout-tip" class="muted">Enter shares from first place down, totaling 100%.</small></div>
-                  <div class="settings-field settings-name-field">
+                  <div class="settings-field" data-lobby-only><label for="settings-buy-in">Buy-in (play credits)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
+                  <div class="settings-field" data-lobby-only><label for="settings-payout">Payouts by place (%)</label><input id="settings-payout" type="text" maxlength="48" value="60, 25, 15" required aria-describedby="settings-payout-tip"><small id="settings-payout-tip" class="muted">Enter shares from first place down, totaling 100%.</small></div>
+                  <div class="settings-field settings-name-field" data-lobby-only>
                     <label for="settings-table-name">Table name</label>
                     <input id="settings-table-name" type="text" maxlength="40" required>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-lobby-only>
                     <label for="settings-max-seats">Seats</label>
                     <select id="settings-max-seats">
                       <option value="2">2 players</option><option value="3">3 players</option><option value="4">4 players</option>
@@ -277,30 +299,32 @@
                       <option value="8">8 players</option><option value="9">9 players</option>
                     </select>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-lobby-only>
                     <label for="settings-starting-stack">Starting stack</label>
                     <input id="settings-starting-stack" type="number" min="100" max="1000000" step="100" required>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-lobby-only>
                     <label for="settings-small-blind">Small blind</label>
                     <input id="settings-small-blind" type="number" min="1" max="100000" step="1" required>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-lobby-only>
                     <label for="settings-big-blind">Big blind</label>
                     <input id="settings-big-blind" type="number" min="2" max="200000" step="1" required>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-runtime-only>
                     <label for="settings-level-minutes">Blind levels (minutes)</label>
                     <input id="settings-level-minutes" type="number" min="0.01" max="2147483647" step="any" required>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-runtime-only>
                     <label for="settings-turn-seconds">Shot clock (seconds)</label>
                     <input id="settings-turn-seconds" type="number" min="1" max="3600" step="1" required>
                   </div>
-                  <div class="settings-field">
+                  <div class="settings-field" data-runtime-only>
                     <label for="settings-runout-seconds">All-in street delay (seconds)</label>
                     <input id="settings-runout-seconds" type="number" min="1" max="3600" step="any" required>
                   </div>
+                  <div class="settings-field" data-runtime-only><label for="settings-blind-announcement-seconds">Blind announcement (seconds)</label><input id="settings-blind-announcement-seconds" type="number" min="0" max="60" step="1" required></div>
+                  <div class="settings-field" data-runtime-only><label for="settings-elimination-announcement-seconds">Elimination announcement (seconds)</label><input id="settings-elimination-announcement-seconds" type="number" min="0" max="60" step="1" required></div>
                 </div>
                 <div class="settings-footer">
                   <p id="settings-lock-note" class="muted">Save changes before starting the freezeout.</p>

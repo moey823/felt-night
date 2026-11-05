@@ -12,6 +12,8 @@ def config(**overrides):
         "big_blind": 10,
         "level_minutes": 1,
         "turn_seconds": 30,
+        "blind_announcement_seconds": 0,
+        "elimination_announcement_seconds": 0,
     }
     value.update(overrides)
     return value
@@ -31,6 +33,188 @@ def heads_up(now=100.0, starting_stack=1000):
 
 
 class EngineTests(unittest.TestCase):
+    def test_announcement_defaults_are_backward_compatible_and_require_finite_bounded_numbers(self):
+        legacy_config = config()
+        legacy_config.pop("blind_announcement_seconds")
+        legacy_config.pop("elimination_announcement_seconds")
+        state = engine.create_lobby("default-announcements", "p1", "Ada", legacy_config, now=1)
+        self.assertEqual(state["config"]["blind_announcement_seconds"], 5)
+        self.assertEqual(state["config"]["elimination_announcement_seconds"], 5)
+
+        for setting in ("blind_announcement_seconds", "elimination_announcement_seconds"):
+            for value in (-0.1, 60.1, True, float("nan"), float("inf"), -float("inf")):
+                with self.subTest(setting=setting, value=value):
+                    with self.assertRaises(engine.GameError):
+                        engine.create_lobby(
+                            "bad-announcement", "p1", "Ada",
+                            config(**{setting: value}), now=1,
+                        )
+            accepted = engine.create_lobby(
+                "valid-announcement", "p1", "Ada",
+                config(**{setting: 60}), now=1,
+            )
+            self.assertEqual(accepted["config"][setting], 60)
+
+    def test_pause_freezes_deadlines_rejects_actions_and_invalidates_turn_tokens(self):
+        state = heads_up()
+        hand = state["hand"]
+        actor_id = hand["to_act"]
+        expected_hand = state["hand_no"]
+        expected_turn = state["turn_version"]
+        original_deadlines = {
+            "turn_deadline": hand["turn_deadline"],
+            "bot_action_at": 110.5,
+            "runout_at": 111.0,
+            "hand_complete_at": 112.0,
+            "next_hand_at": 112.0,
+            "blind_started_at": state["blinds"]["started_at"],
+            "next_level_at": state["blinds"]["next_level_at"],
+        }
+        hand.update({
+            "bot_action_at": original_deadlines["bot_action_at"],
+            "runout_at": original_deadlines["runout_at"],
+            "hand_complete_at": original_deadlines["hand_complete_at"],
+            "next_hand_at": original_deadlines["next_hand_at"],
+        })
+        engine.pause_table(state, "p1", True, now=105)
+        paused_turn_version = state["turn_version"]
+        self.assertTrue(state["paused"])
+        self.assertEqual(state["paused_at"], 105)
+
+        with patch("engine.time.time", return_value=2000):
+            view = engine.public_view(state, actor_id)
+        self.assertFalse(view["viewer"]["can_act"])
+        self.assertEqual(view["turn_deadline"], original_deadlines["turn_deadline"] + 1895)
+        self.assertEqual(view["blinds"]["seconds_to_next"], 57)
+
+        version = state["version"]
+        engine.advance(state, now=5000)
+        self.assertEqual(state["version"], version)
+        self.assertEqual(state["hand_no"], expected_hand)
+        self.assertEqual(hand["turn_deadline"], original_deadlines["turn_deadline"])
+        self.assertEqual(hand["bot_action_at"], original_deadlines["bot_action_at"])
+        self.assertEqual(hand["runout_at"], original_deadlines["runout_at"])
+        self.assertEqual(hand["next_hand_at"], original_deadlines["next_hand_at"])
+        self.assertEqual(state["blinds"]["next_level_at"], original_deadlines["next_level_at"])
+
+        with self.assertRaises(engine.GameError) as caught:
+            engine.apply_action(
+                state, actor_id, "check", None, expected_hand, expected_turn, now=5000,
+            )
+        self.assertEqual(caught.exception.code, "table_paused")
+        with self.assertRaises(engine.GameError) as caught:
+            engine.set_sitting_out(state, actor_id, True, now=5000)
+        self.assertEqual(caught.exception.code, "table_paused")
+
+        engine.pause_table(state, "p1", False, now=500)
+        self.assertFalse(state["paused"])
+        self.assertEqual(state["paused_at"], None)
+        self.assertEqual(state["turn_version"], paused_turn_version + 1)
+        pause_duration = 395
+        self.assertEqual(hand["turn_deadline"], original_deadlines["turn_deadline"] + pause_duration)
+        self.assertEqual(hand["bot_action_at"], original_deadlines["bot_action_at"] + pause_duration)
+        self.assertEqual(hand["runout_at"], original_deadlines["runout_at"] + pause_duration)
+        self.assertEqual(hand["next_hand_at"], original_deadlines["next_hand_at"] + pause_duration)
+        self.assertEqual(state["blinds"]["started_at"], original_deadlines["blind_started_at"] + pause_duration)
+        self.assertEqual(state["blinds"]["next_level_at"], original_deadlines["next_level_at"] + pause_duration)
+        with self.assertRaises(engine.GameError) as caught:
+            engine.apply_action(
+                state, actor_id, "check", None, expected_hand, expected_turn, now=500,
+            )
+        self.assertEqual(caught.exception.code, "stale_turn")
+
+    def test_paused_advance_does_not_run_a_due_bot_action(self):
+        state = engine.create_lobby(
+            "paused-bot", "p1", "Ada", config(max_seats=2), now=10,
+        )
+        engine.add_bot(state, "p1", 1, now=11)
+        engine.start(state, "p1", now=12)
+        bot_id = "bot:paused-bot:1"
+        hand = state["hand"]
+        hand["to_act"] = bot_id
+        hand["bot_action_at"] = 13
+        hand["turn_deadline"] = 14
+        bot_stack = engine._seat_by_id(state, bot_id)["stack"]
+        engine.pause_table(state, "p1", True, now=12.5)
+
+        engine.advance(state, now=1000)
+
+        self.assertEqual(state["hand"]["to_act"], bot_id)
+        self.assertEqual(state["hand"]["bot_action_at"], 13)
+        self.assertEqual(engine._seat_by_id(state, bot_id)["stack"], bot_stack)
+
+    def test_blind_announcement_holds_one_hand_boundary_even_when_next_level_is_due(self):
+        state = heads_up()
+        state["config"]["level_minutes"] = 0.01
+        state["config"]["blind_announcement_seconds"] = 5
+        hand = state["hand"]
+        hand["street"] = "showdown"
+        hand["to_act"] = None
+        hand["hand_complete_at"] = 102
+        hand["next_hand_at"] = 102
+        state["blinds"]["next_level_at"] = 102.5
+
+        engine.advance(state, now=103)
+        announced_hand_no = state["hand_no"]
+        announcement = state["blind_announcement"]
+        self.assertEqual(announcement, {
+            "level": 2, "small": 10, "big": 20, "until": 108,
+        })
+        self.assertEqual(hand["next_hand_at"], 108)
+        self.assertEqual(state["blinds"]["next_level_at"], 108.1)
+
+        # A delayed poll after both deadlines still deals once; it does not
+        # replace the announcement and postpone this same hand boundary again.
+        engine.advance(state, now=109)
+        self.assertEqual(state["hand_no"], announced_hand_no + 1)
+        self.assertEqual(state["blinds"]["level"], 2)
+        self.assertIsNone(state["blind_announcement"])
+
+    def test_bust_and_blind_announcements_hold_together_and_survive_final_completion(self):
+        state = engine.create_lobby(
+            "announcements", "p1", "Ada",
+            config(max_seats=3, blind_announcement_seconds=8,
+                   elimination_announcement_seconds=4), now=1,
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        hand = state["hand"]
+        hand["stack_before"] = {"p1": 100, "p2": 200, "p3": 300}
+        engine._seat_by_id(state, "p1")["stack"] = 0
+        engine._seat_by_id(state, "p2")["stack"] = 200
+        engine._seat_by_id(state, "p3")["stack"] = 300
+        state["blinds"]["next_level_at"] = 10
+
+        engine._finish_hand(state, {player_id: 0 for player_id in hand["contrib"]}, now=10)
+
+        self.assertEqual(state["blind_announcement"]["until"], 18)
+        self.assertEqual(state["elimination_announcement"]["until"], 14)
+        self.assertEqual(hand["next_hand_at"], 18)
+        self.assertEqual(state["status"], "playing")
+
+        final = engine.create_lobby(
+            "final-announcement", "p1", "Ada",
+            config(max_seats=2, starting_stack=100, elimination_announcement_seconds=6),
+            now=100,
+        )
+        engine.join(final, "p2", "Bea", now=101)
+        engine.start(final, "p1", now=102)
+        final_hand = final["hand"]
+        final_hand["stack_before"] = {"p1": 100, "p2": 100}
+        engine._seat_by_id(final, "p1")["stack"] = 0
+        engine._seat_by_id(final, "p2")["stack"] = 200
+        engine._finish_hand(final, {player_id: 0 for player_id in final_hand["contrib"]}, now=200)
+        self.assertEqual(final["status"], "completed")
+        self.assertIsNone(final["hand"]["next_hand_at"])
+        with patch("engine.time.time", return_value=203):
+            view = engine.public_view(final, "p2")
+        self.assertEqual(view["results"][0]["name"], "Bea")
+        self.assertEqual(view["elimination_announcement"]["players"], [
+            {"name": "Ada", "place": 2, "tied": False, "tie_count": 1},
+        ])
+        self.assertEqual(view["elimination_announcement"]["until"], 206)
+
     def test_lobby_host_seated_and_heads_up_blinds(self):
         state = heads_up()
         hand = state["hand"]

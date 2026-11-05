@@ -1183,6 +1183,12 @@ class Handler(BaseHTTPRequestHandler):
                     "level_minutes": body.get("level_minutes"),
                     "turn_seconds": self._integer(body.get("turn_seconds", engine.TURN_SECONDS), "turn_seconds", 1, engine.MAX_TIMER_SECONDS),
                     "runout_seconds": body.get("runout_seconds", engine.RUNOUT_SECONDS),
+                    "blind_announcement_seconds": body.get(
+                        "blind_announcement_seconds", engine.BLIND_ANNOUNCEMENT_SECONDS,
+                    ),
+                    "elimination_announcement_seconds": body.get(
+                        "elimination_announcement_seconds", engine.ELIMINATION_ANNOUNCEMENT_SECONDS,
+                    ),
                     "buy_in": self._integer(
                         body.get("buy_in", engine.DEFAULT_BUY_IN),
                         "buy_in", 0, engine.MAX_CHIPS,
@@ -1198,7 +1204,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             match = re.fullmatch(
-                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots)",
+                r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots|pause)",
                 path,
             )
             if not match:
@@ -1220,6 +1226,15 @@ class Handler(BaseHTTPRequestHandler):
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.stand(value, player["id"], now), now)
             elif operation == "settings":
+                supported_settings = {
+                    "max_seats", "starting_stack", "small_blind", "big_blind",
+                    "buy_in", "turn_seconds", "level_minutes", "runout_seconds",
+                    "blind_announcement_seconds", "elimination_announcement_seconds",
+                    "payout_percentages", "name",
+                }
+                unknown_settings = set(body) - supported_settings
+                if unknown_settings:
+                    raise AppError(400, "invalid_settings", "Unknown table setting.")
                 field_ranges = {
                     "max_seats": (2, 9),
                     "starting_stack": (100, 1_000_000_000),
@@ -1233,7 +1248,10 @@ class Handler(BaseHTTPRequestHandler):
                     for field, (minimum, maximum) in field_ranges.items()
                     if field in body
                 }
-                for duration in ("level_minutes", "runout_seconds"):
+                for duration in (
+                    "level_minutes", "runout_seconds", "blind_announcement_seconds",
+                    "elimination_announcement_seconds",
+                ):
                     if duration in body:
                         settings[duration] = body[duration]  # Numeric ranges are validated by the engine.
                 if "payout_percentages" in body:
@@ -1254,10 +1272,29 @@ class Handler(BaseHTTPRequestHandler):
                 if not settings and table_name is None:
                     raise AppError(400, "invalid_settings",
                                    "Choose at least one table setting to update.")
+                def update_table_settings(value):
+                    if value.get("status") == "playing":
+                        if table_name is not None:
+                            raise engine.GameError(
+                                "table_started", "Table name cannot change after the tournament starts.", 409,
+                            )
+                        return engine.update_runtime_settings(
+                            value, player["id"], settings, now,
+                        )
+                    return engine.update_settings(
+                        value, player["id"], settings, now, name=table_name,
+                    )
+
+                state = self.app.store.mutate_table(
+                    table_id, update_table_settings, now,
+                )
+            elif operation == "pause":
+                paused = body.get("paused")
+                if type(paused) is not bool:
+                    raise AppError(400, "invalid_pause", "Choose whether the tournament is paused.")
                 state = self.app.store.mutate_table(
                     table_id,
-                    lambda value: engine.update_settings(
-                        value, player["id"], settings, now, name=table_name),
+                    lambda value: engine.pause_table(value, player["id"], paused, now),
                     now,
                 )
             elif operation == "bots":

@@ -1154,6 +1154,8 @@ class ServerAuthTests(unittest.TestCase):
         status, _, created = self.request("POST", "/poker/api/tables", cfg, **auth)
         self.assertEqual(status, 201, created)
         table = created["table"]
+        self.assertEqual(table["config"]["blind_announcement_seconds"], 5)
+        self.assertEqual(table["config"]["elimination_announcement_seconds"], 5)
         for field in (
             "level_minutes", "turn_seconds", "runout_seconds",
             "buy_in", "payout_percentages",
@@ -1162,7 +1164,11 @@ class ServerAuthTests(unittest.TestCase):
         path = "/poker/api/tables/" + table["id"]
         for field, bad in (("level_minutes", 0), ("level_minutes", "3"),
                            ("turn_seconds", 0.5), ("turn_seconds", True),
-                           ("runout_seconds", None), ("runout_seconds", 3601)):
+                           ("runout_seconds", None), ("runout_seconds", 3601),
+                           ("blind_announcement_seconds", -1),
+                           ("blind_announcement_seconds", 61),
+                           ("elimination_announcement_seconds", float("nan")),
+                           ("elimination_announcement_seconds", float("inf"))):
             with self.subTest(field=field, bad=bad):
                 status, _, _ = self.request("POST", "/poker/api/tables",
                                             dict(cfg, **{field: bad}), **auth)
@@ -1171,6 +1177,7 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 200)
         updated = dict(
             level_minutes=72.5, turn_seconds=7, runout_seconds=3.25,
+            blind_announcement_seconds=4, elimination_announcement_seconds=6,
             buy_in=0, payout_percentages=[80, 20],
         )
         status, _, result = self.request("POST", path + "/settings", updated, **auth)
@@ -1178,7 +1185,10 @@ class ServerAuthTests(unittest.TestCase):
         for field, value in updated.items():
             self.assertEqual(result["table"]["config"][field], value)
         for field in updated:
-            invalid = -1 if field == "buy_in" else 0
+            invalid = -1 if field in {
+                "buy_in", "blind_announcement_seconds",
+                "elimination_announcement_seconds",
+            } else 0
             status, _, _ = self.request(
                 "POST", path + "/settings", {field: invalid}, **auth,
             )
@@ -1192,6 +1202,110 @@ class ServerAuthTests(unittest.TestCase):
         self.assertAlmostEqual(view["blinds"]["seconds_to_next"], 72.5 * 60, delta=1)
         status, _, _ = self.request("POST", path + "/settings", dict(turn_seconds=9), **auth)
         self.assertEqual(status, 409)
+
+    def test_host_pause_and_paused_runtime_settings_are_authorized_and_pacing_only(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Guest")
+        host_auth = dict(cookie=host_cookie, proof=host_proof, csrf=host_csrf)
+        guest_auth = dict(cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf)
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Pause control", max_seats=2,
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        path = "/poker/api/tables/" + table_id
+        status, _, joined = self.request("POST", path + "/join", {}, **guest_auth)
+        self.assertEqual(status, 200, joined)
+        status, _, started = self.request("POST", path + "/start", {}, **host_auth)
+        self.assertEqual(status, 200, started)
+
+        status, _, denied = self.request(
+            "POST", path + "/pause", {"paused": True}, **guest_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(denied["error"]["code"], "host_only")
+        status, _, invalid_pause = self.request(
+            "POST", path + "/pause", {"paused": 1}, **host_auth,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid_pause["error"]["code"], "invalid_pause")
+
+        status, _, unpaused_settings = self.request(
+            "POST", path + "/settings", {"turn_seconds": 8}, **host_auth,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(unpaused_settings["error"]["code"], "table_not_paused")
+        status, _, paused = self.request(
+            "POST", path + "/pause", {"paused": True}, **host_auth,
+        )
+        self.assertEqual(status, 200, paused)
+        self.assertTrue(paused["table"]["paused"])
+        self.assertIsNotNone(paused["table"]["paused_at"])
+        self.assertFalse(paused["table"]["viewer"]["can_act"])
+
+        view = paused["table"]
+        status, _, rejected_action = self.request(
+            "POST", path + "/action",
+            {"action": "check", "expected_hand": view["hand_no"],
+             "expected_turn_version": view["turn_version"]},
+            **guest_auth,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(rejected_action["error"]["code"], "table_paused")
+        status, _, rejected_sit_out = self.request(
+            "POST", path + "/sit-out", {"sitting_out": True}, **guest_auth,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(rejected_sit_out["error"]["code"], "table_paused")
+
+        pacing = {
+            "turn_seconds": 15,
+            "level_minutes": 0.5,
+            "runout_seconds": 1.25,
+            "blind_announcement_seconds": 60,
+            "elimination_announcement_seconds": 0,
+        }
+        status, _, updated = self.request(
+            "POST", path + "/settings", pacing, **host_auth,
+        )
+        self.assertEqual(status, 200, updated)
+        for field, value in pacing.items():
+            self.assertEqual(updated["table"]["config"][field], value)
+
+        for forbidden in (
+            {"max_seats": 3}, {"starting_stack": 2000},
+            {"small_blind": 20}, {"big_blind": 40},
+            {"buy_in": 0}, {"payout_percentages": [100]},
+            {"name": "Renamed while playing"},
+        ):
+            with self.subTest(forbidden=forbidden):
+                status, _, rejected = self.request(
+                    "POST", path + "/settings", forbidden, **host_auth,
+                )
+                expected_status = 409 if "name" in forbidden else 400
+                self.assertEqual(status, expected_status)
+                self.assertIn(rejected["error"]["code"], {
+                    "invalid_config", "invalid_settings", "table_started",
+                })
+
+        for field, value in (
+            ("blind_announcement_seconds", -1),
+            ("blind_announcement_seconds", 61),
+            ("elimination_announcement_seconds", float("nan")),
+            ("elimination_announcement_seconds", float("inf")),
+        ):
+            with self.subTest(field=field, value=value):
+                status, _, rejected = self.request(
+                    "POST", path + "/settings", {field: value}, **host_auth,
+                )
+                self.assertEqual(status, 400)
+
+        status, _, resumed = self.request(
+            "POST", path + "/pause", {"paused": False}, **host_auth,
+        )
+        self.assertEqual(status, 200, resumed)
+        self.assertFalse(resumed["table"]["paused"])
+        self.assertIsNone(resumed["table"]["paused_at"])
 
     def test_bot_seats_are_explicit_bounded_and_locked_after_start(self):
         host_cookie, host_proof, host_csrf, host = self.login("Host")

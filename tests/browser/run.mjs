@@ -7,7 +7,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const game = (mode === 'interactions'
+const game = (mode === 'adjustments'
+  ? await import('./adjustments.mjs')
+  : mode === 'interactions'
   ? await import('./interactions.mjs')
   : mode === 'crowded'
   ? await import('./crowded.mjs')
@@ -68,6 +70,9 @@ async function makePage() {
       const key = {key:'Escape',code:'Escape',windowsVirtualKeyCode:27};
       await send('Input.dispatchKeyEvent',{type:'keyDown',...key});
       await send('Input.dispatchKeyEvent',{type:'keyUp',...key});
+    },
+    reload() {
+      return send('Page.reload',{ignoreCache:true});
     },
     resize(width,height) {
       return send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<800});

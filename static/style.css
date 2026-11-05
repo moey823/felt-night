@@ -1163,6 +1163,9 @@ body.gameplay-active .action-controls .raise-control .raise-presets {
   grid-row: 2; grid-column: 2 / 4; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2px; min-width: 0; margin: 0;
 }
+body.gameplay-active .action-controls .raise-control .raise-presets:has(> .raise-preset:nth-child(4)) {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
 body.gameplay-active .action-controls .raise-control .raise-presets .raise-preset {
   min-width: 0; min-height: 29px; height: 29px; padding: 0 2px; border-radius: 5px;
   border-color: rgba(197, 227, 124, .2); color: #d8e4d1; font-size: 8px; line-height: 1;
@@ -1368,8 +1371,8 @@ body.gameplay-active .last-hand-nav .button { min-height: 36px; padding-inline: 
   body.gameplay-active #board-caption { display: none; }
   body.gameplay-active #felt .board-center { top: 34%; width: min(50%, 200px); min-width: 0; }
   body.gameplay-active #board-cards { min-height: 0; margin-top: 0; }
-  body.gameplay-active .pot-display { margin-top: 2px; padding: 3px 6px; gap: 4px; font-size: 8px; }
-  body.gameplay-active .pot-display strong { font-size: 9px; }
+  body.gameplay-active #felt.is-crowded .pot-display { margin-top: 0; padding: 0 5px; gap: 3px; font-size: 7px; }
+  body.gameplay-active #felt.is-crowded .pot-display strong { font-size: 8px; }
   body.gameplay-active .street-label { display: none; }
   body.gameplay-active .seat-card { width: clamp(62px, 9vw, 76px); padding: 2px 3px; }
   body.gameplay-active .seat-card.is-me { width: clamp(68px, 9vw, 80px); padding: 2px 3px; }
@@ -1417,4 +1420,230 @@ body.gameplay-active .last-hand-nav .button { min-height: 36px; padding-inline: 
   body.gameplay-active .topbar, body.gameplay-active .action-panel { backdrop-filter: none; }
   body.gameplay-active .recent-action-dialog::backdrop,
   body.gameplay-active .last-hand-dialog::backdrop { backdrop-filter: none; }
+}
+
+/* Keep opponent runout odds out of the fitted seat box in heads-up. */
+#felt[data-seat-count="2"]:has(#hero-seat) .seat-card:not(.is-me) > .seat-equity {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  margin-top: 0;
+}
+
+/* Personal betting preferences use the same quiet green table palette. */
+dialog.player-prefs {
+  box-sizing: border-box;
+  width: min(440px, calc(100vw - 24px));
+  max-width: 100%;
+  max-height: min(85dvh, 680px);
+  padding: 20px;
+  overflow: auto;
+  color: var(--text, #ede9d9);
+  border: 1px solid rgba(197, 227, 124, .25);
+  border-radius: 14px;
+  background: linear-gradient(150deg, #1f2e27, #16221d);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .55);
+}
+dialog.player-prefs::backdrop {
+  background: rgba(3, 8, 6, .76);
+  backdrop-filter: blur(3px);
+}
+#player-prefs-form { display: grid; gap: 13px; }
+.player-prefs-field { display: grid; gap: 6px; min-width: 0; }
+.player-prefs-field label { color: #c1ccc1; font-size: 10px; font-weight: 650; }
+.player-prefs-field input,
+.player-prefs-field select,
+.player-prefs-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(223, 234, 224, .15);
+  border-radius: 8px;
+  background: rgba(12, 20, 17, .55);
+  color: var(--text, #ede9d9);
+  font: inherit;
+  font-size: 11px;
+}
+.player-prefs-field textarea { min-height: 64px; resize: vertical; }
+.player-prefs-field :focus-visible { outline: 2px solid var(--green, #c5e37c); outline-offset: 2px; }
+.player-prefs-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+@media (max-width: 600px) {
+  dialog.player-prefs { padding: 16px; }
+  .player-prefs-actions { flex-direction: column-reverse; }
+  .player-prefs-actions .button { width: 100%; }
+}
+
+/* Game state banners remain distinct from transient action feedback. */
+#paused-banner.paused-view,
+#announcement-banner.announcement-view,
+#blind-announcement {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 7px 11px;
+  border: 1px solid rgba(225, 237, 227, .17);
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 680;
+  line-height: 1.4;
+}
+#paused-banner.paused-view {
+  color: #f0d6a6;
+  border-color: rgba(230, 197, 141, .42);
+  background: rgba(54, 42, 24, .92);
+}
+#announcement-banner.announcement-view {
+  color: #e0edc8;
+  border-color: rgba(197, 227, 124, .35);
+  background: rgba(22, 42, 27, .92);
+}
+#blind-announcement {
+  color: #d9e7c2;
+  border-color: rgba(197, 227, 124, .26);
+  background: rgba(15, 35, 25, .92);
+}
+
+/* Keep the live table and its compact chat preview in fixed gameplay rows. */
+body.gameplay-active #table-view {
+  position: relative;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: visible;
+}
+body.gameplay-active #chat-preview { flex: 0 0 auto; }
+body.gameplay-active .table-surface > #paused-banner,
+body.gameplay-active .table-surface > #announcement-banner {
+  position: absolute;
+  z-index: 16;
+  left: 50%;
+  width: min(calc(100% - 18px), 430px);
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: none;
+}
+body.gameplay-active .table-surface > #paused-banner { top: 30px; }
+body.gameplay-active .table-surface > #announcement-banner { top: 68px; }
+
+/* Runtime settings open as a contained overlay so the board keeps its viewport. */
+body.gameplay-active #table-settings-form.settings-panel {
+  position: absolute;
+  z-index: 24;
+  top: 39px;
+  right: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  width: min(470px, calc(100% - 12px));
+  min-height: 0;
+  max-height: min(55dvh, 470px);
+  padding: 13px;
+  overflow: hidden;
+  border-color: rgba(197, 227, 124, .35);
+  background: linear-gradient(150deg, rgba(31, 46, 39, .99), rgba(18, 29, 24, .99));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .56);
+}
+body.gameplay-active #table-settings-form .settings-heading { min-height: 28px; }
+body.gameplay-active #table-settings-form .settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+body.gameplay-active #table-settings-form .settings-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding-top: 7px;
+  border-top: 1px solid rgba(225, 237, 227, .1);
+  background: #192820;
+}
+body.gameplay-active #table-settings-form .settings-footer p { font-size: 8px; }
+body.gameplay-active #runtime-settings-button { max-width: 112px; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 600px) {
+  body.gameplay-active #table-view { grid-template-rows: auto minmax(0, 1fr) auto; }
+  body.gameplay-active #chat-preview { gap: 1px; padding: 4px 7px; }
+  body.gameplay-active #chat-preview .chat-preview-line { font-size: 8px; line-height: 1.25; }
+  body.gameplay-active #table-settings-form.settings-panel {
+    top: 34px;
+    right: 0;
+    width: min(100%, 430px);
+    max-height: min(58dvh, 440px);
+    padding: 10px;
+    gap: 7px;
+  }
+  body.gameplay-active #table-settings-form .settings-grid { gap: 7px; }
+  body.gameplay-active #table-settings-form .settings-field { gap: 3px; }
+  body.gameplay-active #table-settings-form .settings-field label { font-size: 8px; }
+  body.gameplay-active #table-settings-form .settings-field input,
+  body.gameplay-active #table-settings-form .settings-field select { min-height: 31px; padding-inline: 7px; font-size: 9px; }
+  body.gameplay-active #table-settings-form .settings-footer { gap: 6px; padding-top: 6px; }
+  body.gameplay-active #table-settings-form .settings-footer p { font-size: 7px; }
+  body.gameplay-active #table-settings-form .settings-footer .button { min-height: 30px; }
+  body.gameplay-active .table-heading-tools #runtime-settings-button { max-width: 78px; padding-inline: 5px; font-size: 7px; }
+  body.gameplay-active .topbar-right { flex-wrap: nowrap; min-width: 0; }
+  body.gameplay-active .topbar-right #player-settings-button {
+    max-width: 76px;
+    padding-inline: 5px;
+    overflow: hidden;
+    font-size: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+@media (max-width: 360px) {
+  body.gameplay-active .topbar { gap: 4px; padding-inline: 6px; }
+  body.gameplay-active .identity { min-width: 0; }
+  body.gameplay-active .brand-copy { min-width: 0; }
+  body.gameplay-active .brand-copy strong { font-size: 11px; }
+  body.gameplay-active .topbar-right { gap: 3px; }
+  body.gameplay-active .topbar-right #history-button,
+  body.gameplay-active .topbar-right #player-settings-button,
+  body.gameplay-active .topbar-right #logout-button { min-height: 25px; padding-inline: 4px; font-size: 7px; }
+}
+
+/* Tighten the crowded runout board stack to preserve clearance above the hero seat. */
+@media (max-width: 640px) {
+  body.gameplay-active #felt.is-crowded.exposed-ring .board-center { top: 42%; }
+  body.gameplay-active #felt.is-crowded.exposed-ring .pot-display { margin-top: 3px; padding: 4px 8px; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active #felt.is-crowded .board-center { transform: translate(-50%, -50%) translateY(-14px); }
+  body.gameplay-active #felt.is-crowded.exposed-ring .board-center { top: 24%; }
+}
+/* Keep the top heads-up seat, adjacent odds, board, and hero in separate lanes on short phones. */
+@media (max-width: 360px) and (max-height: 600px) and (orientation: portrait) {
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .board-center { top: 52%; }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .seat-card:not(.is-me) > .seat-equity {
+    top: 0; left: calc(100% + 4px); width: 72px; min-width: 72px; max-width: 72px;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .pot-display {
+    margin-top: 3px; padding: 2px 6px; gap: 3px; font-size: 8px; line-height: 1;
+    flex-wrap: nowrap; white-space: nowrap;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .pot-display strong {
+    font-size: 9px; line-height: 1;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .street-label { display: none; }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat:has(> .seat-equity) > .seat-detail {
+    display: none;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat:has(> .seat-equity) > .seat-stack[data-chip-display-toggle] {
+    min-height: 14px; height: 14px; margin: 0 auto; padding: 0 3px; font-size: 7px; line-height: 1;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity {
+    flex-wrap: nowrap; justify-content: center; gap: 2px; margin-top: 1px; padding: 1px 3px;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity .seat-equity-win > span {
+    display: none;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity .seat-equity-win strong {
+    font-size: 9px;
+  }
+  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity .seat-equity-tie {
+    font-size: 6px;
+  }
 }

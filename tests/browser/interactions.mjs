@@ -34,7 +34,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     await evaluate(page,()=>document.querySelector('#login-form').requestSubmit());
     await wait(page,()=>document.querySelector('#app-panel')?.offsetWidth);
   }
-  const config={name:'Table interactions '+stamp,max_seats:3,starting_stack:1000,small_blind:10,big_blind:20,level_minutes:79,turn_seconds:3600,runout_seconds:1};
+  const config={name:'Table interactions '+stamp,max_seats:3,starting_stack:1000,small_blind:10,big_blind:20,level_minutes:79,turn_seconds:3600,runout_seconds:1,blind_announcement_seconds:0,elimination_announcement_seconds:0};
   const {table}=await request('/tables',users[0],config),path='/tables/'+table.id;
   await Promise.all([signIn(one,users[0]),signIn(two,users[1])]);
   async function open(page,name) {

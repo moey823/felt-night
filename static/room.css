@@ -253,3 +253,26 @@
   }
   .chat-messages { min-height: 0; max-height: none; }
 }
+
+/* A compact two-line preview keeps the newest table chat in view during play. */
+#chat-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 9px;
+  border: 1px solid rgba(197, 227, 124, .17);
+  border-radius: 8px;
+  background: rgba(9, 18, 14, .34);
+}
+#chat-preview .chat-preview-line {
+  min-width: 0;
+  overflow: hidden;
+  color: #cbd8c8;
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#chat-preview .chat-preview-line:empty::before { content: "No recent messages"; color: var(--faint); }

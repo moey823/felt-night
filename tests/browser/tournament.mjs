@@ -28,15 +28,15 @@ export default async function game([one, two], sleep, roomPassword) {
   }
   async function create(name, extra = {}) {
     if(await ev(one,visible,'#create-game-tab')) await click(one,'#create-game-tab');
-    for(const [s,v] of Object.entries({'#table-name':name,'#max-seats':2,'#level-minutes':79,'#turn-seconds':47,'#runout-seconds':1.25,...extra})) await input(one,s,v);
+    for(const [s,v] of Object.entries({'#table-name':name,'#max-seats':2,'#level-minutes':79,'#turn-seconds':47,'#runout-seconds':1.25,'#blind-announcement-seconds':0,'#elimination-announcement-seconds':0,...extra})) await input(one,s,v);
     await submit(one,'#create-form');
     await wait(one,n=>document.querySelector('#view-table-name')?.textContent===n,name);
     await wait(two,n=>{const e=[...document.querySelectorAll('[data-open-table]')].find(e=>e.innerText.includes(n)); if(!e) return false; e.click(); return true;},name);
     await click(two,'[data-take-seat="1"]');
-    for (const [s,v] of [['#settings-level-minutes','79'],['#settings-turn-seconds', String(extra['#turn-seconds'] ?? 47)],['#settings-runout-seconds','1.25']]) {
+    for (const [s,v] of [['#settings-level-minutes','79'],['#settings-turn-seconds', String(extra['#turn-seconds'] ?? 47)],['#settings-runout-seconds','1.25'],['#settings-blind-announcement-seconds','0'],['#settings-elimination-announcement-seconds','0']]) {
       if(await ev(one,s=>document.querySelector(s).value,s)!==v) throw Error('Create value not restored: '+s);
     }
-    await input(one,'#settings-runout-seconds','1.75'); await click(one,'#save-settings-button');
+    await input(one,'#settings-runout-seconds','1.75'); await input(one,'#settings-blind-announcement-seconds','0'); await input(one,'#settings-elimination-announcement-seconds','0'); await click(one,'#save-settings-button');
     await wait(one,()=>!document.querySelector('#start-button').disabled && document.querySelector('#settings-runout-seconds').value==='1.75');
     await click(one,'#start-button');
   }
@@ -201,8 +201,80 @@ export default async function game([one, two], sleep, roomPassword) {
     await click(first,'[data-poker-action="raise_to"]');
     await wait(other,()=>{const b=document.querySelector('[data-poker-action="call"]');return b?.offsetWidth&&!b.disabled;});
     if(await ev(other,visible,'.seat-equity')) throw Error('Odds appeared while action still pending');
+    const topSeatSnapshot = async p => ev(p, () => {
+      const bounds = node => {
+        const r = node.getBoundingClientRect();
+        return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,
+          centerX:r.left+r.width/2,centerY:r.top+r.height/2};
+      };
+      const seat = document.querySelector('#seat-grid .seat-card:not(.is-me)[data-player-id]');
+      const cards = seat?.querySelector('.seat-cards');
+      const felt = document.querySelector('#felt');
+      return seat && cards && felt ? {seat:bounds(seat),cards:bounds(cards),felt:bounds(felt)} : null;
+    });
+    const beforeRunout = [];
+    for (let index = 0; index < pages.length; index++) {
+      await pages[index].resize(index === 0 ? 320 : 1280, index === 0 ? 568 : 800);
+      await sleep(100);
+      beforeRunout[index] = await topSeatSnapshot(pages[index]);
+      if (!beforeRunout[index]) throw Error('Could not measure the heads-up top opponent before all-in');
+      await pages[index].screenshot('top-opponent-before-' + (index === 0 ? 'mobile' : 'desktop'));
+    }
     await click(other,'[data-poker-action="call"]');
     for(const p of pages) await wait(p,visible,'.seat-equity');
+    for (let index = 0; index < pages.length; index++) {
+      const page = pages[index];
+      await page.screenshot('top-opponent-all-in-' + (index === 0 ? 'mobile' : 'desktop'));
+      const after = await ev(page, () => {
+        const bounds = node => {
+          const r = node.getBoundingClientRect();
+          return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,
+            centerX:r.left+r.width/2,centerY:r.top+r.height/2};
+        };
+        const seat = document.querySelector('#seat-grid .seat-card:not(.is-me)[data-player-id]');
+        const cards = seat?.querySelector('.seat-cards');
+        const odds = seat?.querySelector('.seat-equity');
+        const felt = document.querySelector('#felt');
+        const blockers = ['#blind-strip','#board-caption','#board-cards','#pot-display','#street-label']
+          .map(selector => document.querySelector(selector))
+          .filter(node => node && !node.hidden && node.offsetWidth)
+          .map(bounds);
+        const overlaps = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        const seatBox = seat && bounds(seat);
+        const cardBox = cards && bounds(cards);
+        const oddsBox = odds && bounds(odds);
+        const feltBox = felt && bounds(felt);
+        const markerBoxes = Array.from(document.querySelectorAll('.dealer-marker,.seat-action,.seat-wager'))
+          .filter(node => !node.hidden && node.offsetWidth)
+          .map(bounds);
+        return seatBox && cardBox && oddsBox && feltBox ? {
+          seat:seatBox,cards:cardBox,odds:oddsBox,felt:feltBox,
+          blockerOverlaps:blockers.filter(box => overlaps(seatBox,box)).length,
+          oddsBlockerOverlaps:blockers.filter(box => overlaps(oddsBox,box)).length,
+          oddsMarkerOverlaps:markerBoxes.filter(box => overlaps(oddsBox,box)).length,
+          oddsInsideFelt:oddsBox.left >= feltBox.left-1 && oddsBox.right <= feltBox.right+1 &&
+            oddsBox.top >= feltBox.top-1 && oddsBox.bottom <= feltBox.bottom+1
+        } : null;
+      });
+      const before = beforeRunout[index];
+      if (!after) throw Error('Could not measure the heads-up top opponent during all-in runout');
+      const shiftX = Math.abs(after.seat.centerX-before.seat.centerX);
+      const shiftY = Math.abs(after.seat.centerY-before.seat.centerY);
+      const cardsShiftX = Math.abs(after.cards.centerX-before.cards.centerX);
+      const cardsShiftY = Math.abs(after.cards.centerY-before.cards.centerY);
+      console.log('Heads-up all-in layout at ' + (index === 0 ? '320px' : '1280px') +
+        ': horizontal seat/card shifts ' + shiftX.toFixed(1) + '/' + cardsShiftX.toFixed(1) +
+        'px; vertical shifts ' + shiftY.toFixed(1) + '/' + cardsShiftY.toFixed(1) + 'px');
+      if (shiftX > 4 || cardsShiftX > 4) {
+        throw Error('Top opponent moved sideways when all-in odds appeared at ' +
+          (index === 0 ? '320px' : '1280px') + ': ' +
+          JSON.stringify({shiftX,shiftY,cardsShiftX,cardsShiftY,before:before.seat,after:after.seat}));
+      }
+      if (after.blockerOverlaps || after.oddsBlockerOverlaps || after.oddsMarkerOverlaps || !after.oddsInsideFelt) {
+        throw Error('Top opponent or all-in odds overlap table content at ' +
+          (index === 0 ? '320px' : '1280px') + ': ' + JSON.stringify(after));
+      }
+    }
     await wait(one,()=>[...document.querySelectorAll('#board-cards .playing-card')].filter(e=>e.innerText.trim()).length===5);
     await wait(one,()=> {
       const street=document.querySelector('#street-label')?.textContent;
