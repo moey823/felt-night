@@ -6,10 +6,12 @@ import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import tournament from './tournament.mjs';
-import crowded from './crowded.mjs';
-
-const game = process.argv[2] === 'crowded' ? crowded : tournament;
+const mode = process.argv[2];
+const game = (mode === 'crowded'
+  ? await import('./crowded.mjs')
+  : mode === 'ux'
+    ? await import('./ux.mjs')
+    : await import('./tournament.mjs')).default;
 const testRoomPassword = 'test-room-invite';
 
 if (!process.env.BROWSER_BIN) throw Error('Set BROWSER_BIN to a Chromium headless shell executable.');
@@ -58,6 +60,11 @@ async function makePage() {
       if(!process.env.QA_SCREEN_DIR) return;
       const {data} = await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
       writeFileSync(join(process.env.QA_SCREEN_DIR,name+'.png'),Buffer.from(data,'base64'));
+    },
+    async pressEscape() {
+      const key = {key:'Escape',code:'Escape',windowsVirtualKeyCode:27};
+      await send('Input.dispatchKeyEvent',{type:'keyDown',...key});
+      await send('Input.dispatchKeyEvent',{type:'keyUp',...key});
     },
     resize(width,height) {
       return send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<800});

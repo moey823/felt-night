@@ -56,20 +56,6 @@ export default async function game([one, two], sleep, roomPassword) {
     if(!pass) throw Error(action+' must be the leftmost play action');
   }
   const pre='[data-preaction="check-fold"]';
-  async function clickPre(p) {
-    await wait(p, visible, pre);
-    const [x,y] = await ev(p, q => {
-      const button = document.querySelector(q);
-      button.scrollIntoView({block:'center'});
-      const rect = button.getBoundingClientRect();
-      return [rect.left + rect.width/2, rect.top + rect.height/2];
-    }, pre);
-    await p.clickAt(x,y);
-  }
-  async function togglePre(p,selected) {
-    await clickPre(p);
-    await wait(p,(q,v)=>{const e=document.querySelector(q);return e && !e.disabled && e.getAttribute('aria-pressed')===String(v);},pre,selected);
-  }
   async function confirm(p) {
     await click(p,'[data-action="confirm-all-in"]');
   }
@@ -93,17 +79,24 @@ export default async function game([one, two], sleep, roomPassword) {
       await ev(first,()=>document.querySelector('#action-panel').scrollIntoView({block:'center'}));
       await first.screenshot('mobile-actions');
       const layout=await ev(first,()=>{
+        const bounds=n=>{const r=n.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+        const overlaps=(a,b)=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
+        const inViewport=r=>r.width>0&&r.height>0&&r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1;
         const cards=[...document.querySelectorAll('.is-viewer-cards .mini-card')];
-        const controls=[...document.querySelectorAll('#action-controls button')];
+        const controls=[...document.querySelectorAll('#action-controls button, #action-controls input')];
+        const dock=document.querySelector('#action-panel').getBoundingClientRect();
         const issues=[];
         if(cards.length!==2) issues.push('missing hole cards');
         if(document.querySelectorAll('#seat-grid .seat-card').length!==2) issues.push('nine-seat lobby did not compact to two entrants');
-        for(const n of [...cards,...controls]) {
-          const b=n.getBoundingClientRect(),hit=document.elementFromPoint(b.x+b.width/2,b.y+b.height/2);
-          if(cards.includes(n)) {
-            const dock=document.querySelector('#action-panel').getBoundingClientRect();
-            if(b.left<0 || b.right>innerWidth || b.top<0 || b.bottom>innerHeight || (b.left<dock.right && b.right>dock.left && b.top<dock.bottom && b.bottom>dock.top)) issues.push(n.textContent+' not visible alongside the dock');
-          } else if(!b.width || !hit || !(n===hit || n.contains(hit))) issues.push(n.textContent+' obstructed or offscreen');
+        for(const n of cards) {
+          const r=bounds(n);
+          if(!inViewport(r)) issues.push(n.textContent+' is not fully visible');
+          if(overlaps(r,dock)) issues.push(n.textContent+' overlaps the action panel');
+        }
+        for(const n of controls) {
+          const r=bounds(n),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+          if(!inViewport(r)||!hit||!(n===hit||n.contains(hit))) issues.push((n.textContent||n.id)+' obstructed or offscreen');
+          if(cards.some(c=>overlaps(bounds(c),r))) issues.push((n.textContent||n.id)+' overlaps a hero card');
         }
         return issues;
       });
@@ -114,11 +107,13 @@ export default async function game([one, two], sleep, roomPassword) {
         await ev(first,()=>document.querySelector('#action-panel').scrollIntoView({block:'center'}));
         const separation=await ev(first,()=>{
           const box=q=>document.querySelector(q).getBoundingClientRect();
-          const hero=box('.is-viewer-cards'), dock=box('#action-panel');
-          return {gap:dock.left-hero.right, sharedHeight:Math.min(hero.bottom,dock.bottom)-Math.max(hero.top,dock.top),overflow:document.documentElement.scrollWidth>innerWidth};
+          const hero=box('.is-viewer-cards'),dock=box('#action-panel');
+          const overlap=hero.left<dock.right&&hero.right>dock.left&&hero.top<dock.bottom&&hero.bottom>dock.top;
+          const inViewport=r=>r.width>0&&r.height>0&&r.left>=-1&&r.right<=innerWidth+1&&r.top>=-1&&r.bottom<=innerHeight+1;
+          return {overlap,heroVisible:inViewport(hero),panelVisible:inViewport(dock),overflow:document.documentElement.scrollWidth>innerWidth};
         });
         await first.screenshot('actions-'+w);
-        if(separation.gap < -1 || separation.sharedHeight<=0 || separation.overflow) throw Error(w+'px actions must sit beside the cards: '+JSON.stringify(separation));
+        if(separation.overlap || !separation.heroVisible || !separation.panelVisible || separation.overflow) throw Error(w+'px hero cards and actions must be visible without overlap: '+JSON.stringify(separation));
       }
       await first.resize(320,740);
     }
@@ -141,7 +136,7 @@ export default async function game([one, two], sleep, roomPassword) {
     await wait(p,visible,'#dismiss-results-button');
     const info=await ev(p,()=>({history:window.historyQA.map(JSON.parse), flights:window.flightsQA, pots:document.querySelector('#hand-result')?.innerText, standings:document.querySelector('#results-panel').innerText, overflow:document.documentElement.scrollWidth>innerWidth+1}));
     if(info.history.some(([n])=>n===1 || n===2)) throw Error('Partial flop displayed');
-    for(const n of [0,3,4,5]) if(!info.history.some(([count,odds])=>count===n && odds.length===2 && new Set(odds.map(o=>o[0])).size===2 && odds.every(o=>o[1].includes('%')))) throw Error('Missing exposed odds at board size '+n+' '+JSON.stringify(info.history));
+    for(const n of [0,3,4]) if(!info.history.some(([count,odds])=>count===n && odds.length===2 && new Set(odds.map(o=>o[0])).size===2 && odds.every(o=>o[1].includes('%')))) throw Error('Missing live all-in odds before settlement at board size '+n+' '+JSON.stringify(info.history));
     if(/\bchips\b/i.test(info.standings) || !info.standings.includes('26 play credits awarded') || !info.standings.includes('20 credits') || !info.standings.includes('6 credits') || !info.standings.includes('Robin') || !info.standings.includes('Morgan') || !info.pots || !/2,?000/.test(info.pots) || info.overflow) throw Error(JSON.stringify(info));
     if(!info.flights.some(f=>/payout|award/.test(f[0]))) throw Error('No payout movement '+JSON.stringify(info.flights));
     await click(p,'#dismiss-results-button'); await click(p,'#reopen-results-button'); await wait(p,visible,'#dismiss-results-button');
@@ -162,32 +157,9 @@ export default async function game([one, two], sleep, roomPassword) {
   await create('Check and fold '+Date.now());
   const sb=await actor(), bb=sb===one?two:one;
   await verifyLeftmost(sb,'fold');
-  await togglePre(bb,true);
-  // A previously fetched view could be serialized later than the toggle.
-  // Its public game version is identical, but its private selection is older.
-  await ev(bb,()=>{
-    const send=window.fetch;
-    window.fetch=async function(url,opts) {
-      const response=await send.apply(this,arguments);
-      if(/\/tables\/[a-f0-9]+$/.test(String(url)) && (!opts?.method || opts.method==='GET')) {
-        const data=await response.clone().json();
-        const v=data.table;
-        if(v?.viewer?.check_fold_selected) {
-          window.fetch=send;
-          v.viewer.check_fold_selected=false;
-          v.viewer.check_fold_revision--;
-          v.server_now+=2;
-          window.oldTogglePollDelivered=true;
-          return new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
-        }
-      }
-      return response;
-    };
-  });
-  await wait(bb,()=>window.oldTogglePollDelivered);
-  if(!await ev(bb,q=>document.querySelector(q)?.getAttribute('aria-pressed')==='true',pre)) throw Error('Late poll reversed the confirmed selection');
-  await togglePre(bb,false);
-  await click(sb,'[data-poker-action="call"]'); await wait(bb,visible,'[data-poker-action="check"]');
+  if(await ev(one,visible,pre)||await ev(two,visible,pre)) throw Error('Check/Fold shown with only two tournament players');
+  await click(sb,'[data-poker-action="call"]');
+  await wait(bb,visible,'[data-poker-action="check"]');
   await verifyLeftmost(bb,'check');
   if(await ev(bb,visible,'[data-poker-action="fold"]')) throw Error('Fold offered when checking is free');
   await click(bb,'[data-poker-action="check"]');
@@ -204,33 +176,21 @@ export default async function game([one, two], sleep, roomPassword) {
   for(const p of pages) await wait(p,visible,'#hand-result .hand-result-recipient');
   console.log('Checked free, bet exactly 37 with slider, and folded facing a bet.');
 
-  // The queued option executes server-side: the big blind checks when called,
-  // then the other player folds to a flop bet without a second click.
+  // Heads-up action advances manually because Check/Fold is a multiway option.
   for (const p of pages) {await click(p,'#close-table-button'); await wait(p,visible,'#table-list');}
   await create('Advance action '+Date.now());
   const small=await actor(), big=small===one?two:one;
-  // Hold the off-turn click in transit until the call makes the big blind the actor.
-  await ev(big, () => {
-    const original = window.fetch;
-    window.fetch = async function(url, ...args) {
-      if (String(url).endsWith('/preaction')) {
-        window.fetch = original;
-        await new Promise(resolve => {window.releaseCheckFold = resolve;});
-      }
-      return original.call(this,url,...args);
-    };
-  });
-  await clickPre(big);
-  await wait(big, () => typeof window.releaseCheckFold === 'function');
+  if(await ev(one,visible,pre)||await ev(two,visible,pre)) throw Error('Check/Fold shown with only two tournament players');
   await click(small,'[data-poker-action="call"]');
   await wait(big,visible,'[data-poker-action="check"]');
-  await ev(big, () => window.releaseCheckFold());
-  await wait(big,()=>document.querySelector('#street-label').textContent==='FLOP');
-  await wait(big,visible,'[data-poker-action="raise_to"]');
-  await togglePre(small,true);
-  await click(big,'[data-poker-action="raise_to"]');
+  await click(big,'[data-poker-action="check"]');
+  await wait(one,()=>document.querySelector('#street-label').textContent==='FLOP');
+  const nextBettor=await actor(), nextFolder=nextBettor===one?two:one;
+  await click(nextBettor,'[data-poker-action="raise_to"]');
+  await wait(nextFolder,visible,'[data-poker-action="fold"]');
+  await click(nextFolder,'[data-poker-action="fold"]');
   for(const p of pages) await wait(p,visible,'#hand-result .hand-result-recipient');
-  console.log('Check/Fold can be cleared, checks for free, and folds immediately to a bet.');
+  console.log('Heads-up action used manual checks and folds; Check/Fold stayed hidden.');
 
   // A short stack can raise only to one legal value; a confirmation must
   // not survive the turn it was opened for.

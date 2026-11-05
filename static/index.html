@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#111c19">
   <title>Felt Night — Private play-money poker</title>
   <link rel="icon" type="image/svg+xml" href="/poker/ace.svg">
@@ -193,13 +193,13 @@
                   <p id="view-table-subtitle" class="muted"></p>
                 </div>
                 <div class="table-heading-tools">
+                  <button id="recent-action-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="recent-action-dialog" aria-expanded="false">Recent action</button>
                   <button id="reopen-results-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
                   <button id="copy-invite-button" class="button button-outline button-small" type="button">Copy invite link</button>
                   <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to all tables">All tables <span aria-hidden="true">↗</span></button>
                 </div>
               </div>
-
-              <div id="blind-strip" class="blind-strip"></div>
+              <div id="blind-announcement" class="blind-announcement" role="status" aria-live="polite" hidden></div>
 
               <div class="table-surface panel">
                 <div class="felt-topline">
@@ -207,6 +207,7 @@
                   <span id="hand-number" class="hand-number"></span>
                 </div>
                 <div id="felt" class="felt">
+                  <div id="blind-strip" class="blind-strip"></div>
                   <div id="seat-grid" class="seat-grid"></div>
                   <div class="board-center">
                     <div class="board-caption" id="board-caption">COMMUNITY CARDS</div>
@@ -219,13 +220,13 @@
                     <h3 id="action-title" class="visually-hidden">Betting actions</h3>
                     <div id="action-controls" class="action-controls"></div>
                   </section>
+                  <div id="hand-result" class="hand-result" aria-live="polite" tabindex="0" hidden></div>
                 </div>
                 <div id="action-feedback" class="action-feedback" role="status" aria-live="polite" hidden></div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
                   <span id="button-caption"></span>
                 </div>
-                <div id="hand-result" class="hand-result" aria-live="polite" tabindex="0" hidden></div>
               </div>
 
               <section id="lobby-seat-panel" class="panel lobby-panel" aria-labelledby="seat-status-title" hidden>
@@ -312,24 +313,13 @@
                 <div id="results-list" class="results-list" role="list" tabindex="0"></div>
               </section>
 
-              <div class="lower-grid">
-                <section class="panel activity-panel" aria-labelledby="activity-title">
-                  <div class="section-heading compact">
-                    <div><div class="panel-kicker">AT THE TABLE</div><h3 id="activity-title">Recent action</h3></div>
-                    <span class="activity-icon" aria-hidden="true">⌁</span>
-                  </div>
-                  <div id="action-log" class="action-log"></div>
-                </section>
-                <section class="panel rules-panel" aria-labelledby="rules-title">
-                  <div class="panel-kicker">QUICK NOTES</div>
-                  <h3 id="rules-title">Freezeout rules</h3>
-                  <ul>
-                    <li>One starting stack, no rebuys or re-entry.</li>
-                    <li>Blinds double when the level clock expires.</li>
-                    <li>Play chips only. No cash prizes.</li>
-                  </ul>
-                </section>
-              </div>
+              <dialog id="recent-action-dialog" class="recent-action-dialog" aria-labelledby="activity-title">
+                <div class="section-heading compact">
+                  <div><div class="panel-kicker">AT THE TABLE</div><h2 id="activity-title">Recent action</h2></div>
+                  <button id="recent-action-close" class="button button-quiet button-small" type="button">Close</button>
+                </div>
+                <div id="action-log" class="action-log"></div>
+              </dialog>
             </div>
           </section>
         </div>

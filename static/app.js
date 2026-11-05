@@ -55,6 +55,10 @@
     seatTurnRemainingMs: 0,
     seatTurnClockUpdatedAt: 0,
     seatTurnClockTimer: 0,
+    blindAnnouncementTimer: 0,
+    blindLevelTableId: "",
+    blindLevelValue: null,
+    showBigBlinds: false,
     actionPending: null,
     preActionPending: null,
     actionConfirmation: null,
@@ -153,6 +157,27 @@
     return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(number(value, 0));
   }
 
+  function tableUsesBigBlinds(view) {
+    var source = view || state.tableView;
+    return Boolean(state.showBigBlinds && source && blindParts(source).big > 0);
+  }
+
+  function tableChipValue(value, view) {
+    if (!tableUsesBigBlinds(view)) return chips(value);
+    var bigBlind = blindParts(view || state.tableView).big;
+    var units = number(value, 0) / bigBlind;
+    if (units >= 0 && units < 1) return units.toFixed(1);
+    return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Math.floor(units));
+  }
+
+  function tableChips(value, view) {
+    return tableChipValue(value, view) + (tableUsesBigBlinds(view) ? " BB" : " chips");
+  }
+
+  function tableChipUnit(view) {
+    return tableUsesBigBlinds(view) ? "BB" : "chips";
+  }
+
   function percent(value) {
     var parsed = Number(value);
     if (!isFinite(parsed)) return "0%";
@@ -192,12 +217,53 @@
     }
   }
 
+  function clearBlindAnnouncement(resetTracking) {
+    if (state.blindAnnouncementTimer) {
+      window.clearTimeout(state.blindAnnouncementTimer);
+      state.blindAnnouncementTimer = 0;
+    }
+    var node = byId("blind-announcement");
+    if (node) {
+      node.hidden = true;
+      node.textContent = "";
+    }
+    if (resetTracking) {
+      state.blindLevelTableId = "";
+      state.blindLevelValue = null;
+    }
+  }
+
+  function announceBlindLevel(blinds) {
+    var node = byId("blind-announcement");
+    if (!node) return;
+    if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
+    node.textContent = "Blind level " + blinds.level + ": small blind " + chips(blinds.small) +
+      " chips, big blind " + chips(blinds.big) + " chips.";
+    node.hidden = false;
+    state.blindAnnouncementTimer = window.setTimeout(function () {
+      node.hidden = true;
+      node.textContent = "";
+      state.blindAnnouncementTimer = 0;
+    }, 3000);
+  }
+
+  function closeRecentActionDialog() {
+    var dialog = byId("recent-action-dialog");
+    if (dialog && dialog.open) dialog.close();
+    var trigger = byId("recent-action-button");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+  }
+
   function clearNotice() {
     showNotice("", "info", true);
   }
 
   function setLoggedOut(message) {
     state.player = null;
+    state.showBigBlinds = false;
+    document.body.classList.remove("gameplay-active");
+    clearBlindAnnouncement(true);
+    closeRecentActionDialog();
     setAuthMode("login");
     if (byId("history-dialog").open) byId("history-dialog").close();
     byId("history-content").replaceChildren();
@@ -402,6 +468,22 @@
     return Boolean(seat.is_bot || seat.bot || seat.kind === "bot" || id.indexOf("bot:") === 0);
   }
 
+  function seatCountsAsTournamentRemaining(view, seat) {
+    if (!seat) return false;
+    var stack = number(seat.stack, 0);
+    if (stack > 0) return true;
+    var folded = Boolean(seat.folded || seat.is_folded);
+    var allIn = Boolean(seat.all_in || seat.is_all_in);
+    var street = String(view && view.street || "").toLowerCase();
+    return Boolean(view && view.status === "playing" && street !== "showdown" && allIn && !folded);
+  }
+
+  function tournamentPlayerCount(view) {
+    return (Array.isArray(view && view.seats) ? view.seats : []).filter(function (seat) {
+      return seatCountsAsTournamentRemaining(view, seat);
+    }).length;
+  }
+
   function eventSeatNo(event) {
     var raw = event && (event.seat_no != null ? event.seat_no : event.seat);
     return raw == null ? null : String(Math.floor(number(raw, -1)));
@@ -418,7 +500,7 @@
     var paid = number(event && event.amount, 0);
     var streetTotal = number(event && event.street_contribution, paid);
     var actionTotal = action === "bet" || action === "raise" || action === "raise_to" || action === "all_in" || action === "allin" ? streetTotal : paid;
-    var value = actionTotal > 0 ? " · " + chips(actionTotal) : "";
+    var value = actionTotal > 0 ? " · " + tableChips(actionTotal) : "";
     var names = {
       fold: ["FOLDED", "FOLD"],
       check: ["CHECKED", "CHECK"],
@@ -448,7 +530,8 @@
         compactLabel: text[1],
         kind: String(event.action || "").toLowerCase().replace(/[ -]+/g, "_"),
         seatNo: eventSeatNo(event),
-        actorLabel: String(event.actor_label || "")
+        actorLabel: String(event.actor_label || ""),
+        rawEvent: { action: event.action, amount: event.amount, street_contribution: event.street_contribution }
       };
       var id = eventActorId(event);
       if (id) fx.actions[id] = actionState;
@@ -574,7 +657,13 @@
     var fx = state.tableFx;
     var id = String(seat.id || seat.player_id || "");
     var name = String(seat.name || "").toLowerCase();
-    return fx.actions[id] || fx.actions["seat:" + seatNo] || (name ? fx.actions["name:" + name] : null) || null;
+    var action = fx.actions[id] || fx.actions["seat:" + seatNo] || (name ? fx.actions["name:" + name] : null) || null;
+    if (action && action.rawEvent) {
+      var text = eventActionText(action.rawEvent);
+      action.label = text[0];
+      action.compactLabel = text[1];
+    }
+    return action;
   }
 
   function addLayerPoint(node, gridRect, x, y) {
@@ -731,7 +820,7 @@
     var bounds = layer.getBoundingClientRect();
     var chip = document.createElement("span");
     chip.className = "chip-flight" + (kind ? " chip-flight-" + kind : "");
-    chip.textContent = label == null ? chips(amount) : String(label);
+    chip.textContent = label == null ? tableChips(amount) : String(label);
     chip.style.left = (start.x - bounds.left) + "px";
     chip.style.top = (start.y - bounds.top) + "px";
     layer.appendChild(chip);
@@ -830,7 +919,7 @@
           var targetRect = targetNode && targetNode.getBoundingClientRect();
           if (amount <= 0 || !targetRect) return;
           var target = { x: targetRect.left + targetRect.width / 2, y: targetRect.top + targetRect.height / 2 };
-          var label = (isReturn ? "RETURN +" : "+") + chips(amount);
+          var label = (isReturn ? "RETURN +" : "+") + tableChips(amount);
           motions.push(animateChip(payoutLayer, payoutStart, target, amount, flightMs, label, isReturn ? "return" : "payout"));
         });
         return Promise.all(motions);
@@ -854,20 +943,27 @@
   function renderSeats(view) {
     var layout = seatLayout(view);
     var max = layout.max;
-    var bySeat = layout.bySeat;
+    var ringOnlySeated = view.status === "playing" || view.status === "completed";
+    var feltSeats = ringOnlySeated
+      ? layout.seats.filter(function (seat) { return seatCountsAsTournamentRemaining(view, seat); })
+      : layout.seats;
+    var bySeat = Object.create(null);
+    feltSeats.forEach(function (seat, index) {
+      var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
+      bySeat[Math.floor(number(rawSeatNo, index))] = seat;
+    });
     var viewer = view.viewer || {};
     var viewerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var ownSeat = layout.seats.find(function (seat) {
+    var ownSeat = feltSeats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === viewerId;
     });
     var hostId = String(view.host_id || "");
-    var anchorSeat = ownSeat || layout.seats.find(function (seat) {
+    var anchorSeat = ownSeat || feltSeats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === hostId;
-    }) || layout.seats[0] || null;
+    }) || feltSeats[0] || null;
     var anchorRawSeatNo = anchorSeat && anchorSeat.seat_no != null ? anchorSeat.seat_no : layout.seats.indexOf(anchorSeat);
     var anchorSeatNo = anchorSeat ? Math.floor(number(anchorRawSeatNo, 0)) : 0;
-    var ringOnlySeated = view.status === "playing" || view.status === "completed";
-    var clockwiseSeats = layout.seats.map(function (seat, index) {
+    var clockwiseSeats = feltSeats.map(function (seat, index) {
       var raw = seat.seat_no != null ? seat.seat_no : index;
       var seatNo = Math.floor(number(raw, index));
       return { seatNo: seatNo, offset: (seatNo - anchorSeatNo + max) % max };
@@ -943,7 +1039,16 @@
       }
 
       var compactRunoutSeat = Boolean(equityHtml && !folded && stack <= 0);
-      var stackHtml = compactRunoutSeat ? "" : '<div class="seat-stack">' + chips(stack) + ' <span class="seat-number">chips</span></div>';
+      var stackContents = '<span class="seat-stack-amount">' + esc(tableChipValue(stack)) + '</span> <span class="seat-number">' + esc(tableChipUnit()) + '</span>';
+      var stackHtml = "";
+      if (isMe) {
+        var nextChipDisplay = tableUsesBigBlinds() ? "chips" : "big blinds";
+        var stackLabel = "Your stack: " + tableChips(stack) + ". Activate to display all table chip amounts in " + nextChipDisplay + ".";
+        stackHtml = '<button class="seat-stack" type="button" data-chip-display-toggle aria-pressed="' +
+          String(tableUsesBigBlinds()) + '" aria-label="' + esc(stackLabel) + '">' + stackContents + '</button>';
+      } else if (!compactRunoutSeat) {
+        stackHtml = '<div class="seat-stack">' + stackContents + '</div>';
+      }
       var cardHtml = "";
       if (cards.length) {
         cardHtml = '<div class="seat-cards' + (exposed ? ' is-exposed' : ' is-viewer-cards') + '">' + cards.map(function (card) { return playingCardHTML(card, true); }).join("") + '</div>';
@@ -970,15 +1075,21 @@
       var wager = number(fx.displayWagers[seatNo], 0);
       if (!fx.eventAware && !wager) wager = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
       if (wager > 0) {
-        html += '<span class="seat-wager" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + chips(wager) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + chips(wager) + '</strong></span>';
+        html += '<span class="seat-wager" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + esc(tableChips(wager)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChips(wager)) + '</strong></span>';
       } else if (number(pendingWagers[seatNo], 0) > 0) {
-        html += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-hidden="true"><span class="wager-stack"><i></i><i></i><i></i></span><strong>' + chips(pendingWagers[seatNo]) + '</strong></span>';
+        html += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-hidden="true"><span class="wager-stack"><i></i><i></i><i></i></span><strong>' + esc(tableChips(pendingWagers[seatNo])) + '</strong></span>';
       }
     }
 
     var grid = byId("seat-grid");
     var felt = byId("felt");
+    var restoreChipToggleFocus = Boolean(document.activeElement && document.activeElement.matches &&
+      document.activeElement.matches("[data-chip-display-toggle]"));
     grid.innerHTML = html;
+    if (restoreChipToggleFocus) {
+      var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
+      if (replacementToggle) replacementToggle.focus({ preventScroll: true });
+    }
     var compact = window.innerWidth <= 820 || grid.clientWidth < 500;
     var heroHasActionSpace = currentHand && Boolean(ownSeat);
     var portraitSeats = {
@@ -1027,12 +1138,14 @@
     felt.classList.toggle("has-action-space", heroHasActionSpace);
     felt.classList.toggle("is-playing", currentHand);
     felt.dataset.seatCount = String(positionCount);
+    var usePhoneActionSeats = (window.innerWidth >= 381 && window.innerWidth <= 640) ||
+      (positionCount >= 7 && window.innerWidth <= 360 && window.innerHeight <= 650);
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
       var x;
       var y;
       var viewportActionSeats = compact
-        ? (window.innerWidth >= 381 && window.innerWidth <= 640 ? phoneActionSeats : actionSeats)
+        ? (usePhoneActionSeats ? phoneActionSeats : actionSeats)
         : desktopActionSeats;
       if (heroHasActionSpace && viewportActionSeats[positionCount]) {
         x = viewportActionSeats[positionCount][relativeIndex][0];
@@ -1063,7 +1176,7 @@
     else if (heroHasActionSpace && state.seatDock?.key === dockKey) dock = state.seatDock.box;
     if (dock) blockers.push(dock);
     if (currentHand && window.SitNgoLayout && gridRect.width && gridRect.height) {
-      var avoid = ["board-cards", "board-caption", "pot-display", "street-label"].map(function (id) {
+      var avoid = ["board-cards", "board-caption", "pot-display", "street-label", "blind-strip"].map(function (id) {
         return boxForNode(byId(id), gridRect);
       }).filter(Boolean).concat(blockers);
       var nodes = Array.from(grid.querySelectorAll(".seat-card"));
@@ -1082,7 +1195,7 @@
       var box = boxForNode(node, gridRect);
       if (box) blockers.push(box);
     });
-    ["board-caption", "board-cards", "pot-display", "street-label"].forEach(function (id) {
+    ["board-caption", "board-cards", "pot-display", "street-label", "blind-strip"].forEach(function (id) {
       var box = boxForNode(byId(id), gridRect);
       if (box) blockers.push(box);
     });
@@ -1090,10 +1203,27 @@
     var seatNodeFor = function (seatNo) {
       return grid.querySelector('.seat-card[data-seat-no="' + seatNo + '"]');
     };
+    var seatActionNodes = Array.prototype.slice.call(grid.querySelectorAll(".seat-action"));
+    function placeActionBadge(node) {
+      var seatNo = String(node.getAttribute("data-action-seat"));
+      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
+      if (!spot) {
+        node.classList.add("is-unplaced");
+        return false;
+      }
+      addLayerPoint(node, gridRect, spot.x, spot.y);
+      blockers.push(spot.box);
+      return true;
+    }
+    seatActionNodes.filter(function (node) { return node.classList.contains("kind-turn"); }).forEach(placeActionBadge);
+
     grid.querySelectorAll(".dealer-marker").forEach(function (node) {
       var seatNo = String(node.getAttribute("data-marker-seat"));
       var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
-      if (!spot) return;
+      if (!spot) {
+        node.classList.add("is-unplaced");
+        return;
+      }
       addLayerPoint(node, gridRect, spot.x, spot.y);
       blockers.push(spot.box);
     });
@@ -1113,18 +1243,10 @@
       blockers.push(spot.box);
     });
 
-    Array.prototype.slice.call(grid.querySelectorAll(".seat-action")).sort(function (a, b) {
-      return Number(b.classList.contains("kind-turn")) - Number(a.classList.contains("kind-turn"));
-    }).forEach(function (node) {
-      var seatNo = String(node.getAttribute("data-action-seat"));
-      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
-      if (!spot) {
-        node.classList.add("is-unplaced");
-        return;
-      }
-      addLayerPoint(node, gridRect, spot.x, spot.y);
-      blockers.push(spot.box);
-    });
+    seatActionNodes.filter(function (node) { return !node.classList.contains("kind-turn"); })
+      .sort(function (a, b) {
+        return Number(b.classList.contains("kind-turn")) - Number(a.classList.contains("kind-turn"));
+      }).forEach(placeActionBadge);
   }
 
   function renderBoard(view) {
@@ -1157,7 +1279,7 @@
       payoutAmount = awards.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0) +
         returns.reduce(function (sum, row) { return sum + number(row && row.amount, 0); }, 0);
     }
-    byId("pot-amount").textContent = chips(payoutPending && pot === 0 ? payoutAmount : pot);
+    byId("pot-amount").textContent = tableChips(payoutPending && pot === 0 ? payoutAmount : pot);
     byId("pot-label").textContent = "Pot";
     byId("pot-display").hidden = Boolean(hasSettlement && pot === 0 && !payoutPending);
     byId("street-label").textContent = view.street && view.street !== "lobby" ? String(view.street).replace(/_/g, " ").toUpperCase() : "";
@@ -1177,7 +1299,7 @@
         var rank = String(record && record.rank || "");
         return '<span class="hand-result-recipient' + (isReturn ? ' is-return' : '') + '\"' +
           (id ? ' data-player-id=\"' + esc(id) + '\"' : '') + '><strong>' + esc(nameFor(record)) + '</strong><b>' +
-          (isReturn ? 'Returned ' : '+') + chips(amount) + (isReturn ? '' : '') + '</b>' +
+          (isReturn ? 'Returned ' : '+') + tableChips(amount) + (isReturn ? '' : '') + '</b>' +
           (rank ? '<small>' + esc(rank) + '</small>' : '') + '</span>';
       }
 
@@ -1191,13 +1313,13 @@
             return sum + number(recipient && recipient.amount, 0);
           }, 0));
           resultParts.push('<div class="hand-result-pot"><span class="hand-result-pot-title"><strong>' + esc(title) +
-            '</strong><b>' + chips(amount) + ' chips</b></span><span class="hand-result-recipients">' +
+            '</strong><b>' + tableChips(amount) + '</b></span><span class="hand-result-recipients">' +
             recipients.map(function (recipient) { return recipientMarkup(recipient, false); }).join("") + '</span></div>');
         });
       } else if (awards.length) {
         var fallbackAmount = awards.reduce(function (sum, award) { return sum + number(award && award.amount, 0); }, 0);
         resultParts.push('<div class="hand-result-pot"><span class="hand-result-pot-title"><strong>Pot payout</strong><b>' +
-          chips(fallbackAmount) + ' chips</b></span><span class="hand-result-recipients">' +
+          tableChips(fallbackAmount) + '</b></span><span class="hand-result-recipients">' +
           awards.map(function (award) { return recipientMarkup(award, false); }).join("") + '</span></div>');
       }
       if (returns.length) {
@@ -1214,14 +1336,22 @@
   function renderBlindStrip(view) {
     var b = blindParts(view);
     var remaining = clockRemaining(b);
-    var levelLength = number(view.config && view.config.level_minutes, number(view.level_minutes, 0));
-    var seats = Array.isArray(view.seats) ? view.seats : [];
-    var live = seats.filter(function (seat) { return number(seat.stack, 0) > 0; }).length;
+    var tableId = String(view.id || state.activeTableId || "");
+    if (state.blindLevelTableId !== tableId) {
+      clearBlindAnnouncement(true);
+      state.blindLevelTableId = tableId;
+      state.blindLevelValue = b.level;
+    } else {
+      if (state.blindLevelValue !== null && b.level > state.blindLevelValue && view.status === "playing") {
+        announceBlindLevel(b);
+      }
+      state.blindLevelValue = b.level;
+    }
+    var blindUnit = tableChipUnit(view);
+    var blindsLabel = tableChipValue(b.small, view) + " / " + tableChipValue(b.big, view) + " " + blindUnit;
     var entries = [
-      { label: "Blinds", value: chips(b.small) + " / " + chips(b.big), note: "Small / big" },
-      { label: "Level", value: String(b.level), note: remaining >= 0 ? "Next in " + formatClock(remaining) : (levelLength ? levelLength + " min levels" : "Blind level") },
-      { label: "Players", value: String(live), note: "Still in" },
-      { label: "Starting stack", value: chips(view.config && view.config.starting_stack), note: "Play chips" }
+      { label: "Level", value: String(b.level), note: remaining >= 0 ? "Next in " + formatClock(remaining) : "Countdown unavailable" },
+      { label: "Blinds", value: blindsLabel, note: tableUsesBigBlinds(view) ? "Small / big · BB" : "Small / big" }
     ];
     byId("blind-strip").innerHTML = entries.map(function (entry) {
       return '<div class="blind-tile"><span>' + esc(entry.label) + '</span><strong>' + esc(entry.value) + '</strong><em>' + esc(entry.note) + '</em></div>';
@@ -1321,7 +1451,7 @@
   }
 
   function checkFoldEligible(view) {
-    if (!view || view.status !== "playing") return false;
+    if (!view || view.status !== "playing" || tournamentPlayerCount(view) <= 2) return false;
     var street = String(view.street || "").toLowerCase();
     var actorId = String(view.actor_id || view.to_act_id || "");
     if (!actorId || street === "showdown") return false;
@@ -1390,14 +1520,14 @@
     var isAllInTarget = stack > 0 && target === max && max === ownBet + stack;
     var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
     input.setAttribute("aria-valuetext", valid
-      ? actionName + " to " + chips(target) + " chips total; adds " + chips(paid) + (isAllInTarget ? "; all-in" : "")
-      : "Choose a whole-chip total from " + chips(min) + " to " + chips(max));
+      ? actionName + " to " + tableChips(target) + " total; adds " + tableChips(paid) + (isAllInTarget ? "; all-in" : "")
+      : "Choose an amount from " + tableChips(min) + " to " + tableChips(max));
     if (button) {
       var label = valid
-        ? actionName + " to " + chips(target) + (isAllInTarget ? " · all-in" : "")
+        ? actionName + " to " + tableChips(target) + (isAllInTarget ? " · all-in" : "")
         : actionName + " amount";
       button.textContent = label;
-      button.setAttribute("aria-label", valid ? label.replace(" · all-in", "") + " chips" + (isAllInTarget ? ", all-in" : "") : label);
+      button.setAttribute("aria-label", valid ? label.replace(" · all-in", "") + (isAllInTarget ? ", all-in" : "") : label);
       button.disabled = Boolean(state.actionPending || state.actionConfirmation ||
         checkFoldPendingForCurrentView(view) || !valid);
     }
@@ -1477,12 +1607,12 @@
       return {
         label: preset.label,
         target: target,
-        ariaLabel: "Set raise-to amount to " + chips(target) + " chips with the " + preset.label + " preset" +
+        ariaLabel: "Set raise-to amount to " + tableChips(target) + " with the " + preset.label + " preset" +
           (preflop ? "" : " after calling") + (adjusted ? "; adjusted to the legal range" : "")
       };
     });
     var actionKey = canPreAct ? "waiting:" + view.id + ":" + view.hand_no : JSON.stringify([
-      state.activeTableId, canAct, canPreAct, number(view.hand_no, 0), number(view.turn_version, 0),
+      state.activeTableId, canAct, canPreAct, state.showBigBlinds, number(view.hand_no, 0), number(view.turn_version, 0),
       street, number(view.pot, 0), bigBlind, presetSpecs.map(function (preset) { return preset.target; }),
       toCall, callAmount, callIsAllIn, stack, ownBet, currentBet, canRaise,
       minRaise, maxRaise, hasRaiseSlider, shortAllInRaise, rangeMin, suggested
@@ -1498,7 +1628,7 @@
         '<span class="preaction-name">Check/Fold</span><span class="preaction-state">' + (preSelected ? "On" : "Off") + '</span></button>' +
         '<p class="preaction-help" id="preaction-help">Checks when free; folds facing a bet.</p>';
     } else if (toCall > 0) {
-      var callLabel = "Call " + chips(callAmount) + " chips" + (callIsAllIn ? " · all-in" : "");
+      var callLabel = "Call " + tableChips(callAmount) + (callIsAllIn ? " · all-in" : "");
       controls += '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>';
       controls += '<button class="button button-outline call-button" type="button" data-poker-action="call" aria-label="' + esc(callLabel) + '">' + esc(callLabel) + '</button>';
     } else {
@@ -1509,8 +1639,8 @@
       var actionName = currentBet > 0 ? "Raise" : "Bet";
       var maxIsAllIn = stack > 0 && maxRaise === ownBet + stack;
       var rangeText = shortAllInRaise
-        ? "Short all-in · max " + chips(maxRaise)
-        : "Min " + chips(rangeMin) + "–" + chips(maxRaise) + (maxIsAllIn ? " · all-in" : "");
+        ? "Short all-in · max " + tableChips(maxRaise)
+        : "Min " + tableChips(rangeMin) + "–" + tableChips(maxRaise) + (maxIsAllIn ? " · all-in" : "");
       var presetMarkup = '<div class="raise-presets" role="group" aria-label="' +
         (preflop ? "Preflop raise sizes in big blinds" : "Postflop pot-size raises") + '">' +
         presetSpecs.map(function (preset) {
@@ -1523,7 +1653,7 @@
         presetMarkup +
         '<input id="raise-amount" type="range" min="' + rangeMin + '" max="' + maxRaise + '" step="1" value="' + draft + '" aria-describedby="raise-range">' +
         '<span class="raise-range" id="raise-range">' + esc(rangeText) + '</span>' +
-        '<button class="button button-primary" type="button" data-poker-action="raise_to" aria-label="' + actionName + ' to ' + chips(draft) + ' chips">' + actionName + ' to ' + chips(draft) + '</button></div>';
+        '<button class="button button-primary" type="button" data-poker-action="raise_to" aria-label="' + actionName + ' to ' + esc(tableChips(draft)) + '">' + actionName + ' to ' + esc(tableChips(draft)) + '</button></div>';
     }
 
     if (state.actionRenderKey !== actionKey) {
@@ -1665,6 +1795,9 @@
       byId("results-panel").hidden = true;
       byId("reopen-results-button").hidden = true;
       clearSeatTurnClock();
+      document.body.classList.remove("gameplay-active");
+      clearBlindAnnouncement(true);
+      closeRecentActionDialog();
       byId("lobby-seat-panel").hidden = true;
       byId("host-panel").hidden = true;
       byId("table-settings-form").hidden = true;
@@ -1674,6 +1807,7 @@
     consumeTableEvents(view);
     syncSeatTurnClock(view);
     var status = view.status || "lobby";
+    document.body.classList.toggle("gameplay-active", status === "playing" || status === "completed");
     var statusNode = byId("view-status");
     statusNode.textContent = statusName(status);
     statusNode.className = "status-pill" + (status === "playing" ? " playing" : (status === "completed" ? " completed" : ""));
@@ -1684,7 +1818,7 @@
     byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats" + (view.prize_pool_cents == null ? "" : " · " + credits(view.prize_pool_cents) + " play credits in the pool") + (status === "lobby" && view.config ? " · Buy-in " + view.config.buy_in + " · " + view.config.payout_percentages.join(" / ") + "%" : "");
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
     byId("hand-status-label").textContent = status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY");
-    byId("table-player-count").textContent = seats.length + " seated · " + seats.filter(function (s) { return number(s.stack, 0) > 0; }).length + " still in";
+    byId("table-player-count").textContent = seats.length + " seated";
     byId("button-caption").textContent = view.status === "playing" ? "" : "Play chips · No rebuys";
 
     renderBlindStrip(view);
@@ -1814,6 +1948,8 @@
         } catch (err) {
           if (state.activeTableId !== selectedTableId) return;
           if (err.status === 404) {
+            clearBlindAnnouncement(true);
+            closeRecentActionDialog();
             state.activeTableId = "";
             state.tableView = null;
             setHashTable("");
@@ -1974,33 +2110,33 @@
       description = "check";
       successMessage = "Check recorded.";
     } else if (action === "call") {
-      description = "call for " + chips(paid) + " chips" + (usesWholeStack ? " · all-in" : "");
-      successMessage = "Call recorded: " + chips(paid) + " chips" + (usesWholeStack ? " · all-in." : ".");
+      description = "call for " + tableChips(paid) + (usesWholeStack ? " · all-in" : "");
+      successMessage = "Call recorded: " + tableChips(paid) + (usesWholeStack ? " · all-in." : ".");
     } else if (action === "all_in") {
       if (target > currentBet) {
         var allInVerb = currentBet > 0 ? "raise" : "bet";
-        description = "all-in " + allInVerb + " to " + chips(target) + " chips";
-        successMessage = "All-in " + allInVerb + " recorded: " + chips(paid) + " chips added to reach " + chips(target) + " total.";
+        description = "all-in " + allInVerb + " to " + tableChips(target);
+        successMessage = "All-in " + allInVerb + " recorded: " + tableChips(paid) + " added to reach " + tableChips(target) + " total.";
       } else {
-        description = "all-in call for " + chips(paid) + " chips";
-        successMessage = "All-in call recorded: " + chips(paid) + " chips.";
+        description = "all-in call for " + tableChips(paid);
+        successMessage = "All-in call recorded: " + tableChips(paid) + ".";
       }
     } else {
       var raiseVerb = payload.action === "raise" ? "raise" : "bet";
-      description = raiseVerb + " to " + chips(target) + " total (adds " + chips(paid) + " chips)";
-      successMessage = (payload.action === "raise" ? "Raise" : "Bet") + " recorded: " + chips(paid) + " chips added to reach " + chips(target) + " total.";
+      description = raiseVerb + " to " + tableChips(target) + " total (adds " + tableChips(paid) + ")";
+      successMessage = (payload.action === "raise" ? "Raise" : "Bet") + " recorded: " + tableChips(paid) + " added to reach " + tableChips(target) + " total.";
     }
 
     var confirmationMessage = "";
     if (usesWholeStack) {
       if (action === "call") {
-        confirmationMessage = "Calling " + chips(paid) + " chips uses your entire remaining stack. Continue with the all-in call?";
+        confirmationMessage = "Calling " + tableChips(paid) + " uses your entire remaining stack. Continue with the all-in call?";
       } else if (action === "all_in" && target > currentBet) {
-        confirmationMessage = "This all-in " + (currentBet > 0 ? "raise" : "bet") + " adds " + chips(paid) + " chips to reach " + chips(target) + " total on this street. It uses your entire remaining stack. Continue?";
+        confirmationMessage = "This all-in " + (currentBet > 0 ? "raise" : "bet") + " adds " + tableChips(paid) + " to reach " + tableChips(target) + " total on this street. It uses your entire remaining stack. Continue?";
       } else if (action === "all_in") {
-        confirmationMessage = "This call puts all " + chips(paid) + " chips left in your stack into the pot. Continue with the all-in call?";
+        confirmationMessage = "This call puts all " + tableChips(paid) + " left in your stack into the pot. Continue with the all-in call?";
       } else {
-        confirmationMessage = "This " + (payload.action === "raise" ? "raise" : "bet") + " adds " + chips(paid) + " chips to reach " + chips(target) + " total on this street. It uses your entire remaining stack. Continue with the all-in?";
+        confirmationMessage = "This " + (payload.action === "raise" ? "raise" : "bet") + " adds " + tableChips(paid) + " to reach " + tableChips(target) + " total on this street. It uses your entire remaining stack. Continue with the all-in?";
       }
     }
 
@@ -2129,7 +2265,7 @@
     }
     state.actionConfirmation = intent;
     byId("allInConfirmDescription").textContent = intent.confirmationMessage;
-    byId("confirm-all-in-button").textContent = "Commit " + chips(intent.wholeStackAmount) + " chips";
+    byId("confirm-all-in-button").textContent = "Commit " + tableChips(intent.wholeStackAmount);
     var dialog = byId("allInConfirm");
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
@@ -2230,6 +2366,22 @@
   }
   byId("history-button").addEventListener("click", function () {byId("history-dialog").showModal(); loadHistory("");});
   byId("history-close").addEventListener("click", function () {byId("history-dialog").close();});
+
+  byId("recent-action-button").addEventListener("click", function () {
+    var dialog = byId("recent-action-dialog");
+    if (dialog && !dialog.open) dialog.showModal();
+    if (dialog && dialog.open) byId("recent-action-button").setAttribute("aria-expanded", "true");
+  });
+  byId("recent-action-close").addEventListener("click", closeRecentActionDialog);
+  byId("recent-action-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeRecentActionDialog();
+  });
+  byId("recent-action-dialog").addEventListener("close", function () {
+    var trigger = byId("recent-action-button");
+    if (trigger) trigger.setAttribute("aria-expanded", "false");
+    if (trigger && trigger.isConnected && trigger.getClientRects().length) trigger.focus({ preventScroll: true });
+  });
   byId("history-dialog").addEventListener("close", function () {historyGeneration++; byId("history-content").replaceChildren();});
   byId("history-content").addEventListener("click", function (e) {
     var btn=e.target.closest("button");
@@ -2354,6 +2506,8 @@
     button.disabled = true;
     try {
       await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/cancel", {});
+      clearBlindAnnouncement(true);
+      closeRecentActionDialog();
       state.activeTableId = "";
       state.skipAutoResume = true;
       state.tableView = null;
@@ -2394,6 +2548,8 @@
   byId("create-game-tab").addEventListener("click",function () {lobbyPane("create");});
   byId("close-table-button").addEventListener("click", function () {
     lobbyPane("games");
+    clearBlindAnnouncement(true);
+    closeRecentActionDialog();
     state.activeTableId = "";
     state.skipAutoResume = true;
     state.tableView = null;
@@ -2441,6 +2597,8 @@
   byId("table-list").addEventListener("click", async function (event) {
     var button = event.target.closest("[data-open-table]");
     if (!button) return;
+    clearBlindAnnouncement(true);
+    closeRecentActionDialog();
     state.activeTableId = button.getAttribute("data-open-table") || "";
     state.skipAutoResume = false;
     state.tableView = null;
@@ -2472,6 +2630,15 @@
       event.preventDefault();
       byId("dismiss-results-button").click();
     }
+  });
+
+  byId("seat-grid").addEventListener("click", function (event) {
+    var toggle = event.target.closest("[data-chip-display-toggle]");
+    if (!toggle) return;
+    state.showBigBlinds = !state.showBigBlinds;
+    renderTable();
+    var nextToggle = byId("seat-grid").querySelector("[data-chip-display-toggle]");
+    if (nextToggle) nextToggle.focus({ preventScroll: true });
   });
 
   byId("action-controls").addEventListener("input", function (event) {
