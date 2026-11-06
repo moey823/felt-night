@@ -12,7 +12,14 @@ export default async function game([one, two], sleep, roomPassword) {
     throw Error('Timed out: ' + fn + ' ' + args + ' | ' + await ev(p, () => document.body.innerText.slice(-1600)));
   }
   const visible = s => !!document.querySelector(s)?.offsetWidth;
-  const click = (p, s) => wait(p, q => {const n=document.querySelector(q); if(!n?.offsetWidth || n.disabled) return false; n.click(); return true;}, s);
+  const click = (p, s) => wait(p, q => {
+    const n=document.querySelector(q);
+    if (!n || n.disabled || n.hidden) return false;
+    const menu=n.closest('details');
+    if(menu && n.tagName !== 'SUMMARY' && !menu.open) menu.open=true;
+    if(!n.offsetWidth) return false;
+    n.click(); return true;
+  }, s);
   const input = (p, s, value) => ev(p, (q,v) => {const n=document.querySelector(q); n.value=String(v); for(const e of ['input','change']) n.dispatchEvent(new Event(e,{bubbles:true}));}, s, value);
   const submit = (p, s) => ev(p, q => document.querySelector(q).requestSubmit(), s);
   await wait(one,visible,'#login-name');
@@ -26,18 +33,36 @@ export default async function game([one, two], sleep, roomPassword) {
     await wait(p, visible, '#login-name'); await click(p,'#auth-switch'); await input(p, '#login-name', ['Robin','Morgan'][i]);
     await input(p,'#login-password','poker-test-password'); await input(p,'#room-password',roomPassword); await submit(p,'#login-form'); await wait(p, visible, '#app-panel');
   }
+  const origin = await one.evaluate('location.origin');
+  async function adminRequest(path, session, data) {
+    const headers = {Origin:origin,'Content-Type':'application/json'};
+    if (session) Object.assign(headers, {Cookie:session.cookie,
+      'X-SitNgo-Session':session.session_proof,'X-SitNgo-CSRF':session.csrf});
+    const response = await fetch(origin+'/poker/api'+path,{method:'POST',headers,body:JSON.stringify(data)});
+    const body = await response.json();
+    if (!response.ok) throw Error(path+' '+JSON.stringify(body));
+    return path==='/login' ? {...body,cookie:response.headers.get('set-cookie').split(';')[0]} : body;
+  }
+  const admin = await adminRequest('/login',null,{username:'admin',password:''});
+  await adminRequest('/admin/config',admin,{runout_seconds:1.75,showdown_seconds:0,
+    blind_announcement_seconds:0,elimination_announcement_seconds:0});
   async function create(name, extra = {}) {
-    if(await ev(one,visible,'#create-game-tab')) await click(one,'#create-game-tab');
-    for(const [s,v] of Object.entries({'#table-name':name,'#max-seats':2,'#level-minutes':79,'#turn-seconds':47,'#runout-seconds':1.25,'#showdown-seconds':0,'#blind-announcement-seconds':0,'#elimination-announcement-seconds':0,...extra})) await input(one,s,v);
-    await submit(one,'#create-form');
-    await wait(one,n=>document.querySelector('#view-table-name')?.textContent===n,name);
+    await click(one,'#create-game-tab');
+    await wait(one,()=>document.querySelector('#table-settings-dialog')?.open);
+    const values = {'#settings-table-name':name,'#settings-level-minutes':79,'#settings-turn-seconds':47};
+    for (const [selector,value] of Object.entries(extra)) {
+      if (!['#max-seats','#payout'].includes(selector)) values[selector.replace('#','#settings-')] = value;
+    }
+    for (const [selector,value] of Object.entries(values)) await input(one,selector,value);
+    await input(one,'#payout-place-count',2);
+    await input(one,'#payout-sliders input[type=range]',extra['#payout'] ? Number(extra['#payout'].split(',')[0]) : 70);
+    await click(one,'#save-settings-button');
+    await wait(one,n=>document.querySelector('#view-table-name')?.textContent===n &&
+      document.querySelector('#save-settings-button').disabled,name);
+    await ev(one,()=>{const dialog=document.querySelector('#table-settings-dialog');if(dialog?.open)dialog.close();});
     await wait(two,n=>{const e=[...document.querySelectorAll('[data-open-table]')].find(e=>e.innerText.includes(n)); if(!e) return false; e.click(); return true;},name);
     await click(two,'[data-take-seat="1"]');
-    for (const [s,v] of [['#settings-level-minutes','79'],['#settings-turn-seconds', String(extra['#turn-seconds'] ?? 47)],['#settings-runout-seconds','1.25'],['#settings-showdown-seconds','0'],['#settings-blind-announcement-seconds','0'],['#settings-elimination-announcement-seconds','0']]) {
-      if(await ev(one,s=>document.querySelector(s).value,s)!==v) throw Error('Create value not restored: '+s);
-    }
-    await input(one,'#settings-runout-seconds','1.75'); await input(one,'#settings-blind-announcement-seconds','0'); await input(one,'#settings-elimination-announcement-seconds','0'); await click(one,'#save-settings-button');
-    await wait(one,()=>!document.querySelector('#start-button').disabled && document.querySelector('#settings-runout-seconds').value==='1.75');
+    await wait(one,()=>!document.querySelector('#start-button').disabled);
     await click(one,'#start-button');
   }
   async function actor() {
@@ -391,9 +416,9 @@ export default async function game([one, two], sleep, roomPassword) {
   await assertServerAllIn(bigBlind,call.table,'Immediate all-in call');
   for(const p of pages) await assertNoRetiredControls(p);
   await waitForHandEnd(short,shortHand);
-  await click(one,'#logout-button'); await wait(one,visible,'#login-name');
+  await click(one,'#table-logout-button'); await wait(one,visible,'#login-name');
   await input(one,'#login-name','Robin'); await input(one,'#login-password','poker-test-password'); await submit(one,'#login-form');
-  await wait(one,visible,'#history-button'); await click(one,'#history-button');
+  await wait(one,visible,'#app-panel'); await click(one,'#history-button');
   await wait(one,n=>document.querySelector('#history-content').innerText.includes(n),name);
   console.log('Account sign-in restored private tournament history.');
   console.log('Short-stack all-in raise and call each made exactly one immediate request.');

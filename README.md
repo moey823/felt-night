@@ -6,7 +6,13 @@ Felt Night is a self-hosted, play-chip No-Limit Texas Hold’em room for private
 
 Players create private accounts, return to a seat after reconnecting, and review tournament results and hand histories. Hosts can run 2–9 player freezeouts with configurable stacks, blinds, blind levels, clocks, buy-ins, and payouts. The server validates actions and keeps the deck and opponents’ hidden cards private. Play credits have no cash value; there are no deposits, cash-outs, prizes, or rebuys.
 
-Players join at an empty seat on the felt; hosts can add bots there too. Each table has live chat for players and spectators, with the three newest messages and an Enter-to-send input always visible above the table. Sit-out persists until switched off and immediately checks when free or folds facing a bet. Blind levels change only between hands. Hosts can pause and resume play, freezing game clocks, and adjust the shot clock, blind-level duration, all-in pacing, showdown result holds, and announcement delays while paused. Buy-ins, payouts, starting stacks, and blind amounts stay locked after play begins. Showdown results, elimination announcements, and blind-level announcements each have a configurable hold from 0 to 60 seconds (5 seconds by default), available when creating the table or changing its pacing. Results show each exposed hand’s rank and the pot winners; elimination messages finish before the next blind-level message begins. Players can save their own preflop and postflop bet presets and use the mouse wheel over the felt or betting controls to adjust the raise amount without focusing the slider. The completed table keeps the final board and participants visible, and the last-hand viewer steps through each street and shows the winners and exposed hand ranks. Chip counts can toggle to big blinds, always shown to one decimal place.
+New game opens a lobby and its single host setup dialog. Hosts choose the game name, buy-in, starting stack, blinds, blind-level duration, shot clock, and payout shares. Payout sliders keep the total at 100%; the occupied seats determine the field size when the host starts. Hosts can pause/resume play and end a game with two confirmations. Ending early preserves the game record without declaring a winner or inventing a payout.
+
+The table uses a dedicated gameplay view with a seat ring, centered board and pot, and betting controls below the felt. Chat, history, replay, and host controls are available from the table menu. The settings dialog keeps its close control reachable on mobile. Fullscreen and a separate table window are optional, and the mobile web app can be installed in standalone mode. Live game requests always require the server; the app does not offer offline play.
+
+A separate, explicitly enabled room admin configures shared preflop/postflop bet presets, all-in street delay, blind/elimination announcements, and showdown result holds. Admin changes apply to future pacing transitions without resetting an active deadline. Only admin can add or remove test bots. The admin account cannot create a game, take a seat, or submit poker actions. Normal players retain their personal accounts, reconnectable seats, and private tournament histories.
+
+Sit-out persists until switched off and immediately checks when free or folds facing a bet. Blind levels change only between hands. Buy-ins, payouts, starting stacks, and blind amounts stay locked after play begins. The completed table keeps the final board and participants visible; the last-hand viewer steps through each street and shows winners and exposed hand ranks. Chip counts can toggle to big blinds.
 
 Bots use an adapted [PokerForBots complex strategy](https://github.com/lox/pokerforbots/tree/main/sdk/bots/complex): position ranges, hand and draw categories, pot odds, and stack-aware sizing. Decisions use only the bot’s own cards and public information; no service or model calls are involved. See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution.
 
@@ -42,9 +48,23 @@ Normal startup requires exactly one of `FELT_NIGHT_ROOM_PASSWORD_FILE` or `FELT_
 
 Changing the room invite and restarting invalidates existing sessions. Player accounts and tournament history remain in the database. For a public HTTPS setup, see the [Linux systemd and Caddy examples](deploy/README.md). Tailscale is optional; the app has no Tailscale runtime dependency.
 
+## Private-room admin
+
+Set `FELT_NIGHT_ADMIN_USERNAME=admin` only behind a trusted private network such as tailnet-only Tailscale Serve. Sign in as `admin` with an empty password. This is a configuration account, not a player account. Leave the variable unset on a public deployment; do not enable it through Tailscale Funnel. An existing player account with the configured admin username causes startup to fail rather than changing that player's permissions.
+
+Global configuration is stored with the room database. Normal players cannot change it. Removing the environment setting disables admin access and revokes its sessions.
+
 ## Tests
 
-Run the Python suite with `python3 -m unittest discover -s tests`. With a Chromium headless shell installed, run `BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs`; append `crowded` to check the active player and spectator layouts, `ux` for gameplay/replay/blind-boundary checks, `interactions` for felt seating, live chat, and sit-out, or `adjustments` for personal presets, mouse-wheel sizing, compact chat, pause controls, and configurable announcement delays. Use `presentation` for top-chat Enter sending, focus-free felt-wheel sizing, sequential result announcements, and showdown/replay hand ranks. The suites use isolated test data and a dummy invite.
+Run `python3 -m unittest discover -s tests` for the engine, authentication, permissions, persistence, and HTTP contracts. Browser tests use isolated data, a dummy invite, and a test-only enabled admin:
+
+```sh
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs flow
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs layout
+```
+
+Set `QA_SCREEN_DIR` to a directory on the development machine to retain screenshots. The default suite plays real hands and checks action submission, reconnects, and history. The flow suite covers host setup, payouts, admin separation, mobile dialogs, and ending a game. The layout suite checks crowded tables across screen sizes. See [the design and verification priorities](docs/ux-design.md).
 
 ## License
 

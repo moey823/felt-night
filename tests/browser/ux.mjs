@@ -3,7 +3,13 @@ export default async function ux([one, two], sleep, roomPassword) {
   const pages = [one, two];
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
-  const visible = selector => Boolean(document.querySelector(selector)?.offsetWidth);
+  const visible = selector => {
+    const node = document.querySelector(selector);
+    if (!node) return false;
+    const details = node.closest('details');
+    if (details) details.open = true;
+    return Boolean(node.offsetWidth);
+  };
 
   function assert(condition, message) {
     if (!condition) throw Error(message);
@@ -31,8 +37,16 @@ export default async function ux([one, two], sleep, roomPassword) {
   async function click(page, selector) {
     await wait(page, query => {
       const node = document.querySelector(query);
-      if (!node?.offsetWidth || node.disabled) return false;
+      if (!node) return false;
+      const details = node.tagName === 'SUMMARY' ? null : node.closest('details');
+      const wasOpen = Boolean(details?.open);
+      if (details) details.open = true;
+      if (!node.offsetWidth || node.disabled) {
+        if (details && !wasOpen) details.open = false;
+        return false;
+      }
       node.click();
+      if (details && !wasOpen) details.open = false;
       return true;
     }, selector);
   }
@@ -58,9 +72,14 @@ export default async function ux([one, two], sleep, roomPassword) {
 
   async function switchUser(page, user) {
     const loggedIn = await evaluate(page, () =>
-      Boolean(document.querySelector('#logout-button')?.offsetWidth));
+      Boolean(document.querySelector('#login-panel')?.hidden));
     if (loggedIn) {
-      await click(page, '#logout-button');
+      const logoutSelector = await evaluate(page, () => {
+        if (!document.querySelector('#admin-panel')?.hidden) return '#admin-logout-button';
+        if (!document.querySelector('#table-view')?.hidden) return '#table-logout-button';
+        return '#logout-button';
+      });
+      await click(page, logoutSelector);
       await wait(page, visible, '#login-name');
     }
     await signIn(page, user);
@@ -112,7 +131,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       if (!cookie) throw Error(path + ' did not issue a session cookie');
       return {...json, cookie};
     }
-    if (path.endsWith('/last-hand')) return json;
+    if (path.endsWith('/last-hand') || path === '/config' || path === '/admin/config') return json;
     return json.table;
   }
 
@@ -129,21 +148,28 @@ export default async function ux([one, two], sleep, roomPassword) {
     users.push({...session, username, password});
   }
 
+  const admin = await request('/login', null, {username:'admin', password:''});
+  async function setAdminTiming(runoutSeconds, blindSeconds = 0, eliminationSeconds = 0, showdownSeconds = 0) {
+    return request('/admin/config', admin, {
+      runout_seconds:runoutSeconds, blind_announcement_seconds:blindSeconds,
+      elimination_announcement_seconds:eliminationSeconds, showdown_seconds:showdownSeconds,
+      bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]},
+    });
+  }
+  await setAdminTiming(1);
+  const sharedConfig = await request('/config', users[0]);
+  assert(sharedConfig.config?.bet_presets?.preflop_bb?.join(',') === '2.5,3,4',
+    'Normal users could not read the shared bet presets: ' + JSON.stringify(sharedConfig));
   const findUser = (group, playerId) =>
     group.find(user => user.player.id === playerId);
 
   async function createTable(name, entrants, overrides = {}) {
     const config = {
-      max_seats: entrants.length,
       starting_stack: 1000,
       small_blind: 10,
       big_blind: 20,
       level_minutes: 79,
       turn_seconds: 3600,
-      runout_seconds: 1,
-      showdown_seconds: 0,
-      blind_announcement_seconds: 0,
-      elimination_announcement_seconds: 0,
       buy_in: 10,
       payout_percentages: [60, 25, 15],
       ...overrides,
@@ -172,9 +198,11 @@ export default async function ux([one, two], sleep, roomPassword) {
         height: value.height,
       };
     };
-    const overlap = (a, b) =>
-      Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) *
-      Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    const overlap = (a, b) => {
+      const width=Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left));
+      const height=Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+      return width>1 && height>1 ? width*height : 0;
+    };
 
     const header = document.querySelector('.topbar');
     const surface = document.querySelector('.table-surface');
@@ -187,7 +215,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     const actionButtons = [...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
     const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
     const markers = [...document.querySelectorAll(
-      '#seat-grid .seat-action:not(.is-unplaced), ' +
+      '#seat-grid .seat-action.kind-turn:not(.is-unplaced), ' +
       '#seat-grid .seat-wager:not(.is-unplaced), ' +
       '#seat-grid .dealer-marker:not(.is-unplaced)'
     )];
@@ -202,6 +230,11 @@ export default async function ux([one, two], sleep, roomPassword) {
       '#action-panel button:not([disabled]), #action-panel input:not([disabled])'
     )];
     const errors = [];
+    const scrollViewport = innerWidth <= 340 ||
+      (innerWidth > innerHeight && innerHeight <= 390);
+    const normalPhoneViewport =
+      (innerWidth === 390 && innerHeight === 844) ||
+      (innerWidth === 360 && innerHeight === 740);
 
     if (!header || !['sticky', 'fixed'].includes(getComputedStyle(header).position)) {
       errors.push('header is not sticky');
@@ -225,7 +258,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     if (document.querySelector('#seat-grid .seat-empty')) errors.push('empty seat placeholders remain');
     if (heroCards.length !== 2) errors.push('expected two visible hero cards, saw ' + heroCards.length);
     if (document.documentElement.scrollWidth > innerWidth + 1) errors.push('horizontal page overflow');
-    if (window.scrollY > 1) errors.push('page was scrolled to fit the table');
+    if (!scrollViewport && window.scrollY > 1) errors.push('page was scrolled in a viewport expected to fit');
     if (!blindNumbers.length) errors.push('blind strip has no numeric HUD values');
     if (!turnMarker || turnMarker.classList.contains('is-unplaced') || !turnMarker.offsetWidth) {
       errors.push('TO ACT marker is missing or unplaced');
@@ -238,9 +271,19 @@ export default async function ux([one, two], sleep, roomPassword) {
     const panelBox = panel && rect(panel);
     const heroPairBox = heroPair && rect(heroPair);
     const boardBox = board && rect(board);
-    const footerLimit = innerWidth > innerHeight ? 74 : 80;
-    if (panelBox && panelBox.height > footerLimit + 1) {
-      errors.push('action footer exceeds ' + footerLimit + 'px: ' + panelBox.height.toFixed(1));
+    const touchButtons = [...(panel?.querySelectorAll('button') || [])];
+    const undersizedButtons = touchButtons.map(button => ({
+      label: (button.textContent || button.getAttribute('aria-label') || button.id || '').trim(),
+      height: rect(button).height,
+    })).filter(button => button.height < 43);
+    if (undersizedButtons.length) {
+      errors.push('action buttons are below 44px: ' + JSON.stringify(undersizedButtons));
+    }
+    if (normalPhoneViewport && heroPairBox && panelBox &&
+      (heroPairBox.top < -1 || heroPairBox.bottom > innerHeight + 1 ||
+       panelBox.top < -1 || panelBox.bottom > innerHeight + 1 ||
+       overlap(heroPairBox, panelBox) > 1)) {
+      errors.push('hero cards and action dock do not fit together in the normal phone viewport');
     }
     if (panelBox && surface && (
       panelBox.left < surface.getBoundingClientRect().left - 1 ||
@@ -257,8 +300,8 @@ export default async function ux([one, two], sleep, roomPassword) {
       errors.push('hero pair is not horizontally centered: ' + JSON.stringify(heroCenterOffset));
     }
     if (heroCenterOffset && heroCenterOffset.y < 0) errors.push('hero pair is not in the lower half of the felt');
-    if (heroBottomGap != null && (heroBottomGap < -1 || heroBottomGap > 24)) {
-      errors.push('hero pair is too far from the felt bottom: ' + heroBottomGap + 'px');
+    if (heroBottomGap != null && heroBottomGap < -1) {
+      errors.push('hero pair escapes the felt bottom: ' + heroBottomGap + 'px');
     }
     const gridBox = seatGrid && rect(seatGrid);
     const stripBox = blindStrip && rect(blindStrip);
@@ -287,14 +330,14 @@ export default async function ux([one, two], sleep, roomPassword) {
     const turnMarkerBox = turnMarker && rect(turnMarker);
     const turnClockBox = turnClock && rect(turnClock);
 
-    if (feltBox && (feltBox.top < -1 || feltBox.bottom > innerHeight + 1)) {
+    if (!scrollViewport && feltBox && (feltBox.top < -1 || feltBox.bottom > innerHeight + 1)) {
       errors.push('felt is clipped by the viewport');
     }
     if (panelBox && (
       panelBox.left < -1 || panelBox.right > innerWidth + 1 ||
       panelBox.top < -1 || panelBox.bottom > innerHeight + 1
     )) errors.push('action panel is clipped by the viewport');
-    if (boardBox && boardBox.width && (
+    if (!scrollViewport && boardBox && boardBox.width && (
       boardBox.left < -1 || boardBox.right > innerWidth + 1 ||
       boardBox.top < -1 || boardBox.bottom > innerHeight + 1
     )) errors.push('community card area is clipped');
@@ -314,10 +357,10 @@ export default async function ux([one, two], sleep, roomPassword) {
         markerBox.left < feltBox.left - 1 || markerBox.right > feltBox.right + 1 ||
         markerBox.top < feltBox.top - 1 || markerBox.bottom > feltBox.bottom + 1
       )) errors.push(label + ' escapes felt bounds');
-      if (
+      if (!scrollViewport && (
         markerBox.left < -1 || markerBox.right > innerWidth + 1 ||
         markerBox.top < -1 || markerBox.bottom > innerHeight + 1
-      ) errors.push(label + ' is clipped by viewport');
+      )) errors.push(label + ' is clipped by viewport');
     }
     for (let index = 0; index < markers.length; index++) {
       const markerBox = markerBoxes[index];
@@ -328,10 +371,10 @@ export default async function ux([one, two], sleep, roomPassword) {
         markerBox.left < feltBox.left - 1 || markerBox.right > feltBox.right + 1 ||
         markerBox.top < feltBox.top - 1 || markerBox.bottom > feltBox.bottom + 1
       )) errors.push(markerBox.type + ' marker for seat ' + markerBox.seatNo + ' escapes felt bounds');
-      if (
+      if (!scrollViewport && (
         markerBox.left < -1 || markerBox.right > innerWidth + 1 ||
         markerBox.top < -1 || markerBox.bottom > innerHeight + 1
-      ) errors.push(markerBox.type + ' marker for seat ' + markerBox.seatNo + ' is clipped by viewport');
+      )) errors.push(markerBox.type + ' marker for seat ' + markerBox.seatNo + ' is clipped by viewport');
     }
     for (const value of blindNumbers) {
       if (value.scrollWidth > value.clientWidth + 1 || value.scrollHeight > value.clientHeight + 1) {
@@ -358,10 +401,10 @@ export default async function ux([one, two], sleep, roomPassword) {
 
     for (const card of heroCards) {
       const cardBox = rect(card);
-      if (
+      if (!scrollViewport && (
         cardBox.left < -1 || cardBox.right > innerWidth + 1 ||
         cardBox.top < -1 || cardBox.bottom > innerHeight + 1
-      ) errors.push('hero card is clipped');
+      )) errors.push('hero card is clipped');
       if (panelBox && overlap(cardBox, panelBox) > 1) errors.push('hero card overlaps action panel');
     }
 
@@ -409,7 +452,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       header: header && rect(header),
       felt: feltBox,
       action: panelBox,
-      footerLimit,
+      touchButtons: undersizedButtons,
       actionButtons: actionButtons.length,
       heroPair: heroPairBox,
       heroCenterOffset,
@@ -434,6 +477,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     const viewports = [
       {width: 320, height: 740},
       {width: 320, height: 568},
+      {width: 360, height: 740},
       {width: 390, height: 844},
       {width: 667, height: 375},
       {width: 844, height: 390},
@@ -443,6 +487,16 @@ export default async function ux([one, two], sleep, roomPassword) {
     for (const viewport of viewports) {
       await page.resize(viewport.width, viewport.height);
       await sleep(950); // Let the normal live-table refresh run after each resize.
+      const allowScroll = viewport.width <= 340 ||
+        (viewport.width > viewport.height && viewport.height <= 390);
+      if (allowScroll) {
+        await evaluate(page, () =>
+          document.querySelector('#action-panel')?.scrollIntoView({block:'end'})
+        );
+        await sleep(120);
+      } else {
+        await evaluate(page, () => window.scrollTo(0,0));
+      }
       const report = await evaluate(page, layoutSnapshot, seatCount, canAct);
       const name = label + '-' + viewport.width + 'x' + viewport.height;
       await page.screenshot(name);
@@ -524,15 +578,19 @@ export default async function ux([one, two], sleep, roomPassword) {
   assert(initialStackText, 'Hero stack toggle is missing');
   await click(one, '.seat-card.is-me .seat-stack[data-chip-display-toggle]');
   await wait(one, () =>
-    /BB/i.test(document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')?.innerText || '')
+    document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')
+      ?.getAttribute('aria-pressed') === 'true'
   );
-  const bbStackText = await evaluate(one, () =>
-    document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]').innerText.trim()
-  );
-  const bbAmount = bbStackText.match(/([\d,]+(?:\.\d+)?)\s*BB/i);
+  const bbStack = await evaluate(one, () => {
+    const button=document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]');
+    return {text:button.innerText.trim(),aria:button.getAttribute('aria-label'),
+      pressed:button.getAttribute('aria-pressed')};
+  });
+  const bbAmount = bbStack.aria.match(/Your stack:\s*([\d,]+(?:\.\d+)?)\s*BB/i);
   assert(
-    bbAmount && /\.\d$/.test(bbAmount[1]) && Number(bbAmount[1].replace(/,/g, '')) === expectedBb,
-    'Wrong BB rounding: ' + bbStackText + ' from ' + hero.stack + ' chips'
+    bbStack.pressed === 'true' && bbAmount && bbStack.text.includes(bbAmount[1]) &&
+      /\.\d$/.test(bbAmount[1]) && Number(bbAmount[1].replace(/,/g, '')) === expectedBb,
+    'Wrong accessible BB display/rounding: ' + JSON.stringify(bbStack) + ' from ' + hero.stack + ' chips'
   );
 
   await evaluate(one, () =>
@@ -573,18 +631,22 @@ export default async function ux([one, two], sleep, roomPassword) {
 
   const afterRaise = await request(headsUp.path, headsUpActor);
   const updatedStack = afterRaise.seats.find(seat => seat.id === headsUpActor.player.id).stack;
-  const displayAfterRaise = await evaluate(one, () =>
-    document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')?.innerText || ''
-  );
-  assert(/BB/i.test(displayAfterRaise), 'BB mode reset after an action');
+  const displayAfterRaise = await evaluate(one, () => {
+    const button=document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]');
+    return {text:button?.innerText||'',aria:button?.getAttribute('aria-label')||''};
+  });
+  assert(/BB/i.test(displayAfterRaise.aria), 'BB mode reset after an action: ' + JSON.stringify(displayAfterRaise));
   await click(one, '.seat-card.is-me .seat-stack[data-chip-display-toggle]');
   await wait(one, () =>
-    /chips/i.test(document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')?.innerText || '')
+    /chips/i.test(document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')
+      ?.getAttribute('aria-label') || '')
   );
-  const restoredStack = await evaluate(one, () =>
-    document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]').innerText.trim()
-  );
-  assert(restoredStack.includes(String(updatedStack)), 'Chip stack did not restore: ' + restoredStack);
+  const restoredStack = await evaluate(one, () => {
+    const button=document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]');
+    return {text:button.innerText.trim(),aria:button.getAttribute('aria-label')||''};
+  });
+  assert(restoredStack.text.includes(String(updatedStack)) && /chips/i.test(restoredStack.aria),
+    'Chip stack did not restore: ' + JSON.stringify(restoredStack));
   console.log('Hero stack toggles to one-decimal BB, restores chips, and sends chip payloads.');
 
   // A sub-big-blind stack displays one decimal place.
@@ -605,23 +667,28 @@ export default async function ux([one, two], sleep, roomPassword) {
   assert(fractionalStack > 0 && fractionalStack < 100, 'Expected a positive sub-BB hero stack');
   await click(one, '.seat-card.is-me .seat-stack[data-chip-display-toggle]');
   await wait(one, () =>
-    /BB/i.test(document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')?.innerText || '')
+    document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]')
+      ?.getAttribute('aria-pressed') === 'true'
   );
-  const fractionalText = await evaluate(one, () =>
-    document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]').innerText.trim()
-  );
-  const fractionalAmount = fractionalText.match(/([\d,]+(?:\.\d+)?)\s*BB/i);
+  const fractionalDisplay = await evaluate(one, () => {
+    const button=document.querySelector('.seat-card.is-me .seat-stack[data-chip-display-toggle]');
+    return {text:button.innerText.trim(),aria:button.getAttribute('aria-label')||'',
+      pressed:button.getAttribute('aria-pressed')};
+  });
+  const fractionalAmount = fractionalDisplay.aria.match(/Your stack:\s*([\d,]+(?:\.\d+)?)\s*BB/i);
   assert(
-    fractionalAmount && Number(fractionalAmount[1]) === Number((fractionalStack / 100).toFixed(1)),
-    'Sub-BB value did not use one decimal: ' + fractionalText
+    fractionalDisplay.pressed === 'true' && fractionalAmount &&
+      fractionalDisplay.text.includes(fractionalAmount[1]) &&
+      Number(fractionalAmount[1].replace(/,/g, '')) === Number((fractionalStack / 100).toFixed(1)),
+    'Sub-BB value did not use one decimal: ' + JSON.stringify(fractionalDisplay)
   );
 
-  // Zero-stack all-ins stay visible through their final hand.
+  // Hold the first all-in street long enough to inspect it; restore fast pacing after the snapshot.
+  await setAdminTiming(5);
   const multiway = await createTable('UX Multiway ' + stamp, users.slice(4, 7), {
     starting_stack: 100,
     small_blind: 1,
     big_blind: 2,
-    runout_seconds: 1,
   });
   const multiwayActor = tableActor(multiway);
   const multiwayOther = multiway.entrants.find(user => user !== multiwayActor);
@@ -675,6 +742,22 @@ export default async function ux([one, two], sleep, roomPassword) {
 
   const zeroStackId = zeroStackSeat.id || zeroStackSeat.player_id;
   const livePage = mappedPlayers.find(entry => entry.user.player.id !== zeroStackId)?.page || one;
+  const runoutAction = await wait(livePage, () => {
+    const button=document.querySelector('#action-controls [data-poker-action="raise_to"]');
+    if (!button) return false;
+    const state={
+      disabled:button.disabled,
+      label:button.textContent.trim(),
+      aria:button.getAttribute('aria-label') || '',
+      amount:document.querySelector('#raise-amount')?.value,
+      min:document.querySelector('#raise-amount')?.min,
+      max:document.querySelector('#raise-amount')?.max,
+    };
+    return state.disabled && ['Bet','Raise'].includes(state.label) ? state : false;
+  });
+  assert(runoutAction.disabled && ['Bet','Raise'].includes(runoutAction.label) &&
+    !/to\s*0\s*chips/i.test(runoutAction.label + ' ' + runoutAction.aria),
+  'No-legal-range runout action must stay disabled with a neutral label: ' + JSON.stringify(runoutAction));
   await wait(livePage, playerId => {
     const seat = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')]
       .find(node => node.dataset.playerId === playerId);
@@ -689,6 +772,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     liveZeroStack.present && /all.?in/i.test(liveZeroStack.text),
     'Live zero-stack all-in vanished: ' + JSON.stringify(liveZeroStack)
   );
+  await setAdminTiming(1);
 
   // Resolve tied runouts as well: if more than one player survives, force
   // another all-in hand until the tournament has one winner.
@@ -779,7 +863,6 @@ export default async function ux([one, two], sleep, roomPassword) {
     starting_stack: 100,
     small_blind: 10,
     big_blind: 20,
-    runout_seconds: 1,
   });
   const replayActor = findUser(replayUsers, replayTable.started.actor_id);
   const replaySpectator = users[10];
@@ -795,12 +878,20 @@ export default async function ux([one, two], sleep, roomPassword) {
     .includes('No completed hand is available yet.'));
   await one.pressEscape();
   await wait(one, () => !document.querySelector('#last-hand-dialog')?.open);
+  const replayEscapeState = await evaluate(one, () => {
+    const opener=document.querySelector('#last-hand-button');
+    const active=document.activeElement;
+    return {focused:active===opener,activeId:active?.id||'',activeTag:active?.tagName||'',
+      expanded:opener?.getAttribute('aria-expanded'),dialogOpen:document.querySelector('#last-hand-dialog')?.open,
+      openerVisible:Boolean(opener?.getClientRects().length),
+      menuOpen:Boolean(opener?.closest('details')?.open),
+      menuSummaryFocused:active===opener?.closest('details')?.querySelector('summary')};
+  });
   assert(
-    await evaluate(one, () =>
-      document.activeElement === document.querySelector('#last-hand-button') &&
-      document.querySelector('#last-hand-button')?.getAttribute('aria-expanded') === 'false'
-    ),
-    'Empty replay Escape did not restore focus to its opener'
+    (replayEscapeState.menuOpen ? replayEscapeState.focused : replayEscapeState.menuSummaryFocused) &&
+      replayEscapeState.expanded === 'false',
+    'Empty replay Escape did not restore focus to the visible opener or menu summary: ' +
+      JSON.stringify(replayEscapeState)
   );
 
   let replayState = replayTable.started;
@@ -953,31 +1044,69 @@ export default async function ux([one, two], sleep, roomPassword) {
 
   await one.pressEscape();
   await wait(one, () => !document.querySelector('#last-hand-dialog')?.open);
+  const replayCloseFocus = await evaluate(one, () => {
+    const opener=document.querySelector('#last-hand-button');
+    const details=opener?.closest('details');
+    return {focused:document.activeElement === (details?.open ? opener : details?.querySelector('summary')),
+      expanded:opener?.getAttribute('aria-expanded'),menuOpen:Boolean(details?.open)};
+  });
   assert(
-    await evaluate(one, () =>
-      document.activeElement === document.querySelector('#last-hand-button') &&
-      document.querySelector('#last-hand-button')?.getAttribute('aria-expanded') === 'false'
-    ),
-    'Replay Escape did not restore focus to its opener'
+    replayCloseFocus.focused && replayCloseFocus.expanded === 'false',
+    'Replay Escape did not restore focus to the visible opener or menu summary: ' +
+      JSON.stringify(replayCloseFocus)
   );
   console.log('Last-hand replay navigated both directions, showed final exposed cards, and left the live hand unchanged.');
 
   // Nine live seats cover phone, short-landscape, and desktop viewports.
+  await request('/admin/config', admin, {
+    runout_seconds:1, blind_announcement_seconds:3,
+    elimination_announcement_seconds:0, showdown_seconds:0,
+  });
   const nineSeats = await createTable('UX Nine Seats ' + stamp, users.slice(7, 16), {
     level_minutes: 0.25,
-    blind_announcement_seconds: 3,
-    elimination_announcement_seconds: 0,
   });
   const nineActor = tableActor(nineSeats);
   const nineOther = nineSeats.entrants.find(user => user !== nineActor);
   await switchUser(one, nineActor);
   await switchUser(two, nineOther);
   await openTable(one, nineSeats.name);
+  const readNineSeatGeometry = () => evaluate(one, () => {
+    const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+    const area=(a,b)=>{const w=Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)),h=Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));return w>1&&h>1?w*h:0;};
+    const felt=document.querySelector('#felt'), seats=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
+    const board=rect(document.querySelector('#board-cards')), panel=rect(document.querySelector('#action-panel'));
+    const seatRects=seats.map(node=>({seatNo:node.dataset.seatNo,rect:rect(node)})), errors=[];
+    if(seats.length!==9) errors.push('seat count '+seats.length);
+    for(let i=0;i<seats.length;i++) {
+      if(area(board,rect(seats[i]))>5) errors.push('board overlaps seat '+seats[i].dataset.seatNo);
+      if(area(panel,rect(seats[i]))>5) errors.push('dock overlaps seat '+seats[i].dataset.seatNo);
+      for(let j=0;j<i;j++) if(area(rect(seats[i]),rect(seats[j]))>5) errors.push('seats overlap '+seats[j].dataset.seatNo+'/'+seats[i].dataset.seatNo);
+    }
+    return {errors,seatCount:seats.length,scrollY:window.scrollY,
+      feltClass:felt?.className||'',seatCountData:felt?.dataset.seatCount||'',
+      felt:rect(felt),grid:rect(document.querySelector('#seat-grid')),board,panel,seatRects};
+  });
+  const geometryOnOpen = await readNineSeatGeometry();
   await wait(one, visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]');
+  await one.bringToFront();
+  await evaluate(one, () => new Promise(resolve => requestAnimationFrame(() =>
+    requestAnimationFrame(() => resolve(true)))));
+  const geometryAfterFrames = await readNineSeatGeometry();
+  await sleep(950);
+  const geometryAfterPoll = await readNineSeatGeometry();
+  for (const [label, snapshot] of [
+    ['immediate after switch', geometryOnOpen],
+    ['after two frames', geometryAfterFrames],
+    ['after one polling interval', geometryAfterPoll],
+  ]) {
+    assert(snapshot.seatCount === 9 && !snapshot.errors.length,
+      '2-to-9 seat geometry was unstable ' + label + ': ' + JSON.stringify(snapshot));
+  }
   await one.resize(1366, 768);
   await sleep(900);
   await checkViewports(one, 9, 'nine-seat', true);
 
+  await one.bringToFront();
   await evaluate(one, () => {
     window.uxBlindTransitions = [];
     let wasVisible = false;

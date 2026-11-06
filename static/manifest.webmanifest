@@ -1,0 +1,32 @@
+{
+  "name": "Felt Night \u2014 Private Play-Money Poker",
+  "short_name": "Felt Night",
+  "id": "/poker/",
+  "start_url": "/poker/",
+  "scope": "/poker/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#111c19",
+  "theme_color": "#111c19",
+  "description": "A private poker table for play chips.",
+  "icons": [
+    {
+      "src": "/poker/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/poker/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/poker/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

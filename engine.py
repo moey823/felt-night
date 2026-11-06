@@ -562,9 +562,8 @@ def update_runtime_settings(
     if not state.get("paused", False):
         raise GameError("table_not_paused", "Pause the tournament before changing runtime settings.", 409)
     allowed = {
-        "turn_seconds", "level_minutes", "runout_seconds",
-        "blind_announcement_seconds", "elimination_announcement_seconds",
-        "showdown_seconds",
+        # Timing shared across all tables is controlled by the room admin.
+        "turn_seconds", "level_minutes",
     }
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise GameError("invalid_config", "Only pacing settings can change during a tournament.")
@@ -693,11 +692,13 @@ def update_settings(
         raise GameError("host_only", "Only the table host can update settings.", 403)
     if state["status"] != "lobby":
         raise GameError("table_started", "Table settings cannot change after the tournament starts.", 409)
+    allowed = {
+        "starting_stack", "small_blind", "big_blind", "level_minutes",
+        "turn_seconds", "buy_in", "payout_percentages",
+    }
+    if not isinstance(settings, dict) or set(settings) - allowed:
+        raise GameError("invalid_config", "Only host-controlled table settings can change.")
     updated = _validated_config(settings, state["config"])
-    if len(state["seats"]) > updated["max_seats"] or any(
-        seat["seat_no"] >= updated["max_seats"] for seat in state["seats"]
-    ):
-        raise GameError("seats_occupied", "Table capacity cannot be reduced below an occupied seat.", 409)
     table_name = _valid_table_name(name) if name is not None else state["name"]
     timestamp = _now(now)
     state["config"] = updated
@@ -715,10 +716,10 @@ def update_settings(
     return state
 
 
-def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None) -> Dict[str, Any]:
-    """Add an automated player at an open seat in the lobby."""
-    if actor_id != state["host_id"]:
-        raise GameError("host_only", "Only the table host can add bots.", 403)
+def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None, *, is_admin: bool = False) -> Dict[str, Any]:
+    """Add an automated player at an open seat in the lobby as a room admin."""
+    if not is_admin:
+        raise GameError("admin_required", "Only a room admin can add testing bots.", 403)
     if state["status"] != "lobby":
         raise GameError("table_started", "Bots can only be added before the tournament starts.", 409)
     requested = _validate_seat_no(seat_no, state["config"]["max_seats"])
@@ -740,10 +741,10 @@ def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[fl
     return state
 
 
-def remove_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None) -> Dict[str, Any]:
-    """Remove a bot from a lobby seat as its host."""
-    if actor_id != state["host_id"]:
-        raise GameError("host_only", "Only the table host can remove bots.", 403)
+def remove_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None, *, is_admin: bool = False) -> Dict[str, Any]:
+    """Remove a bot from a lobby seat as a room admin."""
+    if not is_admin:
+        raise GameError("admin_required", "Only a room admin can remove testing bots.", 403)
     if state["status"] != "lobby":
         raise GameError("table_started", "Bots cannot be removed after the tournament starts.", 409)
     requested = _validate_seat_no(seat_no, state["config"]["max_seats"])
@@ -818,6 +819,62 @@ def cancel(
     return state
 
 
+def end_tournament(
+    state: Dict[str, Any],
+    actor_id: str,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """End a lobby or abort a running tournament without inventing awards."""
+    if actor_id != state["host_id"]:
+        raise GameError("host_only", "Only the table host can end this tournament.", 403)
+    status = state.get("status")
+    if status not in ("lobby", "playing"):
+        raise GameError("table_not_active", "Only an active lobby or tournament can be ended.", 409)
+
+    timestamp = _now(now)
+    state["last_activity_at"] = timestamp
+    if status == "lobby":
+        state["status"] = "cancelled"
+        state["cancelled_at"] = timestamp
+        state["cancellation_reason"] = "host_end"
+        _log(state, "Lobby cancelled by the host.", timestamp)
+    else:
+        state["status"] = "ended"
+        state["ended_at"] = timestamp
+        state["end_reason"] = "host_aborted"
+        state["paused"] = False
+        state["paused_at"] = None
+        state["blind_announcement"] = None
+        state["elimination_announcement"] = None
+        state["turn_version"] += 1
+        hand = state.get("hand")
+        if isinstance(hand, dict):
+            hand["to_act"] = None
+            for key in (
+                "turn_deadline", "bot_action_at", "runout_at", "hand_complete_at",
+                "next_hand_at", "showdown_until", "presentation_until",
+                "blind_transition_until",
+            ):
+                hand[key] = None
+        _log(state, "Tournament ended by the host; no additional payout was awarded.", timestamp)
+    _bump(state)
+    return state
+
+
+def _normalize_payout_percentages(percentages: Sequence[int], entrants: int) -> List[int]:
+    """Trim unreachable places and normalize the paid places to exactly 100%."""
+    weights = list(percentages[:min(entrants, len(percentages))])
+    total = sum(weights)
+    if total <= 0:
+        return [100] + [0] * (len(weights) - 1)
+    shares = [(weight * 100) // total for weight in weights]
+    remainders = [(weight * 100) % total for weight in weights]
+    left = 100 - sum(shares)
+    for index in sorted(range(len(weights)), key=lambda slot: (-remainders[slot], slot))[:left]:
+        shares[index] += 1
+    return shares
+
+
 def start(
     state: Dict[str, Any],
     actor_id: str,
@@ -835,6 +892,10 @@ def start(
     # Normalize lobbies created before newer settings were introduced.
     state["config"] = _validated_config(state.get("config", {}))
     entrants = len(state["seats"])
+    state["config"]["max_seats"] = entrants
+    state["config"]["payout_percentages"] = _normalize_payout_percentages(
+        state["config"]["payout_percentages"], entrants,
+    )
     state["prize"] = {
         "buy_in": state["config"]["buy_in"],
         "entrants": entrants,
@@ -854,15 +915,12 @@ def start(
 
 
 def _randomize_starting_seats(state: Dict[str, Any]) -> None:
-    """Deal entrants around the configured ring with a randomized offset."""
+    """Shuffle entrants into a compact ring sized to the field at start."""
     seats = list(state["seats"])
     capacity = state["config"]["max_seats"]
     random.SystemRandom().shuffle(seats)
     offset = random.SystemRandom().randrange(capacity)
-    positions = [
-        (offset + (index * capacity) // len(seats)) % capacity
-        for index in range(len(seats))
-    ]
+    positions = [(offset + index) % capacity for index in range(len(seats))]
     for seat_no, seat in zip(positions, seats):
         seat["seat_no"] = seat_no
     state["seats"] = sorted(seats, key=lambda seat: seat["seat_no"])

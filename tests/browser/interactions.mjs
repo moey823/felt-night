@@ -7,7 +7,15 @@ export default async function interactions([one,two], sleep, roomPassword) {
     throw Error('Timed out '+fn+' '+await evaluate(page,()=>document.body.innerText.slice(-800)));
   }
   async function click(page,selector) {
-    await wait(page,q=>{const n=document.querySelector(q); if(!n?.offsetWidth||n.disabled)return false; n.click();return true},selector);
+    await wait(page,q=>{
+      const n=document.querySelector(q); if(!n)return false;
+      const details=n.tagName==='SUMMARY'?null:n.closest('details'), wasOpen=Boolean(details?.open);
+      if(details)details.open=true;
+      if(!n.offsetWidth||n.disabled){if(details&&!wasOpen)details.open=false;return false;}
+      n.click();
+      if(details&&!wasOpen)details.open=false;
+      return true;
+    },selector);
   }
   async function input(page,selector,value) {
     await evaluate(page,(q,v)=>{const n=document.querySelector(q);n.value=v;n.dispatchEvent(new Event('input',{bubbles:true}));},selector,value);
@@ -20,9 +28,14 @@ export default async function interactions([one,two], sleep, roomPassword) {
     const r=await fetch(api+path,{method:method||(data===undefined?'GET':'POST'),headers,body:data===undefined?undefined:JSON.stringify(data)});
     const json=await r.json();
     if(!r.ok)throw Error(path+' '+JSON.stringify(json));
-    if(path==='/register')return {...json,cookie:r.headers.get('set-cookie').split(';')[0]};
+    if(path==='/register'||path==='/login')return {...json,cookie:r.headers.get('set-cookie').split(';')[0]};
     return json;
   }
+  const admin=await request('/login',null,{username:'admin',password:''});
+  await request('/admin/config',admin,{
+    runout_seconds:1,blind_announcement_seconds:0,elimination_announcement_seconds:0,
+    showdown_seconds:0,bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]}
+  });
   const stamp=Date.now().toString(36), users=[];
   for(let i=0;i<3;i++) {
     const username=('Chat'+stamp+i).slice(0,24),password='Felt_'+stamp+'_'+i+'_Test';
@@ -34,7 +47,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     await evaluate(page,()=>document.querySelector('#login-form').requestSubmit());
     await wait(page,()=>document.querySelector('#app-panel')?.offsetWidth);
   }
-  const config={name:'Table interactions '+stamp,max_seats:3,starting_stack:1000,small_blind:10,big_blind:20,level_minutes:79,turn_seconds:3600,runout_seconds:1,showdown_seconds:0,blind_announcement_seconds:0,elimination_announcement_seconds:0};
+  const config={name:'Table interactions '+stamp,starting_stack:1000,small_blind:10,big_blind:20,level_minutes:79,turn_seconds:3600};
   const {table}=await request('/tables',users[0],config),path='/tables/'+table.id;
   await Promise.all([signIn(one,users[0]),signIn(two,users[1])]);
   async function open(page,name) {
@@ -49,13 +62,18 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await wait(two,()=>document.querySelector('#seat-grid .seat-card.is-me')?.offsetWidth);
   assert(await evaluate(two,()=>![...document.querySelectorAll('#seat-grid .seat-card')].some(n=>/#\d/.test(n.innerText))),'Seat number remains visible');
   await wait(one,()=>document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length===2);
-  const botSelector='#seat-grid [data-add-bot-seat]';
-  await click(one,botSelector);
-  await wait(one,()=>document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length===3);
-  const lobby=(await request(path,users[0])).table;
-  assert(lobby.seats.some(s=>s.is_bot),'Table-seat Add bot did not add a bot');
-  console.log('Phone user seated directly on felt; host added a bot at an empty seat.');
-  await request(path+'/bots/'+lobby.seats.find(s=>s.is_bot).seat_no,users[0],undefined,'DELETE');
+  let hostBotRejected=false;
+  try { await request(path+'/bots',users[0],{seat_no:2}); }
+  catch(error) { hostBotRejected=String(error).includes('admin_required'); }
+  assert(hostBotRejected,'A normal host account could add a testing bot.');
+  await request(path+'/bots',admin,{seat_no:2});
+  const adminBotTable=(await request(path,admin)).table;
+  const bot=adminBotTable.seats.find(seat=>seat.is_bot);
+  assert(bot,'Admin bot endpoint did not add a bot at an empty seat.');
+  await request(path+'/bots/'+bot.seat_no,admin,undefined,'DELETE');
+  const afterAdminRemove=(await request(path,users[0])).table;
+  assert(!afterAdminRemove.seats.some(seat=>seat.is_bot),'Admin bot removal did not clear the test bot.');
+  console.log('Phone user seated directly on felt; only admin can add/remove testing bots.');
 
   await click(one,'#chat-button');await click(two,'#chat-button');
   await wait(one,()=>document.querySelector('#chat-input')?.offsetWidth);

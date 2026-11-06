@@ -10,15 +10,30 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     }
     throw Error('Timed out: ' + fn + ' ' + args + ' | ' + await ev(page, () => document.body.innerText.slice(-1000)));
   }
-  const visible = selector => Boolean(document.querySelector(selector)?.offsetWidth);
+  const visible = selector => {
+    const node = document.querySelector(selector);
+    if (!node) return false;
+    const details = node.closest('details');
+    if (details) details.open = true;
+    return Boolean(node.offsetWidth);
+  };
   async function click(page, selector) {
-    await wait(page, (query) => {
+    await wait(page, query => {
       const node = document.querySelector(query);
-      if (!node?.offsetWidth || node.disabled) return false;
+      if (!node) return false;
+      const details = node.tagName === 'SUMMARY' ? null : node.closest('details');
+      const wasOpen = Boolean(details?.open);
+      if (details) details.open = true;
+      if (!node.offsetWidth || node.disabled) {
+        if (details && !wasOpen) details.open = false;
+        return false;
+      }
       node.click();
+      if (details && !wasOpen) details.open = false;
       return true;
     }, selector);
   }
+
   async function setInput(page, selector, value) {
     await ev(page, (query, next) => {
       const node = document.querySelector(query);
@@ -71,9 +86,18 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       if (!cookie) throw Error(path + ' did not issue a session cookie');
       return { ...json, cookie };
     }
+    if (path === '/config' || path === '/admin/config') return json;
     return json.table;
   };
 
+  const admin = await req('/login', null, {username:'admin', password:''});
+  await req('/admin/config', admin, {
+    runout_seconds: 40,
+    blind_announcement_seconds: 0,
+    elimination_announcement_seconds: 0,
+    showdown_seconds: 0,
+    bet_presets: {preflop_bb:[2.5,3,4], postflop_percent:[50,75,100]},
+  });
   const stamp = Date.now().toString(36);
   async function register(username, suffix) {
     const password = 'CrowdedPass_' + suffix + '_' + stamp;
@@ -90,16 +114,11 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   const tableName = 'Friday Night';
   const table = await req('/tables', host, {
     name: tableName,
-    max_seats: seatsCount,
     starting_stack: 100,
     small_blind: 10,
     big_blind: 20,
     level_minutes: 54,
     turn_seconds: 3600,
-    runout_seconds: 40,
-    showdown_seconds: 0,
-    blind_announcement_seconds: 0,
-    elimination_announcement_seconds: 0,
     buy_in: 10,
     payout_percentages: [60, 25, 15],
   });
@@ -127,6 +146,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     {width: 320, height: 740},
     {width: 320, height: 568},
     {width: 390, height: 844},
+    {width: 360, height: 740},
     {width: 667, height: 375},
     {width: 844, height: 390},
     {width: 1366, height: 768},
@@ -136,11 +156,14 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     await activePage.resize(width, height);
     await sleep(220);
     await ev(activePage, () => document.querySelector('#felt').scrollIntoView({ block: 'center' }));
+    if (width <= 340 || (width > height && height < 400)) {
+      await ev(activePage, () => document.querySelector('#action-panel').scrollIntoView({block:'end'}));
+    }
     await sleep(80);
     const metrics = await activePage.evaluate(`(() => {
       const expected = ${seatsCount};
       const rect = node => { const r=node.getBoundingClientRect(); return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}; };
-      const area = (a,b) => Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)) * Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+      const area = (a,b) => { const w=Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)),h=Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)); return w>1 && h>1 ? w*h : 0; };
       const surface=document.querySelector('.table-surface'), felt=document.querySelector('#felt');
       const boardNode=document.querySelector('#board-cards'), panel=document.querySelector('#action-panel');
       const heroPair=document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
@@ -169,13 +192,12 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
         }
       }
       const heroPairBox=heroPair?rect(heroPair):null;
-      const footerLimit=innerWidth>innerHeight?74:80;
-      if(panelBox && panelBox.height>footerLimit+1) errors.push('action footer exceeds '+footerLimit+'px: '+panelBox.height.toFixed(1));
+      const normalPhone=(innerWidth===390 && innerHeight===844) || (innerWidth===360 && innerHeight===740);
+      const feltBox=felt?rect(felt):null;
       if(panelBox && surfaceBox && (
         panelBox.left<surfaceBox.left-1 || panelBox.right>surfaceBox.right+1 ||
         panelBox.top<surfaceBox.top-1 || panelBox.bottom>surfaceBox.bottom+1
       )) errors.push('action footer escapes table surface');
-      const feltBox=felt?rect(felt):null;
       const heroCenterOffset=heroPairBox&&feltBox?{
         x:+(((heroPairBox.left+heroPairBox.right)-(feltBox.left+feltBox.right))/2).toFixed(1),
         y:+(((heroPairBox.top+heroPairBox.bottom)-(feltBox.top+feltBox.bottom))/2).toFixed(1),
@@ -183,7 +205,16 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const heroBottomGap=heroPairBox&&feltBox?+(feltBox.bottom-heroPairBox.bottom).toFixed(1):null;
       if(heroCenterOffset && Math.abs(heroCenterOffset.x)>2) errors.push('hero card pair is not horizontally centered on felt: '+heroCenterOffset.x+'px');
       if(heroCenterOffset && heroCenterOffset.y<0) errors.push('hero card pair is not in the lower half of the felt: '+heroCenterOffset.y+'px');
-      if(heroBottomGap!=null && (heroBottomGap < -1 || heroBottomGap > 24)) errors.push('hero card pair is too far from felt bottom: '+heroBottomGap+'px');
+      if(heroPairBox && feltBox && (
+        heroPairBox.left<feltBox.left-1 || heroPairBox.right>feltBox.right+1 ||
+        heroPairBox.top<feltBox.top-1 || heroPairBox.bottom>feltBox.bottom+1
+      )) errors.push('hero card pair escapes felt bounds');
+      if(normalPhone && panelBox && heroPairBox && area(panelBox,heroPairBox)>5) {
+        errors.push('action dock overlaps hero cards on normal phone');
+      }
+      if(normalPhone && panelBox && heroPairBox && (
+        panelBox.top<0 || panelBox.bottom>innerHeight || heroPairBox.top<0 || heroPairBox.bottom>innerHeight
+      )) errors.push('action dock and hero cards are not both visible on normal phone');
       for(let i=0;i<seats.length;i++) {
         const seat=rect(seats[i]);
         const seatRef={index:i,seatNo:seats[i].dataset.seatNo,relativeSeat:seats[i].dataset.relativeSeat,rect:seat};
@@ -196,12 +227,19 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       }
       for(let i=0;i<heroes.length;i++) {
         const hero=rect(heroes[i]);
-        if(hero.left<0 || hero.right>innerWidth+1 || hero.top<0 || hero.bottom>innerHeight+1) errors.push('hero card clipped '+i);
+        if(feltBox && (hero.left<feltBox.left-1 || hero.right>feltBox.right+1 ||
+          hero.top<feltBox.top-1 || hero.bottom>feltBox.bottom+1)) errors.push('hero card clipped by felt '+i);
+        if(normalPhone && (hero.left<0 || hero.right>innerWidth+1 || hero.top<0 || hero.bottom>innerHeight+1)) {
+          errors.push('hero card clipped by viewport '+i);
+        }
         if(panelBox && area(hero,panelBox)>5) errors.push('hero card overlaps action panel '+i);
       }
       const hits=controls.map(node=>{
         const r=rect(node), x=r.left+r.width/2, y=r.top+r.height/2, top=document.elementFromPoint(x,y);
         const hit=Boolean(top && (top===node || node.contains(top)));
+        if(normalPhone && node.tagName==='BUTTON' && r.height<44) {
+          errors.push('tap target below 44px '+(node.textContent||node.id||node.tagName).trim()+': '+r.height.toFixed(1));
+        }
         if(!r.width || !r.height || r.left<0 || r.right>innerWidth+1 || r.top<0 || r.bottom>innerHeight+1 || !hit) errors.push('control hit test failed '+(node.textContent||node.id||node.tagName).trim());
         return {label:(node.textContent||node.id||node.tagName).trim(),hit};
       });
@@ -210,7 +248,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
         actionDock:panelBox?{
           left:+panelBox.left.toFixed(1),top:+panelBox.top.toFixed(1),
           width:+panelBox.width.toFixed(1),height:+panelBox.height.toFixed(1),
-          maxHeight:footerLimit,
+          normalPhone,
         }:null,
         heroPair:heroPairBox,
         heroCenterOffset,
@@ -226,7 +264,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
         seatCount:seats.length,
       };
     })()`);
-    console.log('Active', seatsCount, 'seat layout at', width, 'px:', JSON.stringify(metrics));
+    console.log('Active', seatsCount, 'seat layout at', width, 'x', height, ':', JSON.stringify(metrics));
     if (metrics.errors.length) failures.push('Active layout at ' + width + 'px: ' + metrics.errors.join(', '));
 
     const selected = await activePage.evaluate(`(() => {
@@ -259,16 +297,19 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,
         centerX:r.left+r.width/2,centerY:r.top+r.height/2};
     };
+    const felt=rect(document.querySelector('#felt'));
     const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]:not(.is-me)')];
     const seat = seats.sort((a,b) => rect(a).top - rect(b).top)[0];
     if (!seat) return null;
-    const cards = seat.querySelector('.seat-cards');
+    const seatBox=rect(seat), cards = seat.querySelector('.seat-cards'), cardsBox=rect(cards);
     const miniCards = [...(cards?.querySelectorAll('.mini-card') || [])].map(node => {
       const box = rect(node), style = getComputedStyle(node);
       return {...box,visible:style.display !== 'none' && style.visibility !== 'hidden' &&
         box.width > 0 && box.height > 0,back:node.classList.contains('back')};
     });
-    return {playerId:seat.dataset.playerId,seat:rect(seat),cards:rect(cards),miniCards,
+    return {playerId:seat.dataset.playerId,felt,scrollY:window.scrollY,seat:seatBox,cards:cardsBox,miniCards,
+      seatInFelt:{x:seatBox.left-felt.left,y:seatBox.top-felt.top},
+      cardsInSeat:{x:cardsBox.left-seatBox.left,y:cardsBox.top-seatBox.top},
       relativeSeat:Number(seat.dataset.relativeSeat)};
   });
   if (!topOpponentBefore || topOpponentBefore.miniCards.length !== 2 ||
@@ -293,26 +334,44 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,
         centerX:r.left+r.width/2,centerY:r.top+r.height/2};
     };
+    const felt=rect(document.querySelector('#felt'));
     const seat = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')]
       .find(node => node.dataset.playerId === playerId);
     if (!seat) return null;
-    const cards = seat.querySelector('.seat-cards');
+    const seatBox=rect(seat), cards = seat.querySelector('.seat-cards'), cardsBox=rect(cards);
     const miniCards = [...(cards?.querySelectorAll('.mini-card') || [])].map(node => {
       const box = rect(node), style = getComputedStyle(node);
       return {...box,visible:style.display !== 'none' && style.visibility !== 'hidden' &&
         box.width > 0 && box.height > 0,back:node.classList.contains('back')};
     });
-    return {playerId:seat.dataset.playerId,seat:rect(seat),cards:rect(cards),miniCards,
+    return {playerId:seat.dataset.playerId,felt,scrollY:window.scrollY,seat:seatBox,cards:cardsBox,miniCards,
+      seatInFelt:{x:seatBox.left-felt.left,y:seatBox.top-felt.top},
+      cardsInSeat:{x:cardsBox.left-seatBox.left,y:cardsBox.top-seatBox.top},
       equity:rect(seat.querySelector('.seat-equity:not(.is-empty)'))};
   }, topOpponentBefore.playerId);
   if (!topOpponentAfter || topOpponentAfter.miniCards.length !== 2 ||
       topOpponentAfter.miniCards.some((card,index) => !card.visible || card.back ||
-        Math.abs(card.centerX-topOpponentBefore.miniCards[index].centerX)>1 ||
-        Math.abs(card.centerY-topOpponentBefore.miniCards[index].centerY)>1) ||
+        Math.abs((card.centerX-topOpponentAfter.seat.left) -
+          (topOpponentBefore.miniCards[index].centerX-topOpponentBefore.seat.left))>1 ||
+        Math.abs((card.centerY-topOpponentAfter.seat.top) -
+          (topOpponentBefore.miniCards[index].centerY-topOpponentBefore.seat.top))>1) ||
+      Math.abs(topOpponentAfter.scrollY-topOpponentBefore.scrollY)>1 ||
+      Math.abs(topOpponentAfter.felt.left-topOpponentBefore.felt.left)>1 ||
+      Math.abs(topOpponentAfter.felt.top-topOpponentBefore.felt.top)>1 ||
+      Math.abs(topOpponentAfter.felt.width-topOpponentBefore.felt.width)>1 ||
+      Math.abs(topOpponentAfter.felt.height-topOpponentBefore.felt.height)>1 ||
       Math.abs(topOpponentAfter.seat.centerX-topOpponentBefore.seat.centerX)>1 ||
       Math.abs(topOpponentAfter.seat.centerY-topOpponentBefore.seat.centerY)>1 ||
       Math.abs(topOpponentAfter.cards.centerX-topOpponentBefore.cards.centerX)>1 ||
-      Math.abs(topOpponentAfter.cards.centerY-topOpponentBefore.cards.centerY)>1) {
+      Math.abs(topOpponentAfter.cards.centerY-topOpponentBefore.cards.centerY)>1 ||
+      Math.abs(topOpponentAfter.seatInFelt.x-topOpponentBefore.seatInFelt.x)>1 ||
+      Math.abs(topOpponentAfter.seatInFelt.y-topOpponentBefore.seatInFelt.y)>1 ||
+      Math.abs(topOpponentAfter.cardsInSeat.x-topOpponentBefore.cardsInSeat.x)>1 ||
+      Math.abs(topOpponentAfter.cardsInSeat.y-topOpponentBefore.cardsInSeat.y)>1 ||
+      Math.abs(topOpponentAfter.seat.width-topOpponentBefore.seat.width)>1 ||
+      Math.abs(topOpponentAfter.seat.height-topOpponentBefore.seat.height)>1 ||
+      Math.abs(topOpponentAfter.cards.width-topOpponentBefore.cards.width)>1 ||
+      Math.abs(topOpponentAfter.cards.height-topOpponentBefore.cards.height)>1) {
     throw Error('Nine-seat top opponent cards moved from backs to exposed faces: ' +
       JSON.stringify({before:topOpponentBefore,after:topOpponentAfter}));
   }
@@ -320,16 +379,22 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   for (const {width, height} of [{width:320,height:568},{width:667,height:375},{width:844,height:390}]) {
     await activePage.resize(width, height);
     await sleep(240);
-    await ev(activePage, () => document.querySelector('#felt').scrollIntoView({ block: 'center' }));
+    await ev(activePage, () => document.querySelector('#action-panel').scrollIntoView({ block: 'end' }));
     await sleep(80);
     const runout = await ev(activePage, (expected) => {
       const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
-      const area=(a,b)=>Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+      const area=(a,b)=>{const w=Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)),h=Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));return w>1&&h>1?w*h:0;};
       const surface=document.querySelector('.table-surface'), felt=document.querySelector('#felt'), panel=document.querySelector('#action-panel');
       const hero=document.querySelector('.seat-card.is-me'), pair=document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
       const equity=hero?.querySelector('.seat-equity:not(.is-empty)'), heroes=[...document.querySelectorAll('.seat-card.is-me .seat-cards.is-viewer-cards .mini-card')];
       const seats=[...document.querySelectorAll('.seat-card[data-player-id]')];
       const actions=[...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
+      const touchButtons=[...document.querySelectorAll('#action-panel button')].map(button=>({
+        label:(button.textContent||button.getAttribute('aria-label')||button.id||'').trim(),
+        rect:rect(button),
+        hit:(()=>{const r=button.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+          return hit===button||button.contains(hit);})(),
+      }));
       const labels=["#board-caption","#pot-display","#street-label"].map(id=>[id,document.querySelector(id)])
         .filter(([,node])=>node && !node.hidden && node.offsetWidth);
       const errors=[], labelOverlaps=[], seatContentOverflows=[];
@@ -339,15 +404,17 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       if(actions.length!==3 || actions.some(button=>!button.disabled)) errors.push('runout footer is not three disabled actions');
       if(!equity?.offsetWidth) errors.push('hero equity badge missing during runout');
       const footer=panel?rect(panel):null, surfaceBox=surface?rect(surface):null, feltBox=felt?rect(felt):null, pairBox=pair?rect(pair):null;
-      const limit=innerWidth>innerHeight?74:80;
-      if(footer && footer.height>limit+1) errors.push('runout footer exceeds '+limit+'px');
+      if(footer && (footer.top< -1 || footer.bottom>innerHeight+1)) errors.push('runout action dock is clipped after scrolling into view');
       if(footer && surfaceBox && (footer.left<surfaceBox.left-1 || footer.right>surfaceBox.right+1 || footer.top<surfaceBox.top-1 || footer.bottom>surfaceBox.bottom+1)) errors.push('runout footer escapes surface');
+      if(touchButtons.some(button=>button.rect.height<43 || !button.hit)) {
+        errors.push('runout action buttons are undersized or obstructed: '+JSON.stringify(touchButtons));
+      }
       const center=pairBox&&feltBox?{
         x:+(((pairBox.left+pairBox.right)-(feltBox.left+feltBox.right))/2).toFixed(1),
         y:+(((pairBox.top+pairBox.bottom)-(feltBox.top+feltBox.bottom))/2).toFixed(1),
         bottomGap:+(feltBox.bottom-pairBox.bottom).toFixed(1),
       }:null;
-      if(center && (Math.abs(center.x)>2 || center.y<0 || center.bottomGap< -1 || center.bottomGap>24)) errors.push('runout hero is not at six o clock '+JSON.stringify(center));
+      if(center && (Math.abs(center.x)>2 || center.y<0 || center.bottomGap< -1)) errors.push('runout hero is not at six o clock '+JSON.stringify(center));
       for(const [label,node] of labels) for(let i=0;i<seats.length;i++) {
         if(area(rect(node),rect(seats[i]))>5) {
           errors.push(label+' overlaps runout seat '+i);
@@ -365,7 +432,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
           }
         }
       }
-      return {errors,viewport:[innerWidth,innerHeight],footer,limit,hero:center,equity:equity?rect(equity):null,labelOverlaps,seatContentOverflows};
+      return {errors,viewport:[innerWidth,innerHeight],footer,touchButtons,hero:center,equity:equity?rect(equity):null,labelOverlaps,seatContentOverflows};
     }, seatsCount);
     console.log('Active all-in runout at', width, 'x', height, JSON.stringify(runout));
     if(runout.errors.length) failures.push('Active runout at '+width+'x'+height+': '+runout.errors.join(', '));
@@ -386,7 +453,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     const errors = await spectatorPage.evaluate(`(() => {
       const expected=${seatsCount};
       const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
-      const area=(a,b)=>Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
+      const area=(a,b)=>{const w=Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left)),h=Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));return w>1&&h>1?w*h:0;};
       const seats=[...document.querySelectorAll('.seat-card')], badges=[...document.querySelectorAll('.seat-equity:not(.is-empty)')], board=rect(document.querySelector('#board-cards')), problems=[], boardOverlaps=[], seatOverlaps=[];
       if(badges.length!==expected) problems.push('missing odds');
       if(seats.length!==expected) problems.push('seat count '+seats.length);

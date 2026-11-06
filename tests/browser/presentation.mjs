@@ -5,7 +5,13 @@ export default async function presentation([one, two], sleep, roomPassword) {
   const assert = (condition, message) => { if (!condition) throw Error(message); };
   const layoutFailures = [];
   const cardBaselines = new Map();
-  const visible = selector => Boolean(document.querySelector(selector)?.offsetWidth);
+  const visible = selector => {
+    const node = document.querySelector(selector);
+    if (!node) return false;
+    const details = node.closest('details');
+    if (details) details.open = true;
+    return Boolean(node.offsetWidth);
+  };
 
   async function wait(page, predicate, ...args) {
     for (let attempt = 0; attempt < 180; attempt++) {
@@ -19,11 +25,20 @@ export default async function presentation([one, two], sleep, roomPassword) {
   async function click(page, selector) {
     await wait(page, query => {
       const node = document.querySelector(query);
-      if (!node?.offsetWidth || node.disabled || node.hidden) return false;
+      if (!node) return false;
+      const details = node.tagName === 'SUMMARY' ? null : node.closest('details');
+      const wasOpen = Boolean(details?.open);
+      if (details) details.open = true;
+      if (!node.offsetWidth || node.disabled || node.hidden) {
+        if (details && !wasOpen) details.open = false;
+        return false;
+      }
       node.click();
+      if (details && !wasOpen) details.open = false;
       return true;
     }, selector);
   }
+
   async function input(page, selector, value) {
     await evaluate(page, (query, next) => {
       const node = document.querySelector(query);
@@ -51,7 +66,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
     let body = {};
     try { body = await response.json(); } catch (_) {}
     if (!response.ok) throw Error(path + ' returned ' + response.status + ': ' + JSON.stringify(body));
-    if (path === '/register') {
+    if (path === '/register' || path === '/login') {
       const cookie = response.headers.get('set-cookie')?.split(';')[0];
       if (!cookie) throw Error('Registration did not issue a session cookie.');
       return {...body, cookie};
@@ -106,7 +121,8 @@ export default async function presentation([one, two], sleep, roomPassword) {
           return [r.left, r.top, r.right, r.bottom];
         };
         const overlaps = (a, b) => a && b &&
-          a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
+          Math.min(a[2], b[2]) - Math.max(a[0], b[0]) > 1 &&
+          Math.min(a[3], b[3]) - Math.max(a[1], b[1]) > 1;
         const within = (a, b) => a && b &&
           a[0] >= b[0] - 1 && a[1] >= b[1] - 1 &&
           a[2] <= b[2] + 1 && a[3] <= b[3] + 1;
@@ -210,15 +226,44 @@ export default async function presentation([one, two], sleep, roomPassword) {
 
   async function waitForRenderedView(page, view) {
     return wait(page, expected => {
-      const street = (document.querySelector('#street-label')?.textContent || '').toLowerCase();
+      const streetNode = document.querySelector('#street-label');
+      const street = (streetNode?.textContent || '').trim().toLowerCase();
+      const streetExpected = expected.street.toLowerCase();
+      const handStatus = (document.querySelector('#hand-status-label')?.textContent || '').trim();
+      const handNumber = (document.querySelector('#hand-number')?.textContent || '').trim();
       const boardCount = [...document.querySelectorAll('#board-cards .playing-card')]
         .filter(node => !node.classList.contains('placeholder')).length;
+      const liveStatusExpected = expected.paused ? 'GAME PAUSED' :
+        expected.status === 'playing' ? 'HAND IN PROGRESS' :
+        expected.status === 'completed' ? 'TOURNAMENT COMPLETE' :
+        expected.status === 'ended' ? 'ENDED BY HOST' : 'TABLE LOBBY';
+      const streetRendered = streetExpected === 'preflop' || streetExpected === 'lobby'
+        ? (!street || streetNode?.hidden)
+        : (!streetNode?.hidden && street.includes(streetExpected));
       return document.querySelector('#view-table-name')?.textContent === expected.name &&
-        street.includes(expected.street.toLowerCase()) && boardCount === expected.boardLength;
-    }, {name:view.name,street:String(view.street || ''),boardLength:(view.board || []).length});
+        handStatus === liveStatusExpected &&
+        (expected.handNo <= 0 || handNumber.includes(String(expected.handNo))) &&
+        streetRendered && boardCount === expected.boardLength;
+    }, {
+      name:view.name,
+      street:String(view.street || ''),
+      status:String(view.status || 'lobby'),
+      paused:Boolean(view.paused),
+      handNo:Number(view.hand_no || 0),
+      boardLength:(view.board || []).length,
+    });
   }
 
   const stamp = Date.now().toString(36);
+  const admin = await request('/login', null, {username:'admin', password:''});
+  async function setGlobalConfig(values) {
+    return request('/admin/config', admin, values);
+  }
+  await setGlobalConfig({
+    runout_seconds:1, showdown_seconds:3,
+    blind_announcement_seconds:0, elimination_announcement_seconds:0,
+    bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]},
+  });
   const host = await register('Host', stamp);
   const guest = await register('Guest', stamp);
   const folded = await register('Folded', stamp);
@@ -292,17 +337,20 @@ export default async function presentation([one, two], sleep, roomPassword) {
 
   // Normal check/call hand: verify actual Enter chat, polling/reconnect, ranks, and replay.
   const normalConfig = {
-    max_seats:2, starting_stack:1000, small_blind:5, big_blind:10,
-    level_minutes:79, turn_seconds:3600, runout_seconds:1,
-    showdown_seconds:3, blind_announcement_seconds:0,
-    elimination_announcement_seconds:0, buy_in:10, payout_percentages:[60,40],
+    starting_stack:1000, small_blind:5, big_blind:10,
+    level_minutes:79, turn_seconds:3600,
+    buy_in:10, payout_percentages:[60,40],
   };
   const normal = await createTable('normal', normalConfig);
   await seat(normal.path, guest, 1);
   await Promise.all([openTable(one, normal.name), openTable(two, normal.name)]);
   const normalStarted = await start(normal.path);
-  assert(normal.config?.showdown_seconds === normalConfig.showdown_seconds,
-    'Create config did not retain showdown_seconds: ' + JSON.stringify(normal.config));
+  assert(normal.config?.showdown_seconds === 3 && normal.config.runout_seconds === 1,
+    'New table did not inherit the shared admin timing config: ' + JSON.stringify(normal.config));
+  assert(normalStarted.config?.max_seats === 2 &&
+    normalStarted.seats.map(seat => seat.seat_no).join(',') === '0,1',
+    'Starting a two-player table did not lock capacity and compact seat numbers: ' +
+      JSON.stringify({max_seats:normalStarted.config?.max_seats,seats:normalStarted.seats}));
   const firstNormalActor = [host,guest].find(user => user.player.id === normalStarted.actor_id);
   await wait(pageFor(firstNormalActor), visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]:not([disabled])');
   const liveStart = await getView(normal.path, host);
@@ -377,20 +425,44 @@ export default async function presentation([one, two], sleep, roomPassword) {
     'Escape closes full chat');
   await recordGeometry(normalActorPage, 'trusted felt wheel / legal bet draft');
 
-  const chatMessage = 'plain-enter-' + stamp;
+  await click(normalActorPage, '#chat-button');
+  await wait(normalActorPage, visible, '#chat-panel:not([hidden]) #chat-input');
+  const chatMessage = 'drawer-enter-' + stamp;
+  await request(normal.path + '/chat', host, {text:'drawer-first-' + stamp});
+  await request(normal.path + '/chat', guest, {text:'drawer-second-' + stamp});
+  await request(normal.path + '/chat', folded, {text:'drawer-latest-' + stamp});
+  await wait(normalActorPage, text =>
+    document.querySelector('#chat-messages')?.textContent.includes(text),
+  'drawer-latest-' + stamp);
+  const collapsedChat = await evaluate(normalActorPage, () => {
+    const hidden = selector => {
+      const node = document.querySelector(selector);
+      return !node || node.hidden || getComputedStyle(node).display === 'none' ||
+        getComputedStyle(node).visibility === 'hidden' || node.getClientRects().length === 0;
+    };
+    return {
+      topline:hidden('#chat-topline'),
+      preview:hidden('#chat-preview'),
+      quickForm:hidden('#chat-quick-form'),
+      panelVisible:!document.querySelector('#chat-panel').hidden,
+      latest:document.querySelector('#chat-messages').textContent,
+    };
+  });
+  assert(collapsedChat.topline && collapsedChat.preview && collapsedChat.quickForm &&
+    collapsedChat.panelVisible && collapsedChat.latest.includes('drawer-latest-' + stamp),
+  'Chat must stay in the full drawer with the compact topline and quick entry hidden: ' +
+    JSON.stringify(collapsedChat));
   await evaluate(normalActorPage, text => {
-    window.presentationEnter = {keys:0, submits:0, posts:[], submitValue:null, submitRevision:null, response:null};
-    const input = document.querySelector('#chat-quick-input');
-    input.value = text;
-    input.dispatchEvent(new Event('input', {bubbles:true}));
-    input.focus({preventScroll:true});
-    input.addEventListener('keydown', event => {
+    window.presentationEnter = {keys:0, submits:0, posts:[], response:null};
+    const field = document.querySelector('#chat-input');
+    field.value = text;
+    field.dispatchEvent(new Event('input', {bubbles:true}));
+    field.focus({preventScroll:true});
+    field.addEventListener('keydown', event => {
       if (event.key === 'Enter') window.presentationEnter.keys++;
     });
-    document.querySelector('#chat-quick-form').addEventListener('submit', () => {
+    document.querySelector('#chat-form').addEventListener('submit', () => {
       window.presentationEnter.submits++;
-      window.presentationEnter.submitValue = input.value;
-      window.presentationEnter.submitRevision = input.dataset.chatEditVersion;
     });
     const original = window.fetch.bind(window);
     window.fetch = async function(url, options) {
@@ -400,76 +472,89 @@ export default async function presentation([one, two], sleep, roomPassword) {
       if (!isPost) return original(url, options);
       window.presentationEnter.posts.push({body:options?.body || ''});
       const response = await original(url, options);
-      let result = {};
-      try { result = await response.clone().json(); } catch (_) {}
-      window.presentationEnter.response = {status:response.status, ok:response.ok, result};
+      window.presentationEnter.response = {status:response.status,ok:response.ok};
       return response;
     };
   }, chatMessage);
-  const quickPanelClosed = await evaluate(normalActorPage, () =>
-    document.querySelector('#chat-panel')?.hidden === true);
-  assert(quickPanelClosed, 'Full chat should remain closed while quick-chat Enter is tested.');
   await normalActorPage.pressEnter();
   await wait(normalActorPage, text =>
-    [...document.querySelectorAll('#chat-preview .chat-preview-line')].some(node => node.textContent.includes(text)),
+    document.querySelector('#chat-messages')?.textContent.includes(text) &&
+      document.querySelector('#chat-input')?.value === '',
   chatMessage);
-  const enterResult = await evaluate(normalActorPage, () => ({...window.presentationEnter,
-    panelClosed:document.querySelector('#chat-panel')?.hidden === true,
-    value:document.querySelector('#chat-quick-input')?.value,
-    currentRevision:document.querySelector('#chat-quick-input')?.dataset.chatEditVersion,
-  }));
-  assert(enterResult.keys === 1 && enterResult.submits === 1 && enterResult.posts.length === 1 &&
-    enterResult.posts[0].body.includes(chatMessage) && enterResult.response?.ok &&
-    enterResult.panelClosed && enterResult.value === '',
-  'Actual Enter must post once and clear the unchanged quick-chat draft; diagnostics: ' +
-    JSON.stringify(enterResult));
-  const enterMessages = await request(normal.path + '/chat', host);
-  assert(enterMessages.messages.filter(item => item.text === chatMessage).length === 1,
-    'Quick-chat Enter did not create exactly one plain message.');
-
-  await sleep(1100);
-  await request(normal.path + '/chat', guest, {text:'poll-second-' + stamp});
-  await sleep(1100);
-  await request(normal.path + '/chat', folded, {text:'poll-latest-' + stamp});
-  const latestThree = await wait(normalActorPage, stampText => {
-    const lines = [...document.querySelectorAll('#chat-preview .chat-preview-line')].map(node => node.textContent);
-    return lines.length === 3 && lines[0].includes('plain-enter-' + stampText) &&
-      lines[1].includes('poll-second-' + stampText) &&
-      lines[2].includes('poll-latest-' + stampText) ? lines : false;
-  }, stamp);
-  assert(await evaluate(normalActorPage, () => document.querySelector('#chat-panel')?.hidden === true),
-    'Polling the three-line preview opened full chat.');
-  await normalActorPage.wheelAt(
-    (await evaluate(normalActorPage, () => {
-      const r=document.querySelector('#chat-quick-input').getBoundingClientRect();
-      return {x:r.left+r.width*.5,y:r.top+r.height*.5};
-    })).x,
-    (await evaluate(normalActorPage, () => {
-      const r=document.querySelector('#chat-quick-input').getBoundingClientRect();
-      return r.top+r.height*.5;
-    })),
-    -120,
-  );
-  const afterChatWheel = await evaluate(normalActorPage, () => ({
-    value:Number(document.querySelector('#raise-amount').value),
-    previewVisible:!document.querySelector('#chat-preview').hidden,
-  }));
-  assert(afterChatWheel.value === wheelDraft.value && afterChatWheel.previewVisible,
-    'Wheel over chat changed the legal raise draft or hid the latest preview.');
-  console.log('Quick-chat preview polling shows exactly the latest three lines: ' + JSON.stringify(latestThree));
-
+  const enterResult = await evaluate(normalActorPage, () => ({...window.presentationEnter}));
+  assert(enterResult.keys === 1 && enterResult.submits === 1 &&
+    enterResult.posts.length === 1 && enterResult.posts[0].body.includes(chatMessage) &&
+    enterResult.response?.ok,
+  'Enter in the chat drawer must post once and clear the sent draft: ' + JSON.stringify(enterResult));
+  const guardedEnter = await evaluate(normalActorPage, () => {
+    const input = document.querySelector('#chat-input');
+    const form = document.querySelector('#chat-form');
+    const before = {
+      posts:window.presentationEnter.posts.length,
+      submits:window.presentationEnter.submits,
+      value:input.value,
+    };
+    const cases = [
+      ['shift', {shiftKey:true}],
+      ['control', {ctrlKey:true}],
+      ['meta', {metaKey:true}],
+      ['alt', {altKey:true}],
+      ['composition', {isComposing:true}],
+      ['ime-229', {keyCode:229}],
+    ];
+    const results = cases.map(([name, modifiers]) => {
+      const event = new KeyboardEvent('keydown', {
+        key:'Enter', bubbles:true, cancelable:true, ...modifiers,
+      });
+      if (name === 'ime-229' && event.keyCode !== 229) {
+        Object.defineProperty(event, 'keyCode', {value:229});
+      }
+      input.dispatchEvent(event);
+      return {name, prevented:event.defaultPrevented};
+    });
+    return {
+      results,
+      before,
+      after:{
+        posts:window.presentationEnter.posts.length,
+        submits:window.presentationEnter.submits,
+        value:input.value,
+        formBusy:form.getAttribute('aria-busy'),
+      },
+    };
+  });
+  assert(guardedEnter.results.every(result => !result.prevented) &&
+    guardedEnter.after.posts === guardedEnter.before.posts &&
+    guardedEnter.after.submits === guardedEnter.before.submits &&
+    guardedEnter.after.value === guardedEnter.before.value,
+  'Modified Enter, Shift+Enter, and IME Enter must not submit or suppress their native behavior: ' +
+    JSON.stringify(guardedEnter));
+  const sentMessages = await request(normal.path + '/chat', host);
+  assert(sentMessages.messages.filter(item => item.text === chatMessage).length === 1,
+    'Chat drawer Enter did not create exactly one message.');
+  await normalActorPage.pressEscape();
+  await wait(normalActorPage, () => document.querySelector('#chat-panel')?.hidden === true,
+    'Escape closes chat drawer');
   await normalActorPage.reload();
   await wait(normalActorPage, visible, '#app-panel');
   await wait(normalActorPage, expected => document.querySelector('#view-table-name')?.textContent === expected,
     normal.name);
-  const reconnectedLines = await wait(normalActorPage, expected => {
-    const lines = [...document.querySelectorAll('#chat-preview .chat-preview-line')].map(node => node.textContent);
-    return lines.length === 3 && lines[2].includes(expected) ? lines : false;
-  }, 'poll-latest-' + stamp, 12000);
-  assert(JSON.stringify(reconnectedLines) === JSON.stringify(latestThree),
-    'Chat reconnect changed the latest three line order: ' + JSON.stringify({latestThree,reconnectedLines}));
-  assert(await evaluate(normalActorPage, () => document.querySelector('#chat-panel')?.hidden === true),
-    'Reconnect should leave the full chat closed.');
+  await click(normalActorPage, '#chat-button');
+  await wait(normalActorPage, text =>
+    document.querySelector('#chat-messages')?.textContent.includes(text),
+  'drawer-enter-' + stamp);
+  const reconnectedChat = await evaluate(normalActorPage, () => ({
+    visible:!document.querySelector('#chat-panel').hidden,
+    message:document.querySelector('#chat-messages').textContent,
+    quickEntryHidden:!document.querySelector('#chat-quick-form') ||
+      document.querySelector('#chat-quick-form').hidden ||
+      getComputedStyle(document.querySelector('#chat-quick-form')).display === 'none',
+  }));
+  assert(reconnectedChat.visible && reconnectedChat.message.includes(chatMessage) &&
+    reconnectedChat.quickEntryHidden,
+  'Reconnected chat drawer did not restore the sent message or compact layout: ' +
+    JSON.stringify(reconnectedChat));
+  console.log('Full chat drawer receives shared messages, submits on Enter once, and reconnects without quick-entry clutter.');
 
   const normalShowdown = await (async () => {
     let view = await getView(normal.path, host);
@@ -610,11 +695,14 @@ export default async function presentation([one, two], sleep, roomPassword) {
 
   // River all-in: the result must not append another card, and final standings wait for the full presentation.
   const riverConfig = {
-    max_seats:2, starting_stack:100, small_blind:5, big_blind:10,
-    level_minutes:79, turn_seconds:3600, runout_seconds:1,
-    showdown_seconds:2.5, blind_announcement_seconds:0,
-    elimination_announcement_seconds:1.5, buy_in:10, payout_percentages:[100],
+    starting_stack:100, small_blind:5, big_blind:10,
+    level_minutes:79, turn_seconds:3600,
+    buy_in:10, payout_percentages:[100],
   };
+  await setGlobalConfig({
+    runout_seconds:1, showdown_seconds:2.5,
+    blind_announcement_seconds:0, elimination_announcement_seconds:1.5,
+  });
   const riverTable = await createTable('river-all-in', riverConfig);
   await seat(riverTable.path, guest, 1);
   await Promise.all([openTable(one, riverTable.name), openTable(two, riverTable.name)]);
@@ -732,11 +820,14 @@ export default async function presentation([one, two], sleep, roomPassword) {
 
   // Three-player runout fixture: blind clock is due while the called all-in runs out.
   const queueConfig = {
-    max_seats:3, starting_stack:100, small_blind:5, big_blind:10,
-    level_minutes:0.1, turn_seconds:3600, runout_seconds:2,
-    showdown_seconds:2, blind_announcement_seconds:2,
-    elimination_announcement_seconds:2, buy_in:10, payout_percentages:[60,25,15],
+    starting_stack:100, small_blind:5, big_blind:10,
+    level_minutes:0.1, turn_seconds:3600,
+    buy_in:10, payout_percentages:[60,25,15],
   };
+  await setGlobalConfig({
+    runout_seconds:2, showdown_seconds:2,
+    blind_announcement_seconds:2, elimination_announcement_seconds:2,
+  });
   let queueTable = null;
   let queueResult = null;
   let queueFoldedPlayer = null;

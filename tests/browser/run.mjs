@@ -7,17 +7,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const game = (mode === 'adjustments'
-  ? await import('./adjustments.mjs')
-  : mode === 'interactions'
-  ? await import('./interactions.mjs')
-  : mode === 'crowded'
-  ? await import('./crowded.mjs')
-  : mode === 'ux'
-    ? await import('./ux.mjs')
-    : mode === 'presentation'
-      ? await import('./presentation.mjs')
-      : await import('./tournament.mjs')).default;
+const modes = new Set(['adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'flow', 'layout']);
+const suite = modes.has(mode) ? mode : 'tournament';
+const game = (await import('./' + suite + '.mjs')).default;
 const testRoomPassword = 'test-room-invite';
 
 if (!process.env.BROWSER_BIN) throw Error('Set BROWSER_BIN to a Chromium headless shell executable.');
@@ -34,6 +26,7 @@ const origin = 'http://127.0.0.1:' + port;
 const backendEnv = {...process.env};
 delete backendEnv.FELT_NIGHT_ROOM_PASSWORD_FILE;
 backendEnv.FELT_NIGHT_ROOM_PASSWORD = testRoomPassword;
+backendEnv.FELT_NIGHT_ADMIN_USERNAME = 'admin';
 const backend = spawn(process.env.PYTHON || 'python3', ['-B','server.py','--port',String(port),
   '--public-origin',origin,'--data-dir',join(directory,'data')], {cwd:root,env:backendEnv,stdio:['ignore','pipe','inherit']});
 let browser;
@@ -52,6 +45,7 @@ async function makePage() {
   const {sessionId} = await command('Target.attachToTarget',{targetId,flatten:true});
   const send = (method, params) => command(method, params, sessionId);
   await send('Runtime.enable');
+  await send('Emulation.setFocusEmulationEnabled',{enabled:true});
   await send('Page.navigate', {url:origin+'/poker/'});
   return {
     async evaluate(expression) {
@@ -59,9 +53,18 @@ async function makePage() {
       if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description || reply.exceptionDetails.text);
       return reply.result.value;
     },
-    async clickAt(x, y) {
-      await send('Input.dispatchMouseEvent', {type:'mousePressed', x, y, button:'left', clickCount:1});
-      await send('Input.dispatchMouseEvent', {type:'mouseReleased', x, y, button:'left', clickCount:1});
+    async clickAt(x, y, clickCount = 1) {
+      await send('Input.dispatchMouseEvent', {type:'mousePressed', x, y, button:'left', clickCount});
+      await send('Input.dispatchMouseEvent', {type:'mouseReleased', x, y, button:'left', clickCount});
+    },
+    async dragAt(startX, startY, endX, endY) {
+      await send('Input.dispatchMouseEvent', {type:'mouseMoved',x:startX,y:startY});
+      await send('Input.dispatchMouseEvent', {type:'mousePressed',x:startX,y:startY,button:'left',buttons:1,clickCount:1});
+      for (let step=1;step<=12;step++) {
+        await send('Input.dispatchMouseEvent', {type:'mouseMoved',
+          x:startX+(endX-startX)*step/12,y:startY+(endY-startY)*step/12,button:'left',buttons:1});
+      }
+      await send('Input.dispatchMouseEvent', {type:'mouseReleased',x:endX,y:endY,button:'left',buttons:0,clickCount:1});
     },
     async screenshot(name) {
       if(!process.env.QA_SCREEN_DIR) return;
@@ -79,7 +82,20 @@ async function makePage() {
       await send('Input.dispatchKeyEvent',{type:'char',text:'\r',...key});
       await send('Input.dispatchKeyEvent',{type:'keyUp',...key});
     },
+    async bringToFront() {
+      await send('Emulation.setFocusEmulationEnabled',{enabled:true});
+      await command('Target.activateTarget',{targetId});
+      await send('Page.bringToFront');
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const visibility = await send('Runtime.evaluate',{
+        expression:'document.visibilityState',returnByValue:true,
+      });
+      if (visibility?.result?.value !== 'visible') {
+        throw Error('Target did not become visible: ' + String(visibility?.result?.value));
+      }
+    },
     async wheelAt(x, y, deltaY, modifiers = 0) {
+      await this.bringToFront();
       await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:0,deltaY,modifiers});
     },
     reload() {

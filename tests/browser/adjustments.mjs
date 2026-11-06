@@ -4,7 +4,13 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
   const assert = (condition, message) => { if (!condition) throw Error(message); };
   const layoutFailures = [];
-  const visible = selector => Boolean(document.querySelector(selector)?.offsetWidth);
+  const visible = selector => {
+    const node = document.querySelector(selector);
+    if (!node) return false;
+    const details = node.closest('details');
+    if (details) details.open = true;
+    return Boolean(node.offsetWidth);
+  };
 
   async function wait(page, predicate, ...args) {
     for (let attempt = 0; attempt < 120; attempt++) {
@@ -27,11 +33,20 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   async function click(page, selector) {
     await wait(page, query => {
       const node = document.querySelector(query);
-      if (!node?.offsetWidth || node.disabled || node.hidden) return false;
+      if (!node) return false;
+      const details = node.tagName === 'SUMMARY' ? null : node.closest('details');
+      const wasOpen = Boolean(details?.open);
+      if (details) details.open = true;
+      if (!node.offsetWidth || node.disabled || node.hidden) {
+        if (details && !wasOpen) details.open = false;
+        return false;
+      }
       node.click();
+      if (details && !wasOpen) details.open = false;
       return true;
     }, selector);
   }
+
   async function input(page, selector, value) {
     await evaluate(page, (query, next) => {
       const node = document.querySelector(query);
@@ -74,7 +89,9 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   }
   async function switchUser(page, from, to) {
     if (from) {
-      await click(page, '#logout-button');
+      const logoutSelector = await evaluate(page, () =>
+        document.querySelector('#table-view')?.hidden ? '#logout-button' : '#table-logout-button');
+      await click(page, logoutSelector);
       await wait(page, visible, '#login-name');
     }
     await signIn(page, to);
@@ -94,27 +111,6 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     }, name);
     await wait(page, tableName => document.querySelector('#view-table-name')?.textContent === tableName, name);
   }
-  async function savePrefs(page, preflop, postflop) {
-    await click(page, '#player-settings-button');
-    await wait(page, () => document.querySelector('#player-settings-dialog')?.open === true);
-    await input(page, '#prefs-preflop-bb', preflop);
-    await input(page, '#prefs-postflop-percent', postflop);
-    await evaluate(page, () => document.querySelector('#player-prefs-form').requestSubmit());
-    await wait(page, () => document.querySelector('#player-settings-dialog')?.open === false);
-  }
-  async function readPrefs(page, expectedPreflop, expectedPostflop) {
-    await click(page, '#player-settings-button');
-    await wait(page, () => document.querySelector('#player-settings-dialog')?.open === true);
-    const values = await evaluate(page, () => [
-      document.querySelector('#prefs-preflop-bb').value,
-      document.querySelector('#prefs-postflop-percent').value,
-    ]);
-    assert(values[0] === expectedPreflop && values[1] === expectedPostflop,
-      'Bet preferences did not reopen for this account: ' + JSON.stringify(values));
-    await click(page, '#player-settings-close');
-    await wait(page, () => document.querySelector('#player-settings-dialog')?.open === false);
-  }
-
   const stamp = Date.now().toString(36);
   async function register(label) {
     const username = ('Adj' + stamp + label).slice(0, 24);
@@ -127,6 +123,23 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   const host = await register('Host');
   const guest = await register('Guest');
   const third = await register('Third');
+  const admin = await request('/login', null, {username:'admin', password:''});
+  const presetValues = {
+    preflop_bb:[2,2.5,3,3.5,4],
+    postflop_percent:[30,50,75,100,150],
+  };
+  await request('/admin/config', admin, {
+    runout_seconds:1, showdown_seconds:0,
+    blind_announcement_seconds:0, elimination_announcement_seconds:0,
+    bet_presets:presetValues,
+  });
+  const hostShared = await request('/config', host);
+  const guestShared = await request('/config', guest);
+  assert(JSON.stringify(hostShared.config?.bet_presets) === JSON.stringify(presetValues) &&
+    JSON.stringify(guestShared.config?.bet_presets) === JSON.stringify(presetValues),
+  'Shared bet presets did not load identically for normal users: ' +
+    JSON.stringify({host:hostShared.config?.bet_presets,guest:guestShared.config?.bet_presets}));
+  console.log('Admin-managed bet presets are shared through GET /config for every normal account.');
   async function waitForConfig(path, key, expected) {
     for (let attempt = 0; attempt < 120; attempt++) {
       const table = await request(path, host);
@@ -139,33 +152,13 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   }
   await Promise.all([signIn(one, host), signIn(two, guest)]);
 
-  const hostPreflop = '2.5, 3, 3.5, 4, 5';
-  const hostPostflop = '25, 40, 60, 90, 120';
-  const guestPreflop = '2, 2.5, 3, 3.5, 4';
-  const guestPostflop = '30, 50, 75, 100, 150';
-  await savePrefs(one, hostPreflop, hostPostflop);
-  await readPrefs(one, hostPreflop, hostPostflop);
-  await switchUser(one, host, guest);
-  await readPrefs(one, '2.5, 3, 4', '50, 75, 100');
-  await savePrefs(one, guestPreflop, guestPostflop);
-  await switchUser(one, guest, host);
-  await readPrefs(one, hostPreflop, hostPostflop);
-  await savePrefs(two, guestPreflop, guestPostflop);
-  await readPrefs(two, guestPreflop, guestPostflop);
-  console.log('Per-account preflop and postflop presets save, reopen, and remain separate.');
-
   const presetConfig = {
     name: 'Adjustments presets ' + stamp,
-    max_seats: 2,
     starting_stack: 1000,
     small_blind: 5,
     big_blind: 10,
     level_minutes: 79,
     turn_seconds: 3600,
-    runout_seconds: 1,
-    showdown_seconds: 0,
-    blind_announcement_seconds: 0,
-    elimination_announcement_seconds: 0,
     buy_in: 10,
     payout_percentages: [60, 25, 15],
   };
@@ -199,14 +192,17 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   });
   assert(fivePresets.count === 5 && fivePresets.visible === 5,
     'Five raise presets are not visible at 320px: ' + JSON.stringify(fivePresets));
-  const expectedPresetTargets = actorUser === host ? [25, 30, 35, 40, 50] : [20, 25, 30, 35, 40];
+  const expectedPresetTargets = [20, 25, 30, 35, 40];
   assert(JSON.stringify(fivePresets.targets) === JSON.stringify(expectedPresetTargets),
-    'Five preflop preset targets do not reflect the active account settings: ' + JSON.stringify(fivePresets));
+    'Five preflop preset targets do not reflect the shared admin settings: ' + JSON.stringify(fivePresets));
   assert(!fivePresets.overflow && fivePresets.boxes.every(([left, top, right, bottom]) =>
     left >= -1 && top >= -1 && right <= 321 && bottom <= 569),
   'Preset buttons are clipped or cause horizontal overflow at 320px: ' + JSON.stringify(fivePresets));
   await actorPage.screenshot('presets-320x568');
 
+  // Desktop mouse-wheel input is exercised separately from the 320px mobile preset layout.
+  await actorPage.resize(1280, 900);
+  await sleep(180);
   await input(actorPage, '#raise-amount', 50);
   await evaluate(actorPage, () => {
     window.adjustmentActionPosts = 0;
@@ -220,7 +216,15 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   });
   const feltPoint = await evaluate(actorPage, () => {
     const r = document.querySelector('#felt').getBoundingClientRect();
-    return {x:r.left + 8, y:r.top + r.height * .62};
+    const x=r.left + r.width * .5, y=r.top + r.height * .42;
+    const target=document.elementFromPoint(x,y);
+    return {x,y,viewport:[innerWidth,innerHeight],felt:[r.left,r.top,r.right,r.bottom],
+      focused:document.hasFocus(),visibility:document.visibilityState,
+      hit:target ? {tag:target.tagName,id:target.id,className:String(target.className||'')} : null};
+  });
+  await evaluate(actorPage, () => {
+    window.adjustmentsWheelEvents = 0;
+    window.addEventListener('wheel', () => window.adjustmentsWheelEvents++, {capture:true,once:true});
   });
   await actorPage.wheelAt(feltPoint.x, feltPoint.y, -120);
   const wheelResult = await evaluate(actorPage, () => {
@@ -230,91 +234,72 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       after: Number(input.value),
       min: Number(input.min),
       max: Number(input.max),
-      focused: document.activeElement === input,
+      inputFocused: document.activeElement === input,
       posts: window.adjustmentActionPosts,
+      wheelEvents: window.adjustmentsWheelEvents,
+      responsive: true,
+      visible:document.visibilityState === 'visible',
+      pageFocused:document.hasFocus(),
       focusedElement: document.activeElement?.id || document.activeElement?.tagName || '',
     };
   });
   assert(wheelResult.after > wheelResult.before && wheelResult.after >= wheelResult.min &&
-    wheelResult.after <= wheelResult.max && !wheelResult.focused && wheelResult.posts === 0,
-  'A real wheel over the felt must step the legal raise amount without focus or submission: ' + JSON.stringify(wheelResult));
-
+    wheelResult.after <= wheelResult.max && !wheelResult.inputFocused && wheelResult.posts === 0 &&
+    wheelResult.wheelEvents === 1 && wheelResult.responsive && wheelResult.visible && wheelResult.pageFocused,
+  'A real desktop wheel over the felt must step the legal raise amount without focus or submission: ' + JSON.stringify(wheelResult));
+  await actorPage.resize(320, 568);
+  await sleep(180);
   await click(actorPage, '#chat-button');
   await wait(actorPage, visible, '#chat-panel:not([hidden]) #chat-input');
-  await request(presetPath + '/chat', host, {text: 'preview-old-' + stamp});
-  await request(presetPath + '/chat', guest, {text: 'preview-middle-' + stamp});
-  await request(presetPath + '/chat', third, {text: 'preview-latest-' + stamp + '-' + 'long-message-'.repeat(8)});
+  await request(presetPath + '/chat', host, {text:'drawer-first-' + stamp});
+  await request(presetPath + '/chat', guest, {text:'drawer-second-' + stamp});
+  await request(presetPath + '/chat', third, {text:'drawer-latest-' + stamp});
   await wait(actorPage, text => document.querySelector('#chat-messages')?.textContent.includes(text),
-    'preview-latest-' + stamp);
+    'drawer-latest-' + stamp);
+  const chatLayout = await evaluate(actorPage, () => {
+    const hidden = selector => {
+      const node = document.querySelector(selector);
+      return !node || node.hidden || getComputedStyle(node).display === 'none' ||
+        getComputedStyle(node).visibility === 'hidden' || node.getClientRects().length === 0;
+    };
+    return {
+      topline:hidden('#chat-topline'),
+      preview:hidden('#chat-preview'),
+      quickForm:hidden('#chat-quick-form'),
+      panelVisible:!document.querySelector('#chat-panel').hidden,
+      latest:document.querySelector('#chat-messages').textContent,
+    };
+  });
+  assert(chatLayout.topline && chatLayout.preview && chatLayout.quickForm &&
+    chatLayout.panelVisible && chatLayout.latest.includes('drawer-latest-' + stamp),
+  'Chat must use the full drawer with collapsed topline/quick entry: ' + JSON.stringify(chatLayout));
+  const chatMessage = 'drawer-enter-' + stamp;
+  await evaluate(actorPage, text => {
+    window.adjustmentsChatPosts = [];
+    const field = document.querySelector('#chat-input');
+    field.value = text;
+    field.dispatchEvent(new Event('input', {bubbles:true}));
+    field.focus({preventScroll:true});
+    const original = window.fetch.bind(window);
+    window.fetch = async function(url, options) {
+      if (String(url).includes('/poker/api/tables/') && /\/chat(?:\?|$)/.test(String(url)) &&
+          String(options?.method || 'GET').toUpperCase() === 'POST') {
+        window.adjustmentsChatPosts.push(options?.body || '');
+      }
+      return original(url, options);
+    };
+  }, chatMessage);
+  await actorPage.pressEnter();
+  await wait(actorPage, text =>
+    document.querySelector('#chat-messages')?.textContent.includes(text) &&
+      document.querySelector('#chat-input')?.value === '',
+  chatMessage);
+  assert(await evaluate(actorPage, text =>
+    window.adjustmentsChatPosts.length === 1 && window.adjustmentsChatPosts[0].includes(text),
+  chatMessage),'Chat drawer Enter did not send exactly one message.');
   await actorPage.pressEscape();
   await wait(actorPage, () => document.querySelector('#chat-panel')?.hidden === true);
-  await sleep(1100);
-  await request(presetPath + '/chat', host, {text: 'preview-while-closed-' + stamp});
-  const preview = await wait(actorPage, expected => {
-    const lines = [...document.querySelectorAll('#chat-preview .chat-preview-line')];
-    return lines.length === 3 && lines[2].textContent.includes(expected) ? lines.map(n => n.textContent) : false;
-  }, 'preview-while-closed-' + stamp);
-  const previewLayout = await evaluate(actorPage, () => {
-    const node = document.querySelector('#chat-preview');
-    const rect = node.getBoundingClientRect();
-    return {
-      lines: document.querySelectorAll('#chat-preview .chat-preview-line').length,
-      visible: !node.hidden && node.offsetWidth > 0,
-      latest: [...document.querySelectorAll('#chat-preview .chat-preview-line')].map(line => line.textContent),
-      fullChatClosed: document.querySelector('#chat-panel').hidden,
-      overflow: document.documentElement.scrollWidth > innerWidth + 1,
-      bounds: [rect.left, rect.top, rect.right, rect.bottom],
-      viewport: [innerWidth, innerHeight],
-    };
-  });
-  assert(previewLayout.lines === 3 && previewLayout.visible && previewLayout.fullChatClosed,
-    'Mini chat must show exactly three lines while full chat is closed: ' + JSON.stringify(previewLayout));
-  assert(previewLayout.latest[0].includes('preview-middle-' + stamp) &&
-    previewLayout.latest[1].includes('preview-latest-' + stamp) &&
-    previewLayout.latest[2].includes('preview-while-closed-' + stamp),
-  'Mini chat does not show the three latest messages, including a closed-chat update: ' + JSON.stringify(previewLayout));
-  assert(!previewLayout.overflow && previewLayout.bounds[0] >= -1 && previewLayout.bounds[2] <= 321,
-    'Mini chat causes horizontal page overflow at 320px: ' + JSON.stringify(previewLayout));
-  const chatPlacement = await evaluate(actorPage, () => {
-    const preview = document.querySelector('#chat-preview');
-    const surface = document.querySelector('.table-surface');
-    const input = document.querySelector('#chat-quick-input');
-    const p = preview.getBoundingClientRect(), s = surface.getBoundingClientRect(), i = input.getBoundingClientRect();
-    return {beforeSurface: Boolean(preview.compareDocumentPosition(surface) & Node.DOCUMENT_POSITION_FOLLOWING),
-      inputVisible: i.width > 0 && i.height > 0 && i.left >= -1 && i.right <= innerWidth + 1 && i.top >= -1 && i.bottom <= innerHeight + 1,
-      separate: p.bottom <= s.top + 1};
-  });
-  assert(chatPlacement.beforeSurface && chatPlacement.inputVisible && chatPlacement.separate,
-    'Chat preview and composer must be above the table surface and fully visible: ' + JSON.stringify(chatPlacement));
-  await sleep(1200);
-  await input(actorPage, '#chat-quick-input', 'preview-enter-' + stamp);
-  await evaluate(actorPage, () => {
-    window.chatEnterQA = {keydown:[], submits:0, fetch:[]};
-    const field = document.querySelector('#chat-quick-input');
-    field.focus({preventScroll:true});
-    field.addEventListener('keydown', event => window.chatEnterQA.keydown.push({key:event.key,code:event.code,keyCode:event.keyCode,target:event.target.id}));
-    document.querySelector('#chat-quick-form').addEventListener('submit', () => window.chatEnterQA.submits++);
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async function(url, options) {
-      const isChatPost = String(url).includes('/poker/api/tables/') && /\/chat(?:\?|$)/.test(String(url)) && String(options?.method || 'GET').toUpperCase() === 'POST';
-      if (isChatPost) window.chatEnterQA.fetch.push({stage:'start',url:String(url),body:options?.body});
-      const response = await originalFetch(url, options);
-      if (isChatPost) window.chatEnterQA.fetch.push({stage:'response',status:response.status});
-      return response;
-    };
-  });
-  await actorPage.pressEnter();
-  await sleep(600);
-  await wait(actorPage, expected => {
-    const lines = [...document.querySelectorAll('#chat-preview .chat-preview-line')];
-    return lines.length === 3 && lines[2].textContent.includes(expected) &&
-      document.querySelector('#chat-quick-input')?.value === '';
-  }, 'preview-enter-' + stamp);
-  const quickSend = await evaluate(actorPage, () => window.chatEnterQA.fetch);
-  assert(quickSend.length === 2 && quickSend[0].stage === 'start' &&
-    quickSend[0].body.includes('preview-enter-') && quickSend[1].stage === 'response' && quickSend[1].status >= 200 && quickSend[1].status < 300,
-  'Enter must send exactly one successful quick-chat POST: ' + JSON.stringify(quickSend));
-  await actorPage.screenshot('chat-preview-320x568');
+  await actorPage.screenshot('chat-drawer-320x568');
 
   const beforeAllIn = await evaluate(actorPage, () => {
     const rect = selector => {
@@ -367,7 +352,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
         blindStrip: rect('#blind-strip'),
         street: rect('#street-label'),
         actionPanel: rect('#action-panel'),
-        chatPreview: rect('#chat-preview'),
+        chatPanel: rect('#chat-panel'),
         pauseButton: rect('#pause-button'),
         runtimeSettingsButton: rect('#runtime-settings-button'),
         pausedBanner: rect('#paused-banner'),
@@ -460,7 +445,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
         blindStrip: rect('#blind-strip'),
         street: rect('#street-label'),
         actionPanel: rect('#action-panel'),
-        chatPreview: rect('#chat-preview'),
+        chatPanel: rect('#chat-panel'),
         pauseButton: rect('#pause-button'),
         runtimeSettingsButton: rect('#runtime-settings-button'),
         pausedBanner: rect('#paused-banner'),
@@ -559,26 +544,21 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     JSON.stringify(afterAllIn.seatBlockerOverlaps));
   console.log('320px all-in geometry diagnostics: ' +
     JSON.stringify({before: beforeAllIn, after: afterAllIn}));
-  console.log('320px presets, focus-free felt wheel, three-line chat, and Enter-to-send pass; strict odds geometry is deferred to the suite end.');
+  console.log('320px shared presets and chat drawer, plus desktop focus-free wheel, pass; strict odds geometry is deferred to the suite end.');
   await actorPage.screenshot('heads-up-full-320');
   const pauseConfig = {
     name: 'Adjustments pause ' + stamp,
-    max_seats: 2,
     starting_stack: 1000,
     small_blind: 5,
     big_blind: 10,
     level_minutes: 79,
     turn_seconds: 3,
-    runout_seconds: 1,
-    showdown_seconds: 0,
-    blind_announcement_seconds: 0,
-    elimination_announcement_seconds: 0,
     buy_in: 10,
     payout_percentages: [100],
   };
   const pauseCreated = await request('/tables', host, pauseConfig);
   const pausePath = '/tables/' + pauseCreated.id;
-  await request(pausePath + '/bots', host, {seat_no: 1});
+  await request(pausePath + '/bots', admin, {seat_no: 1});
   await Promise.all([openTable(one, pauseConfig.name), openTable(two, pauseConfig.name)]);
   await evaluate(one, () => {
     window.adjustmentsPauseTimer = window.setInterval(() => {
@@ -620,12 +600,10 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       '#settings-starting-stack', '#settings-small-blind', '#settings-big-blind']
       .every(selector => {
         const node = document.querySelector(selector);
-        return node && (node.closest('[data-lobby-only]')?.hidden || node.disabled);
+        return !node || node.closest('[data-lobby-only]')?.hidden || node.disabled;
       }),
-    timingEnabled: ['#settings-level-minutes', '#settings-turn-seconds',
-      '#settings-runout-seconds', '#settings-blind-announcement-seconds',
-      '#settings-elimination-announcement-seconds']
-      .every(selector => !document.querySelector(selector).disabled),
+    timingEnabled: ['#settings-level-minutes', '#settings-turn-seconds']
+      .every(selector => document.querySelector(selector) && !document.querySelector(selector).disabled),
   }));
   assert(runtimeControls.mode === 'runtime' && runtimeControls.economicsHidden && runtimeControls.timingEnabled,
     'Paused runtime settings must expose timing only: ' + JSON.stringify(runtimeControls));
@@ -645,14 +623,14 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     await input(one, selector, value);
     await evaluate(one, () => document.querySelector('#save-settings-button').scrollIntoView({block: 'center'}));
     await sleep(120);
-    const control = await evaluate(one, () => {
+    const control = await evaluate(one, query => {
       const node = document.querySelector('#save-settings-button');
       const r = node.getBoundingClientRect();
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       return {
         disabled: node.disabled,
-        fieldDisabled: document.querySelector('#settings-turn-seconds').disabled,
-        targetValue: document.querySelector('#settings-elimination-announcement-seconds').value,
+        fieldDisabled: document.querySelector(query).disabled,
+        targetValue: document.querySelector(query).value,
         formHidden: document.querySelector('#table-settings-form').hidden,
         lockNote: document.querySelector('#settings-lock-note').textContent,
         pauseLabel: document.querySelector('#pause-button').textContent,
@@ -662,19 +640,19 @@ export default async function adjustments([one, two], sleep, roomPassword) {
           r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1 &&
           (hit === node || node.contains(hit)),
       };
-    });
-    assert(!control.disabled && control.reachable,
+    }, selector);
+    assert(!control.disabled && !control.fieldDisabled && control.reachable,
       'Save settings is not reachable at ' + width + 'x' + height + ': ' + JSON.stringify(control));
     await one.screenshot(screenshot);
     await click(one, '#save-settings-button');
     await waitForConfig(pausePath, settingKey, value);
   }
   await saveRuntimeAt(320, 568, '#settings-turn-seconds', 4, 'runtime-save-320x568', 'turn_seconds');
-  await saveRuntimeAt(390, 844, '#settings-elimination-announcement-seconds', 3,
-    'runtime-save-390x844', 'elimination_announcement_seconds');
+  await saveRuntimeAt(390, 844, '#settings-level-minutes', 0.5,
+    'runtime-save-390x844', 'level_minutes');
   let pausedView = await request(pausePath, host);
   assert(pausedView.paused && pausedView.config.turn_seconds === 4 &&
-    pausedView.config.elimination_announcement_seconds === 3,
+    pausedView.config.level_minutes === 0.5,
   'Paused pacing changes did not save to the active table: ' + JSON.stringify(pausedView.config));
   const pausedSnapshot = {
     hand: pausedView.hand_no,
@@ -698,19 +676,18 @@ export default async function adjustments([one, two], sleep, roomPassword) {
 
   const blindConfig = {
     name: 'Adjustments blind announcement ' + stamp,
-    max_seats: 3,
     starting_stack: 1000,
     small_blind: 5,
     big_blind: 10,
     level_minutes: 0.1,
     turn_seconds: 3600,
-    runout_seconds: 1,
-    showdown_seconds: 0,
-    blind_announcement_seconds: 8,
-    elimination_announcement_seconds: 5,
     buy_in: 10,
     payout_percentages: [60, 25, 15],
   };
+  await request('/admin/config', admin, {
+    runout_seconds:1, showdown_seconds:0,
+    blind_announcement_seconds:8, elimination_announcement_seconds:5,
+  });
   const blindCreated = await request('/tables', host, blindConfig);
   const blindPath = '/tables/' + blindCreated.id;
   await request(blindPath + '/seat', guest, {seat_no: 1});
@@ -777,19 +754,18 @@ export default async function adjustments([one, two], sleep, roomPassword) {
 
   const finalConfig = {
     name: 'Adjustments final announcement ' + stamp,
-    max_seats: 2,
     starting_stack: 100,
     small_blind: 5,
     big_blind: 10,
     level_minutes: 79,
     turn_seconds: 3600,
-    runout_seconds: 1,
-    showdown_seconds: 0,
-    blind_announcement_seconds: 0,
-    elimination_announcement_seconds: 12,
     buy_in: 10,
     payout_percentages: [60, 40],
   };
+  await request('/admin/config', admin, {
+    runout_seconds:1, showdown_seconds:0,
+    blind_announcement_seconds:0, elimination_announcement_seconds:12,
+  });
   const finalCreated = await request('/tables', host, finalConfig);
   const finalPath = '/tables/' + finalCreated.id;
   await request(finalPath + '/seat', guest, {seat_no: 1});

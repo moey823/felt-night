@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -42,7 +43,21 @@ GLOBAL_LOGIN_LIMIT = 50
 MAX_WORKERS = 32
 ROOM_PASSWORD_ENV = "FELT_NIGHT_ROOM_PASSWORD"
 ROOM_PASSWORD_FILE_ENV = "FELT_NIGHT_ROOM_PASSWORD_FILE"
+ADMIN_USERNAME_ENV = "FELT_NIGHT_ADMIN_USERNAME"
 MAX_ROOM_PASSWORD_LENGTH = 4096
+ADMIN_END_CONFIRM_SECONDS = 60
+ADMIN_PLAYER_PREFIX = "admin:"
+DEFAULT_GLOBAL_CONFIG = {
+    "runout_seconds": engine.RUNOUT_SECONDS,
+    "blind_announcement_seconds": engine.BLIND_ANNOUNCEMENT_SECONDS,
+    "elimination_announcement_seconds": engine.ELIMINATION_ANNOUNCEMENT_SECONDS,
+    "showdown_seconds": engine.SHOWDOWN_SECONDS,
+    "bet_presets": {
+        "preflop_bb": [2.5, 3, 4],
+        "postflop_percent": [50, 75, 100],
+    },
+}
+_ADMIN_USERNAME_FROM_ENV = object()
 
 
 class AppError(Exception):
@@ -133,12 +148,76 @@ def _load_room_password(environ=None):
     return _validate_room_password(direct_password)
 
 
+def _validate_admin_username(value):
+    if not isinstance(value, str):
+        raise RuntimeError("admin username must be 3 to 24 letters, numbers, periods, underscores, or hyphens")
+    username = value.strip().lower()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,23}", username):
+        raise RuntimeError("admin username must be 3 to 24 letters, numbers, periods, underscores, or hyphens")
+    return username
+
+
+def _load_admin_username(environ=None):
+    config = os.environ if environ is None else environ
+    value = config.get(ADMIN_USERNAME_ENV)
+    return None if value is None else _validate_admin_username(value)
+
+
+def _validate_global_config(value, base=None):
+    if not isinstance(value, dict):
+        raise AppError(400, "invalid_admin_config", "Admin settings must be a JSON object.")
+    allowed = {
+        "runout_seconds", "blind_announcement_seconds",
+        "elimination_announcement_seconds", "showdown_seconds", "bet_presets",
+    }
+    unknown = set(value) - allowed
+    if unknown:
+        raise AppError(400, "invalid_admin_config", "Unknown global setting.")
+    result = copy.deepcopy(base if base is not None else DEFAULT_GLOBAL_CONFIG)
+    for key, low, high in (
+        ("runout_seconds", 1, engine.MAX_TIMER_SECONDS),
+        ("blind_announcement_seconds", 0, 60),
+        ("elimination_announcement_seconds", 0, 60),
+        ("showdown_seconds", 0, 60),
+    ):
+        if key not in value:
+            continue
+        setting = value[key]
+        if (type(setting) not in (int, float) or not low <= setting <= high or
+                not math.isfinite(setting)):
+            raise AppError(400, "invalid_admin_config", "Invalid " + key + ".")
+        result[key] = setting
+    if "bet_presets" in value:
+        presets = value["bet_presets"]
+        if not isinstance(presets, dict) or set(presets) - {"preflop_bb", "postflop_percent"}:
+            raise AppError(400, "invalid_admin_config", "Invalid shared bet presets.")
+        updated = copy.deepcopy(result["bet_presets"])
+        for key, minimum, maximum in (
+            ("preflop_bb", 1, 200), ("postflop_percent", 1, 1000),
+        ):
+            if key not in presets:
+                continue
+            values = presets[key]
+            if (not isinstance(values, (list, tuple)) or not 1 <= len(values) <= 5 or
+                    any(type(item) not in (int, float) or not minimum <= item <= maximum or
+                        not math.isfinite(item) for item in values) or
+                    any(values[index] >= values[index + 1] for index in range(len(values) - 1))):
+                raise AppError(400, "invalid_admin_config", "Invalid " + key + " presets.")
+            updated[key] = list(values)
+        result["bet_presets"] = updated
+    return result
+
+
 def _json_dumps(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
 class Store:
-    def __init__(self, data_dir, room_password):
+    def __init__(self, data_dir, room_password, admin_username=None):
+        self.admin_username = admin_username
+        self.admin_player_id = (
+            ADMIN_PLAYER_PREFIX + admin_username if admin_username is not None else None
+        )
         self.data_dir = os.path.abspath(data_dir)
         if os.path.lexists(self.data_dir) and os.path.islink(self.data_dir):
             raise RuntimeError("data directory may not be a symlink")
@@ -198,6 +277,13 @@ class Store:
                     updated REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS tables_updated ON tables(updated);
+                CREATE TABLE IF NOT EXISTS end_confirmations (
+                    token_hash TEXT PRIMARY KEY,
+                    table_id TEXT NOT NULL REFERENCES tables(id) ON DELETE CASCADE,
+                    host_id TEXT NOT NULL,
+                    expires REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS end_confirmations_expiry ON end_confirmations(expires);
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     table_id TEXT NOT NULL REFERENCES tables(id) ON DELETE CASCADE,
@@ -218,6 +304,42 @@ class Store:
                     ON login_attempts(client_key, attempted);
             """)
             tournament_history.create_schema(conn)
+            global_row = conn.execute(
+                "SELECT value FROM meta WHERE key='global_config'"
+            ).fetchone()
+            if global_row is None:
+                conn.execute(
+                    "INSERT INTO meta(key,value) VALUES('global_config',?)",
+                    (_json_dumps(DEFAULT_GLOBAL_CONFIG),),
+                )
+            else:
+                try:
+                    stored_global_config = json.loads(global_row["value"])
+                    _validate_global_config(stored_global_config)
+                except (ValueError, TypeError, AppError) as exc:
+                    raise RuntimeError("stored global settings are invalid") from exc
+            if self.admin_username is None:
+                conn.execute(
+                    "DELETE FROM sessions WHERE player_id LIKE ?",
+                    (ADMIN_PLAYER_PREFIX + "%",),
+                )
+            else:
+                if conn.execute(
+                    "SELECT 1 FROM accounts WHERE username=?", (self.admin_username,),
+                ).fetchone():
+                    raise RuntimeError("configured admin username is already registered")
+                conn.execute(
+                    "DELETE FROM sessions WHERE player_id LIKE ? AND player_id<>?",
+                    (ADMIN_PLAYER_PREFIX + "%", self.admin_player_id),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO players(id,name,created) VALUES(?,?,?)",
+                    (self.admin_player_id, self.admin_username, time.time()),
+                )
+                conn.execute(
+                    "UPDATE players SET name=? WHERE id=?",
+                    (self.admin_username, self.admin_player_id),
+                )
             history_marker = conn.execute(
                 "SELECT value FROM meta WHERE key='history_backfill_v1'"
             ).fetchone()
@@ -312,13 +434,15 @@ class Store:
             if row["expires"] <= now:
                 conn.execute("DELETE FROM sessions WHERE token_hash=?", (row["token_hash"],))
                 return None
-            has_account = row["account_name"] is not None
+            is_admin = self.admin_player_id is not None and row["player_id"] == self.admin_player_id
+            has_account = row["account_name"] is not None or is_admin
             return {
                 "id": row["player_id"],
-                "name": row["name"],
-                "username": row["account_name"],
+                "name": self.admin_username if is_admin else row["name"],
+                "username": self.admin_username if is_admin else row["account_name"],
                 "account": has_account,
                 "needs_claim": not has_account,
+                "is_admin": is_admin,
             }
         finally:
             conn.close()
@@ -385,6 +509,17 @@ class Store:
             "username": display_name,
             "account": True,
             "needs_claim": False,
+            "is_admin": False,
+        }
+
+    def _admin_player(self):
+        return {
+            "id": self.admin_player_id,
+            "name": self.admin_username,
+            "username": self.admin_username,
+            "account": True,
+            "needs_claim": False,
+            "is_admin": True,
         }
 
     def _issue_session(self, conn, player_id, now):
@@ -402,6 +537,8 @@ class Store:
         return token
 
     def create_account(self, username, display_name, password, now, legacy_player_id=None):
+        if self.admin_username is not None and username == self.admin_username:
+            raise AppError(409, "username_reserved", "That username is reserved for the room admin.")
         salt = secrets.token_bytes(16)
         verifier = self._password_verifier(password, salt)
         conn = self.connect()
@@ -438,6 +575,27 @@ class Store:
             token = None if legacy_player_id is not None else self._issue_session(conn, player_id, now)
             conn.commit()
             return self._account_player(player_id, display_name), token
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def login_admin(self, now):
+        if self.admin_username is None or self.admin_player_id is None:
+            return None
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            player = conn.execute(
+                "SELECT 1 FROM players WHERE id=?", (self.admin_player_id,),
+            ).fetchone()
+            if player is None:
+                return None
+            token = self._issue_session(conn, self.admin_player_id, now)
+            conn.commit()
+            return self._admin_player(), token
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
@@ -489,18 +647,80 @@ class Store:
         finally:
             conn.close()
 
-    def create_table(self, owner, owner_name, table_name, config, now):
-        table_id = uuid.uuid4().hex
-        state = engine.create_lobby(table_id, owner["id"], owner_name, config, now)
-        state["name"] = table_name
+    @staticmethod
+    def _global_config_from_conn(conn):
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='global_config'",
+        ).fetchone()
+        if row is None:
+            return copy.deepcopy(DEFAULT_GLOBAL_CONFIG)
+        try:
+            return _validate_global_config(json.loads(row["value"]))
+        except (TypeError, ValueError, AppError) as exc:
+            raise RuntimeError("stored global settings are invalid") from exc
+
+    def get_global_config(self):
+        conn = self.connect()
+        try:
+            return self._global_config_from_conn(conn)
+        finally:
+            conn.close()
+
+    def update_global_config(self, changes, now):
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            current = self._global_config_from_conn(conn)
+            updated = _validate_global_config(changes, current)
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES('global_config',?)",
+                (_json_dumps(updated),),
+            )
+            timings = {
+                key: updated[key] for key in (
+                    "runout_seconds", "blind_announcement_seconds",
+                    "elimination_announcement_seconds", "showdown_seconds",
+                )
+            }
+            rows = conn.execute(
+                "SELECT id,state FROM tables WHERE json_extract(state,'$.status') IN ('lobby','playing')"
+            ).fetchall()
+            for row in rows:
+                state = json.loads(row["state"])
+                table_config = state.setdefault("config", {})
+                table_config.update(timings)
+                conn.execute(
+                    "UPDATE tables SET state=?,updated=? WHERE id=?",
+                    (_json_dumps(state), now, row["id"]),
+                )
+            conn.commit()
+            return updated
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def create_table(self, owner, owner_name, table_name, config, now):
+        table_id = uuid.uuid4().hex
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            global_config = self._global_config_from_conn(conn)
+            table_config = dict(config)
+            table_config["max_seats"] = engine.MAX_SEATS
+            for key in (
+                "runout_seconds", "blind_announcement_seconds",
+                "elimination_announcement_seconds", "showdown_seconds",
+            ):
+                table_config[key] = global_config[key]
+            state = engine.create_lobby(table_id, owner["id"], owner_name, table_config, now)
+            state["name"] = table_name
             count = conn.execute(
                 "SELECT COUNT(*) AS n FROM tables WHERE json_extract(state,'$.status') IN ('lobby','playing')"
             ).fetchone()["n"]
             if count >= MAX_ACTIVE_TABLES:
-                conn.rollback()
                 raise AppError(503, "capacity", "The app is at its active table limit.")
             conn.execute(
                 "INSERT INTO tables(id,owner_id,state,created,updated) VALUES(?,?,?,?,?)",
@@ -508,13 +728,85 @@ class Store:
             )
             tournament_history.record_table_created(conn, state, owner["id"], now)
             conn.commit()
+            return state
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
             raise
         finally:
             conn.close()
-        return state
+
+    def request_end_confirmation(self, table_id, host_id, now):
+        token = secrets.token_urlsafe(32)
+        expires = now + ADMIN_END_CONFIRM_SECONDS
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT state FROM tables WHERE id=?", (table_id,)).fetchone()
+            if row is None:
+                raise AppError(404, "table_not_found", "Table not found.")
+            state = json.loads(row["state"])
+            if state.get("host_id") != host_id:
+                raise engine.GameError("host_only", "Only the table host can end this tournament.", 403)
+            if state.get("status") not in ("lobby", "playing"):
+                raise engine.GameError("table_not_active", "Only an active lobby or tournament can be ended.", 409)
+            conn.execute("DELETE FROM end_confirmations WHERE expires<=?", (now,))
+            conn.execute("DELETE FROM end_confirmations WHERE table_id=?", (table_id,))
+            conn.execute(
+                "INSERT INTO end_confirmations(token_hash,table_id,host_id,expires) VALUES(?,?,?,?)",
+                (self.hash_token(token), table_id, host_id, expires),
+            )
+            conn.commit()
+            return token, expires
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def end_table_with_confirmation(self, table_id, host_id, token, now):
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{40,64}", token):
+            raise AppError(400, "invalid_confirmation", "Confirm this table end again.")
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT state FROM tables WHERE id=?", (table_id,)).fetchone()
+            if row is None:
+                raise AppError(404, "table_not_found", "Table not found.")
+            confirmation = conn.execute(
+                "SELECT table_id,host_id,expires FROM end_confirmations WHERE token_hash=?",
+                (self.hash_token(token),),
+            ).fetchone()
+            if (confirmation is None or confirmation["table_id"] != table_id or
+                    confirmation["host_id"] != host_id or confirmation["expires"] <= now):
+                raise AppError(403, "invalid_confirmation", "Confirm this table end again.")
+            original = json.loads(row["state"])
+            if original.get("host_id") != host_id:
+                raise engine.GameError("host_only", "Only the table host can end this tournament.", 403)
+            previous = copy.deepcopy(original)
+            advanced = engine.advance(original, now)
+            advanced_snapshot = copy.deepcopy(advanced)
+            state = engine.end_tournament(copy.deepcopy(advanced), host_id, now)
+            conn.execute("DELETE FROM end_confirmations WHERE table_id=?", (table_id,))
+            final_json = _json_dumps(state)
+            if final_json != row["state"]:
+                conn.execute(
+                    "UPDATE tables SET state=?,updated=? WHERE id=?",
+                    (final_json, now, table_id),
+                )
+            tournament_history.sync_state(conn, previous, now)
+            if _json_dumps(advanced_snapshot) != row["state"]:
+                tournament_history.sync_state(conn, advanced_snapshot, now)
+            tournament_history.sync_state(conn, state, now)
+            conn.commit()
+            return state
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def list_tables(self, now, viewer_id):
         conn = self.connect()
@@ -812,6 +1104,12 @@ class Handler(BaseHTTPRequestHandler):
             raise AppError(403, "account_required", "Create or claim a personal account to continue.")
         return session[0], session[1]
 
+    def _require_admin(self):
+        player, token = self._require_player()
+        if not player.get("is_admin"):
+            raise AppError(403, "admin_required", "Room admin access is required.")
+        return player, token
+
     def _require_csrf(self, token):
         received = self.headers.get("X-SitNgo-CSRF", "")
         expected = self.app.store.csrf_token(token)
@@ -949,6 +1247,14 @@ class Handler(BaseHTTPRequestHandler):
                 "/poker/style.css": ("style.css", "text/css; charset=utf-8"),
                 "/poker/room.css": ("room.css", "text/css; charset=utf-8"),
                 "/poker/ace.svg": ("ace.svg", "image/svg+xml"),
+                "/poker/manifest.webmanifest": (
+                    "manifest.webmanifest", "application/manifest+json; charset=utf-8",
+                ),
+                "/poker/service-worker.js": ("service-worker.js", "text/javascript; charset=utf-8"),
+                "/poker/icon.svg": ("icon.svg", "image/svg+xml"),
+                "/poker/icon-192.png": ("icon-192.png", "image/png"),
+                "/poker/icon-512.png": ("icon-512.png", "image/png"),
+                "/poker/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
                 "/poker/security.html": ("security.html", "text/html; charset=utf-8"),
             }
             if path in assets:
@@ -962,6 +1268,14 @@ class Handler(BaseHTTPRequestHandler):
                         "form-action 'self'; frame-ancestors 'none'"
                     )
                 self._send(200, body, content_type, headers)
+                return
+            if path == "/poker/api/config":
+                self._require_player()
+                self._json(200, {"config": self.app.store.get_global_config()})
+                return
+            if path == "/poker/api/admin/config":
+                self._require_admin()
+                self._json(200, {"config": self.app.store.get_global_config()})
                 return
             if path == "/poker/api/me":
                 session = self._player()
@@ -1076,7 +1390,13 @@ class Handler(BaseHTTPRequestHandler):
                 password = body.get("password")
                 if not isinstance(password, str) or len(password) > 256:
                     password = ""
-                result = self.app.store.login_account(username, password, now)
+                if (self.app.admin_username is not None and
+                        username == self.app.admin_username and password == ""):
+                    result = self.app.store.login_admin(now)
+                elif username == self.app.admin_username:
+                    result = None
+                else:
+                    result = self.app.store.login_account(username, password, now)
                 if result is None:
                     self.app.store.record_failed_login(client_key, now)
                     self._error(401, "invalid_credentials", "Sign-in failed.")
@@ -1121,9 +1441,35 @@ class Handler(BaseHTTPRequestHandler):
                             ("; Secure" if self.app.secure_cookie else "")})
                 return
 
+            if path == "/poker/api/admin/config":
+                if not player.get("is_admin"):
+                    raise AppError(403, "admin_required", "Room admin access is required.")
+                config = self.app.store.update_global_config(body, now)
+                self._json(200, {"config": config})
+                return
+
+            admin_bot_match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/bots", path,
+            )
+            if player.get("is_admin") and admin_bot_match:
+                table_id = admin_bot_match.group(1)
+                seat_no = self._integer(body.get("seat_no"), "seat_no", 0, 8)
+                state = self.app.store.mutate_table(
+                    table_id,
+                    lambda value: engine.add_bot(
+                        value, player["id"], seat_no, now, is_admin=True,
+                    ),
+                    now,
+                )
+                self._json(200, {"table": engine.public_view(state, player["id"])})
+                return
+
             if not player.get("account"):
                 raise AppError(403, "account_required",
                                "Claim this legacy seat or sign in with a personal account.")
+            if player.get("is_admin"):
+                raise AppError(403, "admin_read_only",
+                               "Room admins can only change global settings or lobby bots.")
 
             chat_match = re.fullmatch(
                 r"/poker/api/tables/([a-f0-9]{32})/chat", path,
@@ -1176,22 +1522,12 @@ class Handler(BaseHTTPRequestHandler):
                 if any(ch in "<>" for ch in name):
                     raise AppError(400, "invalid_table_name", "Table name contains an unsupported character.")
                 config = {
-                    "max_seats": self._integer(body.get("max_seats"), "max_seats", 2, 9),
+                    "max_seats": engine.MAX_SEATS,
                     "starting_stack": self._integer(body.get("starting_stack"), "starting_stack", 100, 1_000_000_000),
                     "small_blind": self._integer(body.get("small_blind"), "small_blind", 1, 1_000_000_000),
                     "big_blind": self._integer(body.get("big_blind"), "big_blind", 2, 1_000_000_000),
                     "level_minutes": body.get("level_minutes"),
                     "turn_seconds": self._integer(body.get("turn_seconds", engine.TURN_SECONDS), "turn_seconds", 1, engine.MAX_TIMER_SECONDS),
-                    "runout_seconds": body.get("runout_seconds", engine.RUNOUT_SECONDS),
-                    "blind_announcement_seconds": body.get(
-                        "blind_announcement_seconds", engine.BLIND_ANNOUNCEMENT_SECONDS,
-                    ),
-                    "elimination_announcement_seconds": body.get(
-                        "elimination_announcement_seconds", engine.ELIMINATION_ANNOUNCEMENT_SECONDS,
-                    ),
-                    "showdown_seconds": body.get(
-                        "showdown_seconds", engine.SHOWDOWN_SECONDS,
-                    ),
                     "buy_in": self._integer(
                         body.get("buy_in", engine.DEFAULT_BUY_IN),
                         "buy_in", 0, engine.MAX_CHIPS,
@@ -1205,6 +1541,26 @@ class Handler(BaseHTTPRequestHandler):
                 state = self.app.store.create_table(player, player["name"], name, config, now)
                 self._json(201, {"table": engine.public_view(state, player["id"])})
                 return
+
+            end_match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/end", path)
+            if end_match:
+                table_id = end_match.group(1)
+                if body.get("confirm") is True and "confirmation_token" not in body:
+                    confirmation_token, expires_at = self.app.store.request_end_confirmation(
+                        table_id, player["id"], now,
+                    )
+                    self._json(200, {
+                        "confirmation_token": confirmation_token,
+                        "expires_at": expires_at,
+                    })
+                    return
+                if "confirmation_token" in body and "confirm" not in body:
+                    state = self.app.store.end_table_with_confirmation(
+                        table_id, player["id"], body["confirmation_token"], now,
+                    )
+                    self._json(200, {"table": engine.public_view(state, player["id"])})
+                    return
+                raise AppError(400, "invalid_confirmation", "Confirm this table end again.")
 
             match = re.fullmatch(
                 r"/poker/api/tables/([a-f0-9]{32})/(join|seat|stand|start|action|leave|cancel|settings|bots|pause)",
@@ -1230,16 +1586,14 @@ class Handler(BaseHTTPRequestHandler):
                     table_id, lambda value: engine.stand(value, player["id"], now), now)
             elif operation == "settings":
                 supported_settings = {
-                    "max_seats", "starting_stack", "small_blind", "big_blind",
-                    "buy_in", "turn_seconds", "level_minutes", "runout_seconds",
-                    "blind_announcement_seconds", "elimination_announcement_seconds",
-                    "showdown_seconds", "payout_percentages", "name",
+                    "starting_stack", "small_blind", "big_blind",
+                    "buy_in", "turn_seconds", "level_minutes",
+                    "payout_percentages", "name",
                 }
                 unknown_settings = set(body) - supported_settings
                 if unknown_settings:
                     raise AppError(400, "invalid_settings", "Unknown table setting.")
                 field_ranges = {
-                    "max_seats": (2, 9),
                     "starting_stack": (100, 1_000_000_000),
                     "small_blind": (1, 1_000_000_000),
                     "big_blind": (2, 1_000_000_000),
@@ -1251,10 +1605,7 @@ class Handler(BaseHTTPRequestHandler):
                     for field, (minimum, maximum) in field_ranges.items()
                     if field in body
                 }
-                for duration in (
-                    "level_minutes", "runout_seconds", "blind_announcement_seconds",
-                    "elimination_announcement_seconds", "showdown_seconds",
-                ):
+                for duration in ("level_minutes",):
                     if duration in body:
                         settings[duration] = body[duration]  # Numeric ranges are validated by the engine.
                 if "payout_percentages" in body:
@@ -1369,7 +1720,9 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             state = self.app.store.mutate_table(
                 table_id,
-                lambda value: engine.remove_bot(value, player["id"], seat_no, now),
+                lambda value: engine.remove_bot(
+                    value, player["id"], seat_no, now, is_admin=player.get("is_admin", False),
+                ),
                 now,
             )
             self._json(200, {"table": engine.public_view(state, player["id"])})
@@ -1387,13 +1740,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class App:
-    def __init__(self, args, room_password=None):
+    def __init__(self, args, room_password=None, admin_username=_ADMIN_USERNAME_FROM_ENV):
         self.room_password = (
             _load_room_password() if room_password is None
             else _validate_room_password(room_password)
         )
+        self.admin_username = (
+            _load_admin_username() if admin_username is _ADMIN_USERNAME_FROM_ENV
+            else (None if admin_username is None else _validate_admin_username(admin_username))
+        )
         self.public_origin, self.public_netloc, self.secure_cookie = _parse_origin(args.public_origin)
-        self.store = Store(args.data_dir, self.room_password)
+        self.store = Store(args.data_dir, self.room_password, self.admin_username)
 
 
 def _background_ticks(store, stop_event):

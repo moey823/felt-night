@@ -28,6 +28,15 @@ class RoomPasswordConfigTests(unittest.TestCase):
             server._load_room_password({server.ROOM_PASSWORD_ENV: "private\ninvite"})
         self.assertNotIn("private", str(caught.exception))
 
+    def test_admin_username_is_explicitly_opt_in_and_validated(self):
+        self.assertIsNone(server._load_admin_username({}))
+        self.assertEqual(
+            server._load_admin_username({server.ADMIN_USERNAME_ENV: "Admin.Room"}),
+            "admin.room",
+        )
+        with self.assertRaisesRegex(RuntimeError, "admin username"):
+            server._load_admin_username({server.ADMIN_USERNAME_ENV: "bad username"})
+
     def test_private_file_password_accepts_one_trailing_newline(self):
         with tempfile.TemporaryDirectory(prefix="felt-night-password-") as directory:
             path = Path(directory) / "room-invite.txt"
@@ -150,6 +159,26 @@ class ServerAuthTests(unittest.TestCase):
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         return cookie, body["session_proof"], body["csrf"], body["player"]
 
+    def enable_admin(self, username="admin"):
+        args = types.SimpleNamespace(
+            public_origin=self.origin,
+            data_dir=str(self.data_dir),
+        )
+        self.app = server.App(
+            args, room_password=self.password, admin_username=username,
+        )
+        self.app.public_origin = self.origin
+        self.app.public_netloc = "localhost:%d" % self.port
+        self.app.secure_cookie = False
+        self.httpd.app = self.app
+        status, headers, body = self.request(
+            "POST", "/poker/api/login", {"username": username, "password": ""},
+        )
+        if status != 200:
+            raise AssertionError((status, body))
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        return cookie, body["session_proof"], body["csrf"], body["player"]
+
     def seed_legacy_session(self, name="Legacy"):
         player_id = server.uuid.uuid4().hex
         token = server.secrets.token_urlsafe(32)
@@ -193,6 +222,12 @@ class ServerAuthTests(unittest.TestCase):
         for path, expected_type in (
             ("/poker/room.css", "text/css"),
             ("/poker/ace.svg", "image/svg+xml"),
+            ("/poker/manifest.webmanifest", "application/manifest+json"),
+            ("/poker/service-worker.js", "text/javascript"),
+            ("/poker/icon.svg", "image/svg+xml"),
+            ("/poker/icon-192.png", "image/png"),
+            ("/poker/icon-512.png", "image/png"),
+            ("/poker/apple-touch-icon.png", "image/png"),
             ("/poker/security.html", "text/html"),
         ):
             with self.subTest(path=path):
@@ -497,13 +532,13 @@ class ServerAuthTests(unittest.TestCase):
 
         status, _, updated = self.request(
             "POST", path + "/settings",
-            {"name": "Edited lobby", "max_seats": 5, "starting_stack": 2000},
+            {"name": "Edited lobby", "starting_stack": 2000},
             cookie=host_cookie, proof=host_proof, csrf=host_csrf,
         )
         self.assertEqual(status, 200, updated)
         table = updated["table"]
         self.assertEqual(table["name"], "Edited lobby")
-        self.assertEqual(table["config"]["max_seats"], 5)
+        self.assertEqual(table["config"]["max_seats"], 9)
         self.assertEqual(
             {seat["id"]: seat["stack"] for seat in table["seats"]},
             {host["id"]: 2000, guest["id"]: 2000},
@@ -564,7 +599,8 @@ class ServerAuthTests(unittest.TestCase):
                     cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
                 )
                 self.assertEqual(status, 403, body)
-                self.assertEqual(body["error"]["code"], "host_only")
+                expected = "admin_required" if "bots" in suffix else "host_only"
+                self.assertEqual(body["error"]["code"], expected)
 
     def test_sit_out_route_checks_csrf_ownership_and_persists_toggle(self):
         host_cookie, host_proof, host_csrf, host = self.login("Sitout Host")
@@ -1144,67 +1180,180 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(invalid_query["error"]["code"], "invalid_url")
 
-    def test_host_can_create_and_edit_arbitrary_tournament_timers(self):
-        cookie, proof, csrf, _ = self.login("Host")
-        auth = dict(cookie=cookie, proof=proof, csrf=csrf)
-        cfg = dict(name="Custom pace", max_seats=2, starting_stack=1000,
-                   small_blind=10, big_blind=20, level_minutes=97,
-                   turn_seconds=19, runout_seconds=1.5, showdown_seconds=4.5,
-                   buy_in=25, payout_percentages=[70, 30])
-        status, _, created = self.request("POST", "/poker/api/tables", cfg, **auth)
+    def test_admin_config_owns_shared_timers_presets_and_existing_table_defaults(self):
+        admin_cookie, admin_proof, admin_csrf, admin = self.enable_admin("admin")
+        admin_auth = dict(cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf)
+        host_cookie, host_proof, host_csrf, host = self.login("Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Guest")
+        host_auth = dict(cookie=host_cookie, proof=host_proof, csrf=host_csrf)
+
+        status, _, reserved = self.request(
+            "POST", "/poker/api/register",
+            {"username": "ADMIN", "password": self.account_password,
+             "room_password": self.password},
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(reserved["error"]["code"], "username_reserved")
+        status, _, wrong_admin_password = self.request(
+            "POST", "/poker/api/login", {"username": "admin", "password": "wrong"},
+        )
+        self.assertEqual(status, 401)
+
+        status, _, normal_config = self.request(
+            "GET", "/poker/api/config", cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, normal_config)
+        self.assertEqual(normal_config["config"]["bet_presets"]["preflop_bb"], [2.5, 3, 4])
+        status, _, not_admin = self.request(
+            "GET", "/poker/api/admin/config", cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(not_admin["error"]["code"], "admin_required")
+        status, _, not_admin_write = self.request(
+            "POST", "/poker/api/admin/config", {"runout_seconds": 3}, **host_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(not_admin_write["error"]["code"], "admin_required")
+
+        for bad_config in (
+            {"runout_seconds": 0},
+            {"showdown_seconds": 61},
+            {"bet_presets": {"preflop_bb": [3, 2]}},
+            {"bet_presets": {"postflop_percent": [0, 50]}},
+        ):
+            status, _, rejected = self.request(
+                "POST", "/poker/api/admin/config", bad_config, **admin_auth,
+            )
+            self.assertEqual(status, 400, rejected)
+            self.assertEqual(rejected["error"]["code"], "invalid_admin_config")
+
+        cfg = {
+            "name": "Admin controlled pace", "max_seats": 2,
+            "starting_stack": 1000, "small_blind": 10, "big_blind": 20,
+            "level_minutes": 97, "turn_seconds": 19, "runout_seconds": 1.5,
+            "blind_announcement_seconds": 0, "elimination_announcement_seconds": 61,
+            "showdown_seconds": -1, "buy_in": 25,
+            "payout_percentages": [60, 25, 15],
+        }
+        status, _, created = self.request("POST", "/poker/api/tables", cfg, **host_auth)
         self.assertEqual(status, 201, created)
         table = created["table"]
-        self.assertEqual(table["config"]["blind_announcement_seconds"], 5)
-        self.assertEqual(table["config"]["elimination_announcement_seconds"], 5)
-        self.assertEqual(table["config"]["showdown_seconds"], 4.5)
-        for field in (
-            "level_minutes", "turn_seconds", "runout_seconds", "showdown_seconds",
-            "buy_in", "payout_percentages",
+        self.assertEqual(table["config"]["max_seats"], 9)
+        for field, default in (
+            ("runout_seconds", 2.5), ("blind_announcement_seconds", 5),
+            ("elimination_announcement_seconds", 5), ("showdown_seconds", 5),
         ):
-            self.assertEqual(table["config"][field], cfg[field])
-        path = "/poker/api/tables/" + table["id"]
-        for field, bad in (("level_minutes", 0), ("level_minutes", "3"),
-                           ("turn_seconds", 0.5), ("turn_seconds", True),
-                           ("runout_seconds", None), ("runout_seconds", 3601),
-                           ("blind_announcement_seconds", -1),
-                           ("blind_announcement_seconds", 61),
-                           ("elimination_announcement_seconds", float("nan")),
-                           ("elimination_announcement_seconds", float("inf")),
-                           ("showdown_seconds", -1), ("showdown_seconds", 60.1),
-                           ("showdown_seconds", True), ("showdown_seconds", float("nan"))):
-            with self.subTest(field=field, bad=bad):
-                status, _, _ = self.request("POST", "/poker/api/tables",
-                                            dict(cfg, **{field: bad}), **auth)
-                self.assertEqual(status, 400)
-        status, _, _ = self.request("POST", path + "/bots", {"seat_no": 1}, **auth)
-        self.assertEqual(status, 200)
-        updated = dict(
-            level_minutes=72.5, turn_seconds=7, runout_seconds=3.25,
-            blind_announcement_seconds=4, elimination_announcement_seconds=6,
-            showdown_seconds=7, buy_in=0, payout_percentages=[80, 20],
+            self.assertEqual(table["config"][field], default)
+        self.assertEqual(table["config"]["level_minutes"], 97)
+        self.assertEqual(table["config"]["turn_seconds"], 19)
+        table_id = table["id"]
+        path = "/poker/api/tables/" + table_id
+
+        status, _, forbidden_seat = self.request(
+            "POST", path + "/seat", {"seat_no": 1}, **admin_auth,
         )
-        status, _, result = self.request("POST", path + "/settings", updated, **auth)
-        self.assertEqual(status, 200, result)
-        for field, value in updated.items():
-            self.assertEqual(result["table"]["config"][field], value)
-        for field in updated:
-            invalid = -1 if field in {
-                "buy_in", "blind_announcement_seconds",
-                "elimination_announcement_seconds", "showdown_seconds",
-            } else 0
-            status, _, _ = self.request(
-                "POST", path + "/settings", {field: invalid}, **auth,
+        self.assertEqual(status, 403)
+        self.assertEqual(forbidden_seat["error"]["code"], "admin_read_only")
+        status, _, seated = self.request(
+            "POST", path + "/seat", {"seat_no": 8},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, seated)
+        status, _, not_host_start = self.request(
+            "POST", path + "/start", {}, **admin_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(not_host_start["error"]["code"], "admin_read_only")
+
+        for field, value in (
+            ("max_seats", 4), ("runout_seconds", 7),
+            ("blind_announcement_seconds", 10),
+            ("elimination_announcement_seconds", 10), ("showdown_seconds", 10),
+        ):
+            status, _, rejected = self.request(
+                "POST", path + "/settings", {field: value}, **host_auth,
             )
-            self.assertEqual(status, 400, field)
-        status, _, result = self.request("POST", path + "/start", {}, **auth)
-        self.assertEqual(status, 200, result)
-        view = result["table"]
-        self.assertGreater(view["turn_deadline"] - view["server_now"], 6)
-        self.assertLessEqual(view["turn_deadline"] - view["server_now"], 7)
-        self.assertEqual(view["config"]["runout_seconds"], 3.25)
-        self.assertAlmostEqual(view["blinds"]["seconds_to_next"], 72.5 * 60, delta=1)
-        status, _, _ = self.request("POST", path + "/settings", dict(turn_seconds=9), **auth)
-        self.assertEqual(status, 409)
+            self.assertEqual(status, 400, rejected)
+            self.assertEqual(rejected["error"]["code"], "invalid_settings")
+
+        status, _, changed = self.request(
+            "POST", "/poker/api/admin/config",
+            {
+                "runout_seconds": 3.25,
+                "blind_announcement_seconds": 4,
+                "elimination_announcement_seconds": 6,
+                "showdown_seconds": 7,
+                "bet_presets": {
+                    "preflop_bb": [2, 2.5, 4, 5],
+                    "postflop_percent": [25, 50, 75, 100, 150],
+                },
+            },
+            **admin_auth,
+        )
+        self.assertEqual(status, 200, changed)
+        self.assertEqual(changed["config"]["runout_seconds"], 3.25)
+        self.assertEqual(changed["config"]["bet_presets"]["postflop_percent"], [25, 50, 75, 100, 150])
+
+        status, _, started = self.request("POST", path + "/start", {}, **host_auth)
+        self.assertEqual(status, 200, started)
+        self.assertEqual(started["table"]["config"]["max_seats"], 2)
+        self.assertEqual(started["table"]["config"]["payout_percentages"], [71, 29])
+        self.assertEqual(started["table"]["prize"]["payout_percentages"], [71, 29])
+        self.assertAlmostEqual(
+            started["table"]["turn_deadline"] - started["table"]["server_now"],
+            19, delta=0.1,
+        )
+        status, _, forbidden_action = self.request(
+            "POST", path + "/action",
+            {"action": "check", "expected_hand": started["table"]["hand_no"],
+             "expected_turn_version": started["table"]["turn_version"]},
+            **admin_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(forbidden_action["error"]["code"], "admin_read_only")
+
+        future_runout = time.time() + 90
+        def preserve_deadline(state):
+            state["hand"]["runout_at"] = future_runout
+            return state
+        self.app.store.mutate_table(table_id, preserve_deadline, time.time())
+        status, _, updated_detail = self.request(
+            "GET", path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, updated_detail)
+        original_turn_deadline = updated_detail["table"]["turn_deadline"]
+        status, _, changed_again = self.request(
+            "POST", "/poker/api/admin/config", {"runout_seconds": 2}, **admin_auth,
+        )
+        self.assertEqual(status, 200, changed_again)
+        status, _, refreshed = self.request("GET", path, cookie=host_cookie, proof=host_proof)
+        self.assertEqual(status, 200, refreshed)
+        self.assertEqual(refreshed["table"]["config"]["runout_seconds"], 2)
+        self.assertEqual(refreshed["table"]["turn_deadline"], original_turn_deadline)
+        self.assertEqual(refreshed["table"]["runout_at"], future_runout)
+
+        status, _, admin_tables = self.request(
+            "GET", "/poker/api/tables", cookie=admin_cookie, proof=admin_proof,
+        )
+        self.assertEqual(status, 200, admin_tables)
+        status, _, admin_detail = self.request(
+            "GET", path, cookie=admin_cookie, proof=admin_proof,
+        )
+        self.assertEqual(status, 200, admin_detail)
+        self.assertFalse(admin_detail["table"]["viewer"]["seated"])
+        self.assertTrue(all("cards" not in seat for seat in admin_detail["table"]["seats"]))
+
+        args = types.SimpleNamespace(public_origin=self.origin, data_dir=str(self.data_dir))
+        self.app = server.App(args, room_password=self.password, admin_username="admin")
+        self.app.public_origin = self.origin
+        self.app.public_netloc = "localhost:%d" % self.port
+        self.httpd.app = self.app
+        status, _, persisted = self.request(
+            "GET", "/poker/api/config", cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, persisted)
+        self.assertEqual(persisted["config"]["runout_seconds"], 2)
+        self.assertEqual(persisted["config"]["bet_presets"]["preflop_bb"], [2, 2.5, 4, 5])
 
     def test_host_pause_and_paused_runtime_settings_are_authorized_and_pacing_only(self):
         host_cookie, host_proof, host_csrf, host = self.login("Host")
@@ -1261,14 +1410,7 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertEqual(rejected_sit_out["error"]["code"], "table_paused")
 
-        pacing = {
-            "turn_seconds": 15,
-            "level_minutes": 0.5,
-            "runout_seconds": 1.25,
-            "blind_announcement_seconds": 60,
-            "elimination_announcement_seconds": 0,
-            "showdown_seconds": 8,
-        }
+        pacing = {"turn_seconds": 15, "level_minutes": 0.5}
         status, _, updated = self.request(
             "POST", path + "/settings", pacing, **host_auth,
         )
@@ -1280,6 +1422,7 @@ class ServerAuthTests(unittest.TestCase):
             {"max_seats": 3}, {"starting_stack": 2000},
             {"small_blind": 20}, {"big_blind": 40},
             {"buy_in": 0}, {"payout_percentages": [100]},
+            {"runout_seconds": 3}, {"showdown_seconds": 4},
             {"name": "Renamed while playing"},
         ):
             with self.subTest(forbidden=forbidden):
@@ -1314,78 +1457,132 @@ class ServerAuthTests(unittest.TestCase):
         self.assertFalse(resumed["table"]["paused"])
         self.assertIsNone(resumed["table"]["paused_at"])
 
-    def test_bot_seats_are_explicit_bounded_and_locked_after_start(self):
-        host_cookie, host_proof, host_csrf, host = self.login("Host")
+    def test_testing_bots_are_admin_only_and_capacity_locks_at_start(self):
+        admin_cookie, admin_proof, admin_csrf, admin = self.enable_admin()
+        admin_auth = dict(cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf)
+        host_cookie, host_proof, host_csrf, host = self.login("Bot host")
+        host_auth = dict(cookie=host_cookie, proof=host_proof, csrf=host_csrf)
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Bot guest")
         status, _, created = self.create_table(
             host_cookie, host_proof, host_csrf, name="Bot lobby", max_seats=3,
         )
         self.assertEqual(status, 201, created)
         table_id = created["table"]["id"]
         path = "/poker/api/tables/" + table_id
+        self.assertEqual(created["table"]["config"]["max_seats"], 9)
 
-        for seat_no in (1, 2):
-            status, _, body = self.request(
-                "POST", path + "/bots", {"seat_no": seat_no},
-                cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-            )
-            self.assertEqual(status, 200, body)
-        self.assertEqual(
-            [(seat["seat_no"], seat["is_bot"])
-             for seat in body["table"]["seats"]],
-            [(0, False), (1, True), (2, True)],
+        status, _, host_bot = self.request("POST", path + "/bots", {"seat_no": 1}, **host_auth)
+        self.assertEqual(status, 403)
+        self.assertEqual(host_bot["error"]["code"], "admin_required")
+        status, _, admin_bot = self.request("POST", path + "/bots", {"seat_no": 4}, **admin_auth)
+        self.assertEqual(status, 200, admin_bot)
+        self.assertTrue(next(seat for seat in admin_bot["table"]["seats"] if seat["seat_no"] == 4)["is_bot"])
+        status, _, host_remove = self.request(
+            "DELETE", path + "/bots/4", cookie=host_cookie, proof=host_proof, csrf=host_csrf,
         )
-
-        status, _, body = self.request(
-            "POST", path + "/bots", {"seat_no": 3},
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-        )
-        self.assertEqual(status, 400)
-        status, _, body = self.request(
-            "POST", path + "/settings", {"max_seats": 2},
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-        )
-        self.assertEqual(status, 409)
-
+        self.assertEqual(status, 403)
+        self.assertEqual(host_remove["error"]["code"], "admin_required")
         status, _, removed = self.request(
-            "DELETE", path + "/bots/1",
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+            "DELETE", path + "/bots/4", **admin_auth,
         )
         self.assertEqual(status, 200, removed)
-        self.assertEqual(
-            [(seat["seat_no"], seat["is_bot"])
-             for seat in removed["table"]["seats"]],
-            [(0, False), (2, True)],
-        )
-        status, _, body = self.request(
-            "DELETE", path + "/bots/0",
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-        )
-        self.assertEqual(status, 409)
 
-        status, _, started = self.request(
-            "POST", path + "/start", {},
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        status, _, guest_seat = self.request(
+            "POST", path + "/seat", {"seat_no": 8},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
         )
+        self.assertEqual(status, 200, guest_seat)
+        status, _, admin_seat = self.request("POST", path + "/join", {}, **admin_auth)
+        self.assertEqual(status, 403)
+        self.assertEqual(admin_seat["error"]["code"], "admin_read_only")
+        status, _, admin_start = self.request("POST", path + "/start", {}, **admin_auth)
+        self.assertEqual(status, 403)
+        self.assertEqual(admin_start["error"]["code"], "admin_read_only")
+
+        status, _, started = self.request("POST", path + "/start", {}, **host_auth)
         self.assertEqual(status, 200, started)
         self.assertEqual(started["table"]["status"], "playing")
-
-        host_seat_no = next(
-            seat["seat_no"] for seat in started["table"]["seats"] if seat["id"] == host["id"]
+        self.assertEqual(started["table"]["config"]["max_seats"], 2)
+        status, _, too_late = self.request(
+            "POST", path + "/bots", {"seat_no": 7}, **admin_auth,
         )
-        for method, suffix, payload in (
-            ("POST", "/seat", {"seat_no": (host_seat_no + 1) % 3}),
-            ("POST", "/stand", {}),
-            ("POST", "/settings", {"name": "Too late"}),
-            ("POST", "/bots", {"seat_no": 1}),
-            ("DELETE", "/bots/2", None),
-        ):
-            with self.subTest(method=method, suffix=suffix):
-                status, _, body = self.request(
-                    method, path + suffix, payload,
-                    cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-                )
-                self.assertEqual(status, 409, body)
-                self.assertEqual(body["error"]["code"], "table_started")
+        self.assertEqual(status, 409)
+        self.assertEqual(too_late["error"]["code"], "table_started")
+
+    def test_host_end_requires_scoped_one_time_confirmation_and_preserves_private_history(self):
+        host_cookie, host_proof, host_csrf, host = self.login("End host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("End guest")
+        host_auth = dict(cookie=host_cookie, proof=host_proof, csrf=host_csrf)
+        guest_auth = dict(cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf)
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="End safely", max_seats=4,
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        path = "/poker/api/tables/" + table_id
+        status, _, other_lobby = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Other end target",
+        )
+        self.assertEqual(status, 201, other_lobby)
+        other_path = "/poker/api/tables/" + other_lobby["table"]["id"]
+        status, _, joined = self.request("POST", path + "/seat", {"seat_no": 8}, **guest_auth)
+        self.assertEqual(status, 200, joined)
+        status, _, started = self.request("POST", path + "/start", {}, **host_auth)
+        self.assertEqual(status, 200, started)
+
+        status, _, confirmation = self.request("POST", path + "/end", {"confirm": True}, **host_auth)
+        self.assertEqual(status, 200, confirmation)
+        token = confirmation["confirmation_token"]
+        self.assertGreater(confirmation["expires_at"], time.time())
+        status, _, wrong_host = self.request(
+            "POST", path + "/end", {"confirmation_token": token}, **guest_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(wrong_host["error"]["code"], "invalid_confirmation")
+        status, _, wrong_table = self.request(
+            "POST", other_path + "/end", {"confirmation_token": token}, **host_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(wrong_table["error"]["code"], "invalid_confirmation")
+
+        status, _, ended = self.request(
+            "POST", path + "/end", {"confirmation_token": token}, **host_auth,
+        )
+        self.assertEqual(status, 200, ended)
+        table = ended["table"]
+        self.assertEqual(table["status"], "ended")
+        self.assertEqual(table["results"], [])
+        self.assertEqual(table["turn_deadline"], None)
+        self.assertEqual(table["runout_at"], None)
+        self.assertEqual(table["actor_id"], None)
+        self.assertEqual(table["config"]["max_seats"], 2)
+        self.assertTrue(all("cards" not in seat for seat in table["seats"] if seat["id"] != host["id"]))
+
+        status, _, history_page = self.request(
+            "GET", "/poker/api/history/" + table_id, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, history_page)
+        self.assertEqual(history_page["tournament"]["status"], "ended")
+        self.assertEqual(history_page["tournament"]["results"], [])
+        self.assertEqual(len(history_page["hands"]), 1)
+        hand_players = {item["player_id"]: item for item in history_page["hands"][0]["players"]}
+        self.assertIsNotNone(hand_players[host["id"]]["cards"])
+        self.assertIsNone(hand_players[guest["id"]]["cards"])
+        status, _, reused = self.request(
+            "POST", path + "/end", {"confirmation_token": token}, **host_auth,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(reused["error"]["code"], "invalid_confirmation")
+        status, _, lobby_confirmation = self.request(
+            "POST", other_path + "/end", {"confirm": True}, **host_auth,
+        )
+        self.assertEqual(status, 200, lobby_confirmation)
+        status, _, cancelled_lobby = self.request(
+            "POST", other_path + "/end",
+            {"confirmation_token": lobby_confirmation["confirmation_token"]}, **host_auth,
+        )
+        self.assertEqual(status, 200, cancelled_lobby)
+        self.assertEqual(cancelled_lobby["table"]["status"], "cancelled")
 
     def test_last_hand_replay_is_authenticated_sanitized_and_selects_latest_completed(self):
         host_cookie, host_proof, host_csrf, host = self.login("Replay Host")
@@ -1604,6 +1801,7 @@ class ServerAuthTests(unittest.TestCase):
         )
 
     def test_server_ticker_acts_for_bots_without_client_polling(self):
+        admin_cookie, admin_proof, admin_csrf, _ = self.enable_admin()
         host_cookie, host_proof, host_csrf, host = self.login("Ticker host")
         status, _, created = self.create_table(
             host_cookie, host_proof, host_csrf, name="Ticker table", max_seats=2,
@@ -1613,7 +1811,7 @@ class ServerAuthTests(unittest.TestCase):
         path = "/poker/api/tables/" + table_id
         status, _, with_bot = self.request(
             "POST", path + "/bots", {"seat_no": 1},
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+            cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf,
         )
         self.assertEqual(status, 200, with_bot)
         bot_id = next(seat["id"] for seat in with_bot["table"]["seats"] if seat["is_bot"])

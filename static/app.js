@@ -14,12 +14,21 @@
     var nameInput = byId("login-name");
     nameInput.pattern = "[A-Za-z0-9][A-Za-z0-9._\\x2d]{2,23}";
     nameInput.title = "3–24 characters: letters, numbers, dots, underscores or hyphens. Start with a letter or number.";
-    byId("login-password").maxLength = 256;
-    byId("login-password").minLength = newAccount ? 10 : 1;
-    byId("login-password").autocomplete = newAccount ? "new-password" : "current-password";
-    byId("login-form").querySelector('button[type=submit] span').textContent = claim ? "Secure my seat" : newAccount ? "Create account" : "Sign in";
-    document.querySelector(".login-card h2").textContent = claim ? "Keep your seat" : newAccount ? "Create an account" : "Welcome back";
-    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password of at least 10 characters." : "Sign in to return to your seat and view your tournament history.";
+    var adminLogin = !newAccount && String(nameInput.value || "").trim().toLowerCase() === "admin";
+    var passwordInput = byId("login-password");
+    var passwordLabel = document.querySelector('label[for="login-password"]');
+    passwordInput.required = newAccount || !adminLogin;
+    passwordInput.maxLength = 256;
+    passwordInput.minLength = newAccount ? 10 : (adminLogin ? 0 : 1);
+    passwordInput.autocomplete = newAccount ? "new-password" : "current-password";
+    passwordLabel.hidden = adminLogin;
+    passwordInput.hidden = adminLogin;
+    if (adminLogin) passwordInput.value = "";
+    sw.hidden = adminLogin;
+    byId("admin-login-button").hidden = claim || adminLogin;
+    byId("login-form").querySelector('button[type=submit] span').textContent = claim ? "Secure my seat" : newAccount ? "Create account" : (adminLogin ? "Sign in as admin" : "Sign in");
+    document.querySelector(".login-card h2").textContent = claim ? "Keep your seat" : newAccount ? "Create an account" : (adminLogin ? "Room administration" : "Welcome back");
+    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password of at least 10 characters." : (adminLogin ? "Use the reserved room administrator account." : "Sign in to return to your seat and view your tournament history.");
   }
   byId("auth-switch").addEventListener("click", async function () {
     if (authMode === "claim") {
@@ -29,14 +38,38 @@
       byId("login-password").value = ""; byId("room-password").value = ""; clearNotice();
     }
   });
+  byId("admin-login-button").addEventListener("click", function () {
+    setAuthMode("login");
+    byId("login-name").value = "admin";
+    setAuthMode("login");
+    byId("login-password").value = "";
+    byId("login-form").querySelector('button[type=submit]').focus();
+    clearNotice();
+  });
+  byId("login-name").addEventListener("input", function () { setAuthMode(authMode); });
+
   var API_ROOT = "/poker/api";
   var AUTH_STORAGE_KEY = "sitngo.poker.session-proof.v1";
-  var PLAYER_PREFS_STORAGE_PREFIX = "felt-night.bet-presets.v1:";
-  var DEFAULT_PLAYER_PREFS = { preflop_bb: [2.5, 3, 4], postflop_percent: [50, 75, 100] };
+  var DEFAULT_GLOBAL_CONFIG = {
+    runout_seconds: 2.5,
+    blind_announcement_seconds: 5,
+    elimination_announcement_seconds: 5,
+    showdown_seconds: 5,
+    bet_presets: { preflop_bb: [2.5, 3, 4], postflop_percent: [50, 75, 100] }
+  };
   var state = {
     csrf: "",
     sessionProof: "",
     player: null,
+    isAdmin: false,
+    globalConfig: JSON.parse(JSON.stringify(DEFAULT_GLOBAL_CONFIG)),
+    adminTables: [],
+    adminConfigSaving: false,
+    adminTablesLoading: false,
+    adminConfigLoaded: false,
+    adminConfigRefreshAt: 0,
+    restoreTableId: "",
+    endConfirmation: { tableId: "", token: "", step: 0, busy: false },
     tables: [],
     activeTableId: "",
     skipAutoResume: false,
@@ -446,11 +479,28 @@
     }
   }
 
-  function closeRecentActionDialog() {
+  function focusTableControl(id) {
+    var control = byId(id);
+    if (control && control.isConnected && !control.hidden && !control.disabled &&
+        control.getClientRects().length) {
+      var details = control.closest("details");
+      if (!details || details.open) {
+        control.focus({ preventScroll: true });
+        return;
+      }
+    }
+    var menuSummary = byId("table-menu") && byId("table-menu").querySelector(":scope > summary");
+    if (menuSummary && menuSummary.isConnected && menuSummary.getClientRects().length) {
+      menuSummary.focus({ preventScroll: true });
+    }
+  }
+
+  function closeRecentActionDialog(restoreFocus) {
     var dialog = byId("recent-action-dialog");
     if (dialog && dialog.open) dialog.close();
     var trigger = byId("recent-action-button");
     if (trigger) trigger.setAttribute("aria-expanded", "false");
+    if (restoreFocus) focusTableControl("recent-action-button");
   }
 
   function replayStreets(hand) {
@@ -666,9 +716,7 @@
     if (previous) previous.disabled = true;
     if (next) next.disabled = true;
     syncLastHandButton();
-    if (restoreFocus && trigger && trigger.isConnected && trigger.getClientRects().length) {
-      trigger.focus({ preventScroll: true });
-    }
+    if (restoreFocus) focusTableControl(trigger && trigger.id || "last-hand-button");
   }
 
   function moveLastHandStreet(delta) {
@@ -691,6 +739,9 @@
     state.sitOutRequestId += 1;
     state.sitOutPending = false;
     state.player = null;
+    state.isAdmin = false;
+    document.body.classList.remove("admin-active");
+    byId("admin-panel").hidden = true;
     state.showBigBlinds = false;
     document.body.classList.remove("gameplay-active");
     clearBlindAnnouncement(true);
@@ -778,15 +829,15 @@
   function renderChatButton() {
     var button = byId("chat-button");
     var panel = byId("chat-panel");
-    var preview = byId("chat-preview");
     var topline = byId("chat-topline");
+    var preview = byId("chat-preview");
     var quickForm = byId("chat-quick-form");
     if (!button || !panel) return;
-    var available = Boolean(state.player && state.activeTableId && state.tableView);
+    var available = Boolean(state.player && !state.isAdmin && state.activeTableId && state.tableView);
     button.hidden = !available;
-    if (preview) preview.hidden = !available;
-    if (topline) topline.hidden = !available;
-    if (quickForm) quickForm.hidden = !available;
+    if (topline) topline.hidden = true;
+    if (preview) preview.hidden = true;
+    if (quickForm) quickForm.hidden = true;
     button.setAttribute("aria-expanded", String(Boolean(state.chat.open && !panel.hidden)));
     updateChatCharacterCount();
   }
@@ -1236,6 +1287,8 @@
   function statusName(status) {
     if (status === "playing") return "In progress";
     if (status === "completed") return "Complete";
+    if (status === "ended") return "Ended by host";
+    if (status === "cancelled") return "Cancelled";
     return "Waiting";
   }
 
@@ -1776,13 +1829,15 @@
   function renderSeats(view) {
     var layout = seatLayout(view);
     var max = layout.max;
-    var ringOnlySeated = view.status === "playing" || view.status === "completed";
+    var ringOnlySeated = view.status === "playing" || view.status === "completed" || view.status === "ended";
     var hasInHandFlags = layout.seats.some(function (seat) { return typeof (seat && seat.in_hand) === "boolean"; });
-    var feltSeats = view.status === "completed" && hasInHandFlags
-      ? layout.seats.filter(function (seat) { return seat.in_hand === true; })
+    var feltSeats = view.status === "ended"
+      ? layout.seats
+      : (view.status === "completed" && hasInHandFlags
+        ? layout.seats.filter(function (seat) { return seat.in_hand === true; })
       : (ringOnlySeated
         ? layout.seats.filter(function (seat) { return seatCountsAsTournamentRemaining(view, seat); })
-        : layout.seats);
+        : layout.seats));
     var bySeat = Object.create(null);
     feltSeats.forEach(function (seat, index) {
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
@@ -1837,10 +1892,7 @@
           } else {
             emptyActions += '<span class="seat-empty-open">Open</span>';
           }
-          var botAction = isHost
-            ? '<button class="seat-empty-bot" type="button" data-add-bot-seat="' + i + '" aria-label="Add test bot to seat ' + emptySeatNo + '">Add bot</button>'
-            : "";
-          html += '<div class="seat-card seat-empty' + (botAction ? ' has-secondary-action' : '') + '" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true">' + emptyActions + botAction + '</div>';
+          html += '<div class="seat-card seat-empty" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true">' + emptyActions + '</div>';
         }
         continue;
       }
@@ -1924,7 +1976,7 @@
         cardContents = hiddenCardHTML(true, false) + hiddenCardHTML(true, false);
       } else {
         cardRowClass += " is-empty";
-        cardContents = '<span class="seat-card-placeholder" aria-hidden="true"></span><span class="seat-card-placeholder" aria-hidden="true"></span>';
+        cardContents = "";
       }
       var cardHtml = '<div class="' + cardRowClass + '"' + (cardRowClass.indexOf("is-empty") >= 0 ? ' aria-hidden="true"' : '') + '>' + cardContents + '</div>';
 
@@ -1965,12 +2017,12 @@
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });
     }
     var compact = window.innerWidth <= 820 || grid.clientWidth < 500;
-    var gridRect = grid.getBoundingClientRect();
     felt.classList.toggle("exposed-ring", positionCount >= 5 && Boolean((view.runout_odds || []).length));
     felt.dataset.compactLayout = compact ? "true" : "false";
     felt.classList.toggle("is-crowded", positionCount >= 7);
     felt.classList.toggle("is-playing", currentHand || view.status === "completed");
     felt.dataset.seatCount = String(positionCount);
+    var gridRect = grid.getBoundingClientRect();
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
       if (node.classList.contains("is-me")) {
@@ -1998,7 +2050,8 @@
       var nodes = Array.from(grid.querySelectorAll(".seat-card"));
       var seatsToFit = nodes.map(function (node,i) {
         var b = boxForNode(node, gridRect);
-        return {id:i,x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,
+        var relativeIndex = number(node.getAttribute("data-relative-seat"), i);
+        return {id:i,index:relativeIndex,relativeIndex:relativeIndex,x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,
           width:b.right-b.left,height:b.bottom-b.top,hero:node.classList.contains("is-me")};
       });
       var fitted = window.SitNgoLayout.fit({width:gridRect.width,height:gridRect.height,seats:seatsToFit,blockers:avoid});
@@ -2076,15 +2129,9 @@
     if (!cards.length && view.hand && Array.isArray(view.hand.board)) cards = view.hand.board;
     var inProgress = view.status === "playing";
     var showBoard = inProgress || cards.length > 0;
-    byId("board-caption").textContent = showBoard ? "COMMUNITY CARDS" : "TABLE";
-    var slots = [];
-    if (inProgress) {
-      for (var i = 0; i < 5; i += 1) {
-        slots.push(playingCardHTML(cards[i] || null, false));
-      }
-    } else {
-      slots = cards.map(function (card) { return playingCardHTML(card, false); });
-    }
+    byId("board-caption").textContent = "";
+    byId("board-caption").hidden = true;
+    var slots = cards.map(function (card) { return playingCardHTML(card, false); });
     byId("board-cards").innerHTML = slots.join("");
 
     var pot = number(view.pot, view.hand && view.hand.pot);
@@ -2093,7 +2140,10 @@
     var potDisplay = byId("pot-display");
     potDisplay.hidden = !(inProgress || view.status === "completed");
     potDisplay.classList.toggle("is-empty", pot <= 0);
-    byId("street-label").textContent = view.street && view.street !== "lobby" ? String(view.street).replace(/_/g, " ").toUpperCase() : "";
+    var currentStreet = String(view.street || "").toLowerCase();
+    byId("street-label").textContent = currentStreet && currentStreet !== "lobby" && currentStreet !== "preflop"
+      ? currentStreet.replace(/_/g, " ").toUpperCase() : "";
+    byId("street-label").hidden = !byId("street-label").textContent;
   }
 
   function renderBlindStrip(view) {
@@ -2231,12 +2281,7 @@
       number(view.turn_version, 0) === intent.payload.expected_turn_version);
   }
 
-  function playerPrefsStorageKey() {
-    var playerId = String(state.player && state.player.id || "");
-    return playerId ? PLAYER_PREFS_STORAGE_PREFIX + encodeURIComponent(playerId) : "";
-  }
-
-  function validStoredPresetArray(value, min, max) {
+  function validPresetArray(value, min, max) {
     if (!Array.isArray(value) || value.length < 1 || value.length > 5) return null;
     var result = [];
     for (var i = 0; i < value.length; i += 1) {
@@ -2247,21 +2292,15 @@
     return result;
   }
 
-  function playerBetPreferences() {
-    var key = playerPrefsStorageKey();
-    if (!key) return { preflop_bb: DEFAULT_PLAYER_PREFS.preflop_bb.slice(), postflop_percent: DEFAULT_PLAYER_PREFS.postflop_percent.slice() };
-    try {
-      var saved = JSON.parse(window.localStorage.getItem(key) || "{}");
-      return {
-        preflop_bb: validStoredPresetArray(saved.preflop_bb, 1, 200) || DEFAULT_PLAYER_PREFS.preflop_bb.slice(),
-        postflop_percent: validStoredPresetArray(saved.postflop_percent, 1, 1000) || DEFAULT_PLAYER_PREFS.postflop_percent.slice()
-      };
-    } catch (err) {
-      return { preflop_bb: DEFAULT_PLAYER_PREFS.preflop_bb.slice(), postflop_percent: DEFAULT_PLAYER_PREFS.postflop_percent.slice() };
-    }
+  function globalBetPreferences() {
+    var source = state.globalConfig && state.globalConfig.bet_presets || DEFAULT_GLOBAL_CONFIG.bet_presets;
+    return {
+      preflop_bb: validPresetArray(source.preflop_bb, 1, 200) || DEFAULT_GLOBAL_CONFIG.bet_presets.preflop_bb.slice(),
+      postflop_percent: validPresetArray(source.postflop_percent, 1, 1000) || DEFAULT_GLOBAL_CONFIG.bet_presets.postflop_percent.slice()
+    };
   }
 
-  function parsePlayerPresetInput(id, min, max) {
+  function parsePresetInput(id, min, max) {
     var parts = String(byId(id).value || "").trim().split(",").map(function (part) { return part.trim(); });
     if (parts.length < 1 || parts.length > 5 || parts.some(function (part) { return !/^\d+(?:\.\d{1,2})?$/.test(part); })) {
       throw Error("Enter 1 to 5 increasing values separated by commas.");
@@ -2269,29 +2308,191 @@
     var values = parts.map(Number);
     if (values.some(function (value, index) {
       return !Number.isFinite(value) || value < min || value > max || (index > 0 && value <= values[index - 1]);
-    })) throw Error("Preset values must increase from " + min + " to " + max + ".");
+    })) throw Error("Values must increase from " + min + " to " + max + ".");
     return values;
   }
 
-  function openPlayerPreferences() {
-    var dialog = byId("player-settings-dialog");
-    if (!dialog || !state.player) return;
-    var prefs = playerBetPreferences();
-    byId("prefs-preflop-bb").value = prefs.preflop_bb.join(", ");
-    byId("prefs-postflop-percent").value = prefs.postflop_percent.join(", ");
-    byId("player-prefs-error").hidden = true;
-    byId("player-prefs-error").textContent = "";
-    byId("player-settings-button").setAttribute("aria-expanded", "true");
-    if (typeof dialog.showModal === "function") dialog.showModal();
-    else dialog.setAttribute("open", "");
+  function applyGlobalConfig(config) {
+    if (!config || typeof config !== "object") return;
+    var presets = config.bet_presets || {};
+    var previous = state.globalConfig || DEFAULT_GLOBAL_CONFIG;
+    state.globalConfig = {
+      runout_seconds: number(config.runout_seconds, previous.runout_seconds),
+      blind_announcement_seconds: number(config.blind_announcement_seconds, previous.blind_announcement_seconds),
+      elimination_announcement_seconds: number(config.elimination_announcement_seconds, previous.elimination_announcement_seconds),
+      showdown_seconds: number(config.showdown_seconds, previous.showdown_seconds),
+      bet_presets: {
+        preflop_bb: validPresetArray(presets.preflop_bb, 1, 200) || previous.bet_presets.preflop_bb.slice(),
+        postflop_percent: validPresetArray(presets.postflop_percent, 1, 1000) || previous.bet_presets.postflop_percent.slice()
+      }
+    };
+    state.adminConfigRefreshAt = Date.now();
+    if (state.tableView) renderActions(state.tableView);
   }
 
-  function closePlayerPreferences() {
-    var dialog = byId("player-settings-dialog");
-    if (dialog && dialog.open) dialog.close();
-    else if (dialog) dialog.removeAttribute("open");
-    var button = byId("player-settings-button");
-    if (button) button.setAttribute("aria-expanded", "false");
+  async function loadGlobalConfig() {
+    var data = await request("/config");
+    applyGlobalConfig(data.config || data);
+  }
+
+  function writeAdminConfigForm(config) {
+    var presets = config.bet_presets || DEFAULT_GLOBAL_CONFIG.bet_presets;
+    byId("admin-runout-seconds").value = String(config.runout_seconds);
+    byId("admin-blind-announcement-seconds").value = String(config.blind_announcement_seconds);
+    byId("admin-elimination-announcement-seconds").value = String(config.elimination_announcement_seconds);
+    byId("admin-showdown-seconds").value = String(config.showdown_seconds);
+    byId("admin-preflop-bb").value = presets.preflop_bb.join(", ");
+    byId("admin-postflop-percent").value = presets.postflop_percent.join(", ");
+  }
+
+  async function loadAdminConfig() {
+    if (!state.isAdmin) return;
+    var status = byId("admin-config-status");
+    status.textContent = "Loading room settings…";
+    try {
+      var data = await request("/admin/config");
+      applyGlobalConfig(data.config || data);
+      writeAdminConfigForm(state.globalConfig);
+      byId("admin-config-error").hidden = true;
+      state.adminConfigLoaded = true;
+      status.textContent = "Pacing changes apply to upcoming transitions; active timers continue.";
+    } catch (err) {
+      status.textContent = "Could not load room settings.";
+      byId("admin-config-error").textContent = err.message;
+      byId("admin-config-error").hidden = false;
+    }
+  }
+
+  async function saveAdminConfig(event) {
+    event.preventDefault();
+    if (!state.isAdmin || state.adminConfigSaving) return;
+    var form = byId("admin-config-form");
+    var error = byId("admin-config-error");
+    error.hidden = true;
+    var payload;
+    try {
+      payload = {
+        runout_seconds: number(byId("admin-runout-seconds").value, 0),
+        blind_announcement_seconds: number(byId("admin-blind-announcement-seconds").value, -1),
+        elimination_announcement_seconds: number(byId("admin-elimination-announcement-seconds").value, -1),
+        showdown_seconds: number(byId("admin-showdown-seconds").value, -1),
+        bet_presets: {
+          preflop_bb: parsePresetInput("admin-preflop-bb", 1, 200),
+          postflop_percent: parsePresetInput("admin-postflop-percent", 1, 1000)
+        }
+      };
+      if (!form.checkValidity() || payload.runout_seconds < 1 || payload.runout_seconds > 3600 ||
+          payload.blind_announcement_seconds < 0 || payload.blind_announcement_seconds > 60 ||
+          payload.elimination_announcement_seconds < 0 || payload.elimination_announcement_seconds > 60 ||
+          payload.showdown_seconds < 0 || payload.showdown_seconds > 60) throw Error("Check the pacing values and preset ranges.");
+    } catch (err) {
+      error.textContent = err.message || "Check the room settings.";
+      error.hidden = false;
+      return;
+    }
+    state.adminConfigSaving = true;
+    byId("admin-config-save").disabled = true;
+    byId("admin-config-status").textContent = "Saving room settings…";
+    try {
+      var data = await mutate("/admin/config", payload);
+      applyGlobalConfig(data.config || data);
+      writeAdminConfigForm(state.globalConfig);
+      byId("admin-config-status").textContent = "Saved. Existing scheduled timers will finish as planned.";
+    } catch (err) {
+      error.textContent = err.message || "Could not save room settings.";
+      error.hidden = false;
+      byId("admin-config-status").textContent = "Room settings were not saved.";
+    } finally {
+      state.adminConfigSaving = false;
+      byId("admin-config-save").disabled = false;
+    }
+  }
+
+  function renderAdminTables() {
+    var list = byId("admin-tables-list");
+    if (!state.adminTables.length) {
+      list.innerHTML = '<p class="muted">No tables are open.</p>';
+      return;
+    }
+    list.innerHTML = state.adminTables.map(function (table) {
+      var seats = Array.isArray(table.seats) ? table.seats.length : number(table.seated_count, number(table.player_count, 0));
+      return '<article class="admin-table-card" data-admin-table-id="' + esc(table.id) + '">' +
+        '<div class="admin-table-card-heading"><div><h3>' + esc(table.name || "Table") + '</h3><p class="muted">' + esc(statusName(table.status)) + ' · ' + seats + ' seated</p></div>' +
+        '<button class="button button-outline button-small" type="button" data-admin-inspect="' + esc(table.id) + '">Inspect</button></div>' +
+        '<div class="admin-table-detail" data-admin-detail hidden></div></article>';
+    }).join("");
+  }
+
+  async function loadAdminTables() {
+    if (!state.isAdmin || state.adminTablesLoading) return;
+    state.adminTablesLoading = true;
+    var list = byId("admin-tables-list");
+    list.setAttribute("aria-busy", "true");
+    try {
+      var data = await request("/tables");
+      state.adminTables = Array.isArray(data.tables) ? data.tables : [];
+      renderAdminTables();
+    } catch (err) {
+      list.innerHTML = '<p class="muted">Could not load tables: ' + esc(err.message) + '</p>';
+    } finally {
+      state.adminTablesLoading = false;
+      list.removeAttribute("aria-busy");
+    }
+  }
+
+  function renderAdminTableDetail(card, table) {
+    var target = card.querySelector("[data-admin-detail]");
+    var seats = Array.isArray(table.seats) ? table.seats : [];
+    var status = String(table.status || "lobby");
+    var max = Math.max(1, Math.min(9, number(table.max_seats, number(table.config && table.config.max_seats, 9))));
+    var bySeat = Object.create(null);
+    seats.forEach(function (seat, index) { bySeat[number(seat.seat_no, index)] = seat; });
+    var seatRows = [];
+    for (var i = 0; i < max; i += 1) {
+      var seat = bySeat[i];
+      if (seat) {
+        var bot = isBotSeat(seat);
+        seatRows.push('<div class="admin-seat-row"><span>Seat ' + (i + 1) + ' · ' + esc(seat.name || (bot ? "Test bot" : "Player")) + '</span>' +
+          (bot && status === "lobby" ? '<button class="button button-quiet button-small" type="button" data-admin-remove-bot="' + i + '">Remove bot</button>' : '') + '</div>');
+      } else if (status === "lobby") {
+        seatRows.push('<div class="admin-seat-row"><span>Seat ' + (i + 1) + ' · Open</span><button class="button button-quiet button-small" type="button" data-admin-add-bot="' + i + '">Add test bot</button></div>');
+      }
+    }
+    target.innerHTML = '<p class="muted">' + esc(statusName(status)) + ' · ' + seats.length + ' of ' + max + ' occupied</p>' +
+      '<div class="admin-seat-list">' + seatRows.join("") + '</div>';
+    target.hidden = false;
+  }
+
+  async function inspectAdminTable(card) {
+    var id = String(card && card.getAttribute("data-admin-table-id") || "");
+    if (!id || !state.isAdmin) return;
+    var target = card.querySelector("[data-admin-detail]");
+    target.hidden = false;
+    target.textContent = "Loading table…";
+    try {
+      var data = await request("/tables/" + encodeURIComponent(id));
+      renderAdminTableDetail(card, data.table || data);
+    } catch (err) {
+      target.textContent = err.message || "Could not inspect this table.";
+    }
+  }
+
+  async function mutateAdminBot(button, add) {
+    var card = button.closest("[data-admin-table-id]");
+    var id = String(card && card.getAttribute("data-admin-table-id") || "");
+    var seatNo = number(button.getAttribute(add ? "data-admin-add-bot" : "data-admin-remove-bot"), -1);
+    if (!id || seatNo < 0 || !state.isAdmin) return;
+    button.disabled = true;
+    try {
+      if (add) await mutate("/tables/" + encodeURIComponent(id) + "/bots", { seat_no: seatNo });
+      else await mutate("/tables/" + encodeURIComponent(id) + "/bots/" + seatNo, undefined, "DELETE");
+      await loadAdminTables();
+      var refreshed = byId("admin-tables-list").querySelector('[data-admin-table-id="' + CSS.escape(id) + '"]');
+      if (refreshed) await inspectAdminTable(refreshed);
+    } catch (err) {
+      showNotice(err.message, "error", false);
+      button.disabled = false;
+    }
   }
 
   function ensureActionControls() {
@@ -2329,17 +2530,20 @@
     var ownBet = number(seat && seat.bet, 0);
     var currentBet = number(view.current_bet, 0);
     var actionName = currentBet > 0 ? "Raise" : "Bet";
-    var valid = Number.isInteger(target) && target >= min && target <= max;
-    var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
-    var actionAllowed = viewerCanAct(view) && viewer.raise_rights !== false && stack > 0 &&
+    var rangeAvailable = viewer.raise_rights !== false && stack > 0 &&
       max > currentBet && min <= max;
-    input.setAttribute("aria-valuetext", valid
-      ? actionName + " to " + actionChips(target) + " total; adds " + actionChips(Math.max(0, target - ownBet))
-      : "Choose an amount from " + actionChips(min) + " to " + actionChips(max));
+    var valid = rangeAvailable && Number.isInteger(target) && target >= min && target <= max;
+    var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
+    var actionAllowed = viewerCanAct(view) && rangeAvailable;
+    input.setAttribute("aria-valuetext", !rangeAvailable
+      ? "No legal bet or raise is available"
+      : valid
+        ? actionName + " to " + actionChips(target) + " total; adds " + actionChips(Math.max(0, target - ownBet))
+        : "Choose an amount from " + actionChips(min) + " to " + actionChips(max));
     if (button) {
-      var label = valid ? actionName + " to " + actionChips(target) : actionName;
+      var label = rangeAvailable && valid ? actionName + " to " + actionChips(target) : actionName;
       button.textContent = label;
-      button.setAttribute("aria-label", label);
+      button.setAttribute("aria-label", rangeAvailable ? label : actionName + " unavailable");
       button.disabled = Boolean(state.actionPending || state.actionSubmittedKey === actionTokenKey(view) ||
         !actionAllowed || !valid);
     }
@@ -2399,8 +2603,9 @@
     var shortAllInRaise = minRaise > maxRaise;
     var rangeMin = shortAllInRaise ? rangeMax : Math.max(currentBet + 1, Math.floor(minRaise));
     if (rangeMin > rangeMax) rangeMin = rangeMax;
-    var raiseAllowed = canAct && viewer.raise_rights !== false && stack > 0 &&
-      maxRaise > currentBet && rangeMax >= currentBet + 1;
+    var rangeAvailable = viewer.raise_rights !== false && stack > 0 &&
+      maxRaise > currentBet && rangeMax >= currentBet + 1 && rangeMin <= rangeMax;
+    var raiseAllowed = canAct && rangeAvailable;
     var draftKey = actionTokenKey(view);
     if (state.raiseDraftKey !== draftKey) {
       state.raiseDraftKey = draftKey;
@@ -2411,7 +2616,7 @@
     var preflop = street ? street === "preflop" : cardArray(view.board).length === 0;
     var bigBlind = Math.max(1, number(blindParts(view).big, number(view.config && view.config.big_blind, 1)));
     var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
-    var playerPrefs = playerBetPreferences();
+    var playerPrefs = globalBetPreferences();
     var presetSpecs = preflop
       ? playerPrefs.preflop_bb.map(function (bb) {
         return { label: Number.isInteger(bb) ? bb.toFixed(1) + " BB" : String(bb) + " BB", bb: bb };
@@ -2468,8 +2673,16 @@
       input.value = String(draft);
     }
     input.disabled = blocked || !raiseAllowed;
-    input.setAttribute("aria-valuetext", "Bet or raise to " + actionChips(draft));
-    if (raiseButton) raiseButton.textContent = (currentBet > 0 ? "Raise" : "Bet") + " to " + actionChips(draft);
+    input.setAttribute("aria-valuetext", rangeAvailable
+      ? "Bet or raise to " + actionChips(draft)
+      : "No legal bet or raise is available");
+    if (raiseButton) {
+      var raiseActionName = currentBet > 0 ? "Raise" : "Bet";
+      raiseButton.textContent = rangeAvailable ? raiseActionName + " to " + actionChips(draft) : raiseActionName;
+      raiseButton.setAttribute("aria-label", rangeAvailable
+        ? raiseActionName + " to " + actionChips(draft)
+        : raiseActionName + " unavailable");
+    }
 
     controls.querySelectorAll("[data-raise-preset]").forEach(function (preset, index) {
       var spec = presetSpecs[index];
@@ -2482,9 +2695,11 @@
       preset.disabled = blocked || !raiseAllowed;
     });
 
-    var rangeText = shortAllInRaise
-      ? "Short all-in · max " + actionChips(rangeMax)
-      : "Min " + actionChips(rangeMin) + "–" + actionChips(rangeMax);
+    var rangeText = !rangeAvailable
+      ? "No legal bet or raise is available"
+      : shortAllInRaise
+        ? "Short all-in · max " + actionChips(rangeMax)
+        : "Min " + actionChips(rangeMin) + "–" + actionChips(rangeMax);
     byId("raise-range").textContent = rangeText;
     byId("raise-label").textContent = (currentBet > 0 ? "Raise" : "Bet") + " amount";
     if (raiseButton) {
@@ -2494,7 +2709,7 @@
     updateRaisePreview();
   }
 
-  function renderLobbyControls(view, host, ownSeat, isSeated, layout) {
+  function renderLobbyControls(view, host, ownSeat, isSeated) {
     var panel = byId("lobby-seat-panel");
     var controls = byId("seat-controls");
     var standButton = byId("stand-button");
@@ -2502,59 +2717,136 @@
     var statusDescription = byId("seat-status-description");
     var visible = view.status === "lobby" && isSeated;
     panel.hidden = !visible;
+    controls.replaceChildren();
     if (!visible) return;
-
-    var viewer = view.viewer || {};
-    if (isSeated) {
-      statusTitle.textContent = host ? "You’re seated and hosting." : "You’re seated at the table.";
-      statusDescription.textContent = host ? "Add test bots from an open felt seat, or stand up to watch." : "Stand up any time to watch without a seat.";
-    }
-
+    statusTitle.textContent = host ? "You’re seated and hosting." : "You’re seated at the table.";
+    statusDescription.textContent = "Stand up any time to watch without a seat.";
     standButton.hidden = !isSeated;
-    var rows = [];
-    for (var i = 0; i < layout.max; i += 1) {
-      var occupant = layout.bySeat[i];
-      var actions = "";
-      if (host && occupant && isBotSeat(occupant)) {
-        actions += '<button class="button button-quiet button-small" type="button" id="remove-bot-' + i + '" data-remove-bot-seat="' + i + '">Remove bot</button>';
-      }
-      if (!actions) continue;
-      var label = occupant && isBotSeat(occupant) ? (occupant.name || "Test bot") : (occupant ? occupant.name || "Occupied" : "Open");
-      rows.push('<div class="seat-choice' + (occupant ? ' has-bot' : '') + '"><span class="seat-choice-label">' + esc(label) + '</span><span class="seat-choice-actions">' + actions + '</span></div>');
+  }
+
+  function payoutOrdinal(index) {
+    var place = index + 1;
+    var suffix = place % 100 >= 11 && place % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[place % 10] || "th");
+    return place + suffix;
+  }
+
+  function allocatePayoutShares(weights, total) {
+    var count = weights.length;
+    if (!count) return [];
+    if (count > total) throw Error("There cannot be more paid places than percentage points.");
+    if (count === 1) return [total];
+    var extra = total - count;
+    var normalized = weights.map(function (value) { return Math.max(0, number(value, 0) - 1); });
+    var weightTotal = normalized.reduce(function (sum, value) { return sum + value; }, 0);
+    if (weightTotal <= 0) {
+      normalized = weights.map(function () { return 1; });
+      weightTotal = count;
     }
-    controls.innerHTML = rows.length ? rows.join("") : '<p class="seat-controls-empty">' + (host ? "Add bots from the open seats on the table." : "Your seat is ready.") + '</p>';
+    var shares = normalized.map(function (weight) { return 1 + Math.floor(extra * weight / weightTotal); });
+    var assigned = shares.reduce(function (sum, value) { return sum + value; }, 0);
+    var remainders = normalized.map(function (weight, index) {
+      return { index: index, fraction: extra * weight / weightTotal - Math.floor(extra * weight / weightTotal) };
+    }).sort(function (a, b) { return b.fraction - a.fraction || a.index - b.index; });
+    for (var i = 0; i < total - assigned; i += 1) shares[remainders[i].index] += 1;
+    return shares;
+  }
+
+  function readPayoutShares() {
+    var raw = String(byId("settings-payout").value || "").split(",");
+    var values = raw.map(function (value) { return Number(value.trim()); });
+    if (!values.length || values.length > 9 || values.some(function (value) { return !Number.isInteger(value) || value < 1; }) || values.reduce(function (sum, value) { return sum + value; }, 0) !== 100) {
+      return [60, 25, 15];
+    }
+    return values;
+  }
+
+  function cleanPayoutShares(shares) {
+    if (!Array.isArray(shares) || shares.length < 1 || shares.length > 9 ||
+        shares.some(function (value) { return !Number.isInteger(Number(value)) || Number(value) < 0; }) ||
+        shares.reduce(function (sum, value) { return sum + Number(value); }, 0) !== 100) return [60, 25, 15];
+    var positive = shares.map(Number).filter(function (value) { return value > 0; });
+    return positive.length ? positive : [100];
+  }
+
+  function writePayoutShares(shares) {
+    var values = cleanPayoutShares(shares);
+    var container = byId("payout-sliders");
+    var existing = Array.from(container.querySelectorAll(".payout-slider"));
+    if (existing.length !== values.length) {
+      container.innerHTML = values.map(function (share, index) {
+        var place = payoutOrdinal(index);
+        return '<div class="payout-slider-row"><label for="payout-share-' + index + '">' + place + ' place</label>' +
+          '<input id="payout-share-' + index + '" class="payout-slider" type="range" min="1" step="1" data-payout-index="' + index + '">' +
+          '<output for="payout-share-' + index + '" class="payout-slider-value">' + share + '%</output></div>';
+      }).join("");
+      existing = Array.from(container.querySelectorAll(".payout-slider"));
+    }
+    byId("payout-place-count").value = String(values.length);
+    byId("settings-payout").value = values.join(",");
+    existing.forEach(function (input, index) {
+      var share = values[index];
+      var place = payoutOrdinal(index);
+      input.max = String(100 - values.length + 1);
+      input.value = String(share);
+      input.disabled = values.length === 1;
+      input.setAttribute("aria-label", place + " place payout");
+      input.setAttribute("aria-valuetext", place + " place receives " + share + " percent");
+      var output = input.parentNode.querySelector("output");
+      if (output) output.textContent = share + "%";
+    });
+    byId("settings-payout-summary").textContent = values.map(function (share, index) { return payoutOrdinal(index) + " " + share + "%"; }).join(" · ") + " · Total 100%";
+  }
+
+  function rebalanceEditedPayout(index, requested) {
+    var current = readPayoutShares();
+    if (index < 0 || index >= current.length) return current;
+    if (current.length === 1) return [100];
+    var max = 100 - current.length + 1;
+    var target = Math.max(1, Math.min(max, Math.round(number(requested, current[index]))));
+    var otherIndexes = current.map(function (_, i) { return i; }).filter(function (i) { return i !== index; });
+    var others = allocatePayoutShares(otherIndexes.map(function (i) { return current[i]; }), 100 - target);
+    var result = current.slice();
+    result[index] = target;
+    otherIndexes.forEach(function (i, position) { result[i] = others[position]; });
+    return result;
+  }
+
+  function resizePayoutPlaces(count) {
+    var requested = Math.max(1, Math.min(9, Math.floor(number(count, 3))));
+    var current = readPayoutShares();
+    var weights = current.slice(0, requested);
+    while (weights.length < requested) weights.push(1);
+    return allocatePayoutShares(weights, 100);
   }
 
   function loadSettingsForm(view) {
     var config = view.config || {};
     byId("settings-buy-in").value = String(config.buy_in == null ? 10 : config.buy_in);
-    byId("settings-payout").value = (config.payout_percentages || [60,25,15]).join(", ");
+    writePayoutShares(Array.isArray(config.payout_percentages) ? config.payout_percentages : [60, 25, 15]);
     byId("settings-table-name").value = view.name || "";
-    byId("settings-max-seats").value = String(number(config.max_seats, number(view.max_seats, 6)));
     byId("settings-starting-stack").value = String(number(config.starting_stack, number(view.starting_stack, 1000)));
     byId("settings-small-blind").value = String(number(config.small_blind, number(view.small_blind, 10)));
     byId("settings-big-blind").value = String(number(config.big_blind, number(view.big_blind, 20)));
     byId("settings-level-minutes").value = String(number(config.level_minutes, number(view.level_minutes, 5)));
     byId("settings-turn-seconds").value = String(number(config.turn_seconds, 30));
-    byId("settings-runout-seconds").value = String(number(config.runout_seconds, 2.5));
-    byId("settings-blind-announcement-seconds").value = String(number(config.blind_announcement_seconds, 5));
-    byId("settings-elimination-announcement-seconds").value = String(number(config.elimination_announcement_seconds, 5));
-    byId("settings-showdown-seconds").value = String(number(config.showdown_seconds, 5));
   }
 
   function renderSettingsPanel(view, host) {
-    var panel = byId("table-settings-form");
+    var form = byId("table-settings-form");
+    var dialog = byId("table-settings-dialog");
     var lobby = view.status === "lobby";
     var inGame = view.status === "playing";
-    var settingsButton = byId("runtime-settings-button");
-    if (settingsButton) {
-      settingsButton.hidden = !(host && inGame);
-      settingsButton.setAttribute("aria-expanded", String(Boolean(host && inGame && state.runtimeSettingsOpen)));
-      if (!host || !inGame) state.runtimeSettingsOpen = false;
+    var button = byId("runtime-settings-button");
+    if (button) {
+      button.hidden = !(host && (lobby || inGame));
+      button.textContent = lobby ? "Game setup" : "Game timing";
+      button.setAttribute("aria-expanded", String(Boolean(dialog.open)));
     }
-    var visible = host && (lobby || (inGame && state.runtimeSettingsOpen));
-    panel.hidden = !visible;
-    if (!host || !(lobby || inGame)) return;
+    if (!host || !(lobby || inGame)) {
+      if (dialog.open) dialog.close();
+      state.runtimeSettingsOpen = false;
+      return;
+    }
 
     var tableId = String(view.id || state.activeTableId || "");
     if (state.settingsTableId !== tableId) {
@@ -2565,15 +2857,16 @@
       loadSettingsForm(view);
     }
 
-    panel.dataset.mode = inGame ? "runtime" : "lobby";
-    byId("table-settings-title").textContent = inGame ? "Game timing" : "Before you deal";
-    panel.querySelectorAll("[data-lobby-only]").forEach(function (field) {
+    form.hidden = false;
+    form.dataset.mode = inGame ? "runtime" : "lobby";
+    byId("table-settings-title").textContent = lobby ? "Before you deal" : "Game timing";
+    form.querySelectorAll("[data-lobby-only]").forEach(function (field) {
       field.hidden = inGame;
       field.querySelectorAll("input, select").forEach(function (input) {
-        input.disabled = inGame || state.settingsSaving;
+        input.disabled = inGame || state.settingsSaving || (input.classList.contains("payout-slider") && number(byId("payout-place-count").value, 3) === 1);
       });
     });
-    panel.querySelectorAll("[data-runtime-only]").forEach(function (field) {
+    form.querySelectorAll("[data-runtime-only]").forEach(function (field) {
       field.hidden = false;
       field.querySelectorAll("input, select").forEach(function (input) {
         input.disabled = state.settingsSaving || (inGame && !view.paused);
@@ -2586,7 +2879,9 @@
         ? (state.settingsDirty ? "Save timing changes before resuming." : "Adjust timing, then resume when ready.")
         : "Pause the game before changing timing settings."));
     byId("settings-lock-note").textContent = note;
+    state.runtimeSettingsOpen = dialog.open;
   }
+
   function updateHostReadiness(view, host) {
     var hostPanel = byId("host-panel");
     var visible = host && view.status === "lobby";
@@ -2690,6 +2985,14 @@
   }
 
   function renderTableAnnouncements(view) {
+    if (view.status === "ended") {
+      clearEliminationAnnouncement();
+      clearBlindAnnouncement(false);
+      byId("showdown-summary").hidden = true;
+      byId("showdown-summary").replaceChildren();
+      syncTableAnnouncementRegion();
+      return;
+    }
     announceEliminations(view);
     renderShowdownSummary(view);
     syncTableAnnouncementRegion();
@@ -2726,7 +3029,14 @@
       closeRecentActionDialog();
       byId("lobby-seat-panel").hidden = true;
       byId("host-panel").hidden = true;
-      byId("table-settings-form").hidden = true;
+      var setupDialog = byId("table-settings-dialog");
+      if (setupDialog.open) setupDialog.close();
+      state.runtimeSettingsOpen = false;
+      state.settingsDirty = false;
+      var tableMenu = byId("table-menu");
+      if (tableMenu) tableMenu.open = false;
+      byId("cancel-button").hidden = true;
+      byId("end-game-button").hidden = true;
       return;
     }
 
@@ -2734,20 +3044,20 @@
     consumeTableEvents(view);
     syncSeatTurnClock(view);
     var status = view.status || "lobby";
-    document.body.classList.toggle("gameplay-active", status === "playing" || status === "completed");
+    document.body.classList.toggle("gameplay-active", status === "playing" || status === "completed" || status === "ended");
     var statusNode = byId("view-status");
     statusNode.textContent = view.paused ? "Paused" : statusName(status);
-    statusNode.className = "status-pill" + (view.paused ? " paused" : (status === "playing" ? " playing" : (status === "completed" ? " completed" : "")));
+    statusNode.className = "status-pill" + (view.paused ? " paused" : (status === "playing" ? " playing" : (status === "completed" ? " completed" : (status === "ended" ? " ended" : ""))));
     byId("view-table-name").textContent = view.name || "Sit-and-go";
     var layout = seatLayout(view);
     var seats = layout.seats;
     var max = layout.max;
     byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats" + (view.prize_pool_cents == null ? "" : " · " + credits(view.prize_pool_cents) + " play credits in the pool") + (status === "lobby" && view.config ? " · Buy-in " + view.config.buy_in + " · " + view.config.payout_percentages.join(" / ") + "%" : "");
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
-    byId("hand-status-label").textContent = view.paused ? "GAME PAUSED" : (status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY"));
+    byId("hand-status-label").textContent = view.paused ? "GAME PAUSED" : (status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : (status === "ended" ? "ENDED BY HOST" : "TABLE LOBBY")));
     routeNoticeForTable();
     byId("table-player-count").textContent = seats.length + " seated";
-    byId("button-caption").textContent = view.status === "playing" ? "" : "Play chips · No rebuys";
+    byId("button-caption").textContent = status === "ended" ? "Ended by host" : (status === "playing" || status === "completed" ? "" : "Play chips · No rebuys");
 
     renderBlindStrip(view);
     renderBoard(view);
@@ -2762,6 +3072,12 @@
     }) || null;
     var seated = Boolean(viewer.seated || ownSeat);
     var host = String(view.host_id || "") === playerId;
+    byId("cancel-button").hidden = !(host && status === "lobby");
+    byId("end-game-button").hidden = !(host && status === "playing");
+    byId("history-button").hidden = state.isAdmin;
+    byId("table-logout-button").hidden = state.isAdmin;
+    var menu = byId("table-menu");
+    if (menu && !hasTable) menu.open = false;
     renderSitOutButton(view, ownSeat);
     ensureChatScope();
     renderChatButton();
@@ -2787,17 +3103,37 @@
     if (typeof sessionProof === "string" && sessionProof) state.sessionProof = sessionProof;
     if (typeof csrf === "string" && csrf) state.csrf = csrf;
     persistAuth();
+    state.isAdmin = Boolean(player && player.is_admin);
     if (!state.activeTableId) state.activeTableId = hashTableId();
-    state.polling = true;
+    state.restoreTableId = state.activeTableId ? String(state.activeTableId) : "";
+    state.polling = !state.isAdmin;
     byId("login-panel").hidden = true;
-    byId("app-panel").hidden = false;
+    byId("app-panel").hidden = state.isAdmin;
+    byId("admin-panel").hidden = !state.isAdmin;
     byId("identity").hidden = false;
+    byId("lobby-history-button").hidden = state.isAdmin;
+    byId("logout-button").hidden = state.isAdmin;
+    byId("admin-logout-button").hidden = !state.isAdmin;
+    byId("history-button").hidden = state.isAdmin;
+    byId("table-logout-button").hidden = state.isAdmin;
+    document.body.classList.toggle("admin-active", state.isAdmin);
     byId("welcome-name").textContent = state.player ? state.player.name : "";
     byId("identity-avatar").textContent = state.player && state.player.name ? state.player.name.charAt(0).toUpperCase() : "♠";
     clearNotice();
-    renderTables();
-    renderTable();
-    refreshAll(true);
+    loadGlobalConfig().catch(function () {});
+    if (state.isAdmin) {
+      state.activeTableId = "";
+      state.tableView = null;
+      setHashTable("");
+      renderTable();
+      loadAdminConfig();
+      if (byId("admin-tables-details").open) loadAdminTables();
+    } else {
+      document.body.classList.remove("admin-active");
+      renderTables();
+      renderTable();
+      refreshAll(true);
+    }
   }
 
   async function boot() {
@@ -2856,6 +3192,7 @@
     }
     state.refreshBusy = true;
     try {
+      if (!state.isAdmin && Date.now() - state.adminConfigRefreshAt > 15000) loadGlobalConfig().catch(function () {});
       if (!state.activeTableId) {
         var result = await request("/tables");
         state.tables = Array.isArray(result.tables) ? result.tables : [];
@@ -2863,7 +3200,7 @@
           var resume = state.tables.find(function (table) {
             return table.viewer_seated && table.status === "playing";
           }) || state.tables.find(function (table) {
-            return table.viewer_seated;
+            return table.viewer_seated && table.status !== "ended" && table.status !== "cancelled";
           });
           if (resume) {
             closeLastHandDialog(false);
@@ -2879,7 +3216,19 @@
         try {
           var detail = await request("/tables/" + encodeURIComponent(selectedTableId));
           if (state.activeTableId !== selectedTableId) return;
-          if (adoptSnapshot(detail.table || detail, selectedTableId)) renderTable();
+          var incoming = detail.table || detail;
+          if (state.restoreTableId === selectedTableId) {
+            state.restoreTableId = "";
+            if (incoming.status === "ended" || incoming.status === "cancelled") {
+              state.activeTableId = "";
+              state.tableView = null;
+              state.skipAutoResume = true;
+              setHashTable("");
+              renderTables();
+              renderTable();
+            }
+          }
+          if (state.activeTableId === selectedTableId && adoptSnapshot(incoming, selectedTableId)) renderTable();
         } catch (err) {
           if (state.activeTableId !== selectedTableId) return;
           if (err.status === 404) {
@@ -2914,71 +3263,50 @@
   }
 
   function payouts(id) {
-    var parts = byId(id).value.split(",").map(function (x) {return x.trim();});
-    if (parts.length > 9 || parts.some(function (x) {return !/^\d{1,3}$/.test(x);}) || parts.reduce(function (sum,x) {return sum + Number(x);},0) !== 100) {
-      throw Error("Enter one to nine whole-number payout percentages totaling 100, separated by commas.");
+    var parts = String(byId(id).value || "").split(",").map(function (x) { return x.trim(); });
+    if (parts.length < 1 || parts.length > 9 || parts.some(function (x) { return !/^\d{1,3}$/.test(x); }) || parts.reduce(function (sum, x) { return sum + Number(x); }, 0) !== 100) {
+      throw Error("Payout shares must be whole percentages totaling 100%.");
     }
     return parts.map(Number);
   }
-  function credits(cents) {return new Intl.NumberFormat("en-US",{maximumFractionDigits:2}).format(cents/100);}
+  function credits(cents) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(cents / 100); }
   function settingsPayload() {
     var view = state.tableView || {};
-    var timing = {
+    var payload = {
       level_minutes: number(byId("settings-level-minutes").value, 0),
-      turn_seconds: number(byId("settings-turn-seconds").value, 0),
-      runout_seconds: number(byId("settings-runout-seconds").value, 0),
-      blind_announcement_seconds: number(byId("settings-blind-announcement-seconds").value, -1),
-      elimination_announcement_seconds: number(byId("settings-elimination-announcement-seconds").value, -1),
-      showdown_seconds: number(byId("settings-showdown-seconds").value, -1)
+      turn_seconds: number(byId("settings-turn-seconds").value, 0)
     };
-    if (view.status === "playing") return timing;
-    return {
-      buy_in: number(byId("settings-buy-in").value, 0),
-      payout_percentages: payouts("settings-payout"),
-      name: byId("settings-table-name").value.trim(),
-      max_seats: number(byId("settings-max-seats").value, 0),
-      starting_stack: number(byId("settings-starting-stack").value, 0),
-      small_blind: number(byId("settings-small-blind").value, 0),
-      big_blind: number(byId("settings-big-blind").value, 0),
-      level_minutes: timing.level_minutes,
-      turn_seconds: timing.turn_seconds,
-      runout_seconds: timing.runout_seconds,
-      blind_announcement_seconds: timing.blind_announcement_seconds,
-      elimination_announcement_seconds: timing.elimination_announcement_seconds,
-      showdown_seconds: timing.showdown_seconds
-    };
+    if (view.status === "playing") return payload;
+    payload.buy_in = number(byId("settings-buy-in").value, -1);
+    payload.payout_percentages = payouts("settings-payout");
+    payload.name = byId("settings-table-name").value.trim();
+    payload.starting_stack = number(byId("settings-starting-stack").value, 0);
+    payload.small_blind = number(byId("settings-small-blind").value, 0);
+    payload.big_blind = number(byId("settings-big-blind").value, 0);
+    return payload;
   }
 
   async function saveSettings() {
-    if (!state.activeTableId || !state.tableView || state.settingsSaving) return;
+    if (!state.activeTableId || !state.tableView || state.settingsSaving) return false;
     var payload;
-    try { payload = settingsPayload(); } catch (err) { showNotice(err.message, "error", false); return; }
+    try { payload = settingsPayload(); } catch (err) { showNotice(err.message, "error", false); return false; }
     var form = byId("table-settings-form");
     var inGame = state.tableView.status === "playing";
     if (inGame && !state.tableView.paused) {
-      showNotice("Pause the game before changing timing settings.", "error", false);
-      return;
+      showNotice("Pause the game before changing its timing.", "error", false);
+      return false;
     }
-    var timingInvalid = payload.level_minutes < 0.01 || payload.turn_seconds < 1 ||
-      payload.runout_seconds < 1 || payload.blind_announcement_seconds < 0 ||
-      payload.blind_announcement_seconds > 60 || payload.elimination_announcement_seconds < 0 ||
-      payload.elimination_announcement_seconds > 60 || payload.showdown_seconds < 0 ||
-      payload.showdown_seconds > 60;
+    var timingInvalid = payload.level_minutes < 0.01 || payload.level_minutes > 2147483647 || payload.turn_seconds < 1 || payload.turn_seconds > 3600;
     if (!form.checkValidity() || timingInvalid || (!inGame &&
-        (!payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
-        payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind))) {
-      showNotice(inGame ? "Check the game timing values." : "Check the table name, seats, stack, blinds, and timers.", "error", false);
-      return;
-    }
-    var currentSeats = Array.isArray(state.tableView.seats) ? state.tableView.seats.length : 0;
-    if (!inGame && payload.max_seats < currentSeats) {
-      showNotice("The table needs at least as many seats as the players already seated.", "error", false);
-      return;
+        (!payload.name || payload.buy_in < 0 || payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind))) {
+      showNotice(inGame ? "Check the timing values." : "Check the table name, buy-in, stack, blinds, and payouts.", "error", false);
+      return false;
     }
 
     state.settingsSaving = true;
     renderSettingsPanel(state.tableView, true);
     updateHostReadiness(state.tableView, true);
+    var saved = false;
     try {
       var data = await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/settings", payload);
       state.settingsDirty = false;
@@ -2986,12 +3314,14 @@
       await refreshSelected();
       await refreshAll(true);
       showNotice(inGame ? "Game timing settings saved." : "Table settings saved.", "success", false);
+      saved = true;
     } catch (err) {
       showNotice(err.message, "error", false);
     } finally {
       state.settingsSaving = false;
       renderTable();
     }
+    return saved;
   }
 
   async function refreshSelected() {
@@ -3139,7 +3469,7 @@
     event.preventDefault();
     var name = byId("login-name").value.trim();
     var password = byId("login-password").value;
-    if (!name || !password) {
+    if (!name || (!password && name.toLowerCase() !== "admin")) {
       showNotice("Enter your username and password.", "error", false);
       return;
     }
@@ -3165,6 +3495,7 @@
   });
 
   var historyGeneration = 0;
+  var historyTrigger = null;
   function historyCards(cards) {
     return (cards || []).map(function (c) {var x=cardInfo(c); return x ? x.rank + cardSuit(x.suit).symbol : "";}).join(" ");
   }
@@ -3242,148 +3573,310 @@
     moveLastHandStreet(1);
   });
 
-  byId("history-button").addEventListener("click", function () {byId("history-dialog").showModal(); loadHistory("");});
-  byId("history-close").addEventListener("click", function () {byId("history-dialog").close();});
-
   byId("recent-action-button").addEventListener("click", function () {
     var dialog = byId("recent-action-dialog");
-    if (dialog && !dialog.open) dialog.showModal();
-    if (dialog && dialog.open) byId("recent-action-button").setAttribute("aria-expanded", "true");
+    if (!dialog.open) dialog.showModal();
+    byId("recent-action-button").setAttribute("aria-expanded", "true");
+    var close = byId("recent-action-close");
+    if (close) close.focus();
   });
-  byId("recent-action-close").addEventListener("click", closeRecentActionDialog);
+  byId("recent-action-close").addEventListener("click", function () {
+    closeRecentActionDialog(true);
+  });
   byId("recent-action-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();
-    closeRecentActionDialog();
+    closeRecentActionDialog(true);
   });
   byId("recent-action-dialog").addEventListener("close", function () {
-    var trigger = byId("recent-action-button");
-    if (trigger) trigger.setAttribute("aria-expanded", "false");
-    if (trigger && trigger.isConnected && trigger.getClientRects().length) trigger.focus({ preventScroll: true });
+    byId("recent-action-button").setAttribute("aria-expanded", "false");
   });
-  byId("history-dialog").addEventListener("close", function () {historyGeneration++; byId("history-content").replaceChildren();});
-  byId("history-content").addEventListener("click", function (e) {
-    var btn=e.target.closest("button");
-    if (btn?.hasAttribute("data-history-table")) loadHistory(btn.dataset.historyTable);
-    else if (btn?.hasAttribute("data-history-list")) loadHistory("");
-    else if (btn?.hasAttribute("data-history-offset")) loadHistory(byId("history-content").dataset.table, Number(btn.dataset.historyOffset));
+
+  function openHistoryDialog(event) {
+    historyTrigger = event && event.currentTarget || byId("history-button");
+    byId("history-dialog").showModal();
+    loadHistory("");
+  }
+  function closeHistoryDialog(restoreFocus) {
+    var dialog = byId("history-dialog");
+    var triggerId = historyTrigger && historyTrigger.id || "history-button";
+    if (dialog.open) dialog.close();
+    historyTrigger = null;
+    if (restoreFocus) focusTableControl(triggerId);
+  }
+  byId("history-button").addEventListener("click", openHistoryDialog);
+  byId("lobby-history-button").addEventListener("click", openHistoryDialog);
+  byId("history-close").addEventListener("click", function () {
+    closeHistoryDialog(true);
   });
-  byId("player-settings-button").addEventListener("click", openPlayerPreferences);
-  byId("player-settings-close").addEventListener("click", closePlayerPreferences);
-  byId("player-prefs-cancel").addEventListener("click", closePlayerPreferences);
-  byId("player-settings-dialog").addEventListener("close", function () {
-    byId("player-settings-button").setAttribute("aria-expanded", "false");
-  });
-  byId("player-prefs-form").addEventListener("submit", function (event) {
+  byId("history-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();
-    var error = byId("player-prefs-error");
-    var key = playerPrefsStorageKey();
-    if (!key) return;
-    try {
-      var prefs = {
-        preflop_bb: parsePlayerPresetInput("prefs-preflop-bb", 1, 200),
-        postflop_percent: parsePlayerPresetInput("prefs-postflop-percent", 1, 1000)
-      };
-      window.localStorage.setItem(key, JSON.stringify(prefs));
-      error.hidden = true;
-      error.textContent = "";
-      closePlayerPreferences();
-      if (state.tableView) renderActions(state.tableView);
-      showNotice("Your bet presets were saved on this device.", "success", false);
-    } catch (err) {
-      error.textContent = err.message || "Could not save these preferences.";
-      error.hidden = false;
-      error.setAttribute("tabindex", "-1");
-      error.focus();
+    closeHistoryDialog(true);
+  });
+  byId("history-dialog").addEventListener("close", function () {
+    if (byId("history-dialog").open) return;
+    historyGeneration += 1;
+    historyTrigger = null;
+    byId("history-content").replaceChildren();
+  });
+  byId("history-content").addEventListener("click", function (event) {
+    var button = event.target.closest("button");
+    if (!button) return;
+    if (button.hasAttribute("data-history-table")) loadHistory(button.dataset.historyTable);
+    else if (button.hasAttribute("data-history-list")) loadHistory("");
+    else if (button.hasAttribute("data-history-offset")) {
+      loadHistory(byId("history-content").dataset.table, Number(button.dataset.historyOffset));
     }
   });
-
-  byId("runtime-settings-button").addEventListener("click", function () {
-    var view = state.tableView;
-    if (!view || view.status !== "playing") return;
-    state.runtimeSettingsOpen = !state.runtimeSettingsOpen;
-    if (state.runtimeSettingsOpen) clearNotice();
-    var playerId = String(state.player && state.player.id || "");
-    var host = String(view.host_id || "") === playerId;
-    renderSettingsPanel(view, host);
+  byId("admin-config-form").addEventListener("submit", saveAdminConfig);
+  byId("admin-tables-details").addEventListener("toggle", function () {
+    if (byId("admin-tables-details").open) loadAdminTables();
+  });
+  byId("admin-tables-refresh").addEventListener("click", function (event) {
+    event.preventDefault();
+    event.stopPropagation();
+    loadAdminTables();
+  });
+  byId("admin-tables-list").addEventListener("click", function (event) {
+    var button = event.target.closest("button");
+    if (!button) return;
+    if (button.hasAttribute("data-admin-inspect")) inspectAdminTable(button.closest("[data-admin-table-id]"));
+    else if (button.hasAttribute("data-admin-add-bot")) mutateAdminBot(button, true);
+    else if (button.hasAttribute("data-admin-remove-bot")) mutateAdminBot(button, false);
   });
 
-  byId("logout-button").addEventListener("click", async function () {
+  function openTableSettingsDialog() {
+    var view = state.tableView;
+    if (!view || state.isAdmin) return;
+    var playerId = String(state.player && state.player.id || "");
+    if (String(view.host_id || "") !== playerId) return;
+    var dialog = byId("table-settings-dialog");
+    if (!dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    }
+    byId("runtime-settings-button").setAttribute("aria-expanded", "true");
+    if (state.tableView) renderSettingsPanel(state.tableView, true);
+  }
+
+  byId("runtime-settings-button").addEventListener("click", function () {
+    var menu = byId("table-menu");
+    if (menu) menu.open = false;
+    openTableSettingsDialog();
+  });
+  byId("table-menu").addEventListener("click", function (event) {
+    var button = event.target.closest("button");
+    if (!button || button.disabled) return;
+    var menu = byId("table-menu");
+    if (menu && menu.open) menu.open = false;
+  });
+  function closeTableSettingsDialog(restoreFocus) {
+    var dialog = byId("table-settings-dialog");
+    if (dialog && dialog.open) dialog.close();
+    state.runtimeSettingsOpen = false;
+    byId("runtime-settings-button").setAttribute("aria-expanded", "false");
+    if (restoreFocus) focusTableControl("runtime-settings-button");
+  }
+  byId("settings-dialog-close").addEventListener("click", function () {
+    closeTableSettingsDialog(true);
+  });
+  byId("table-settings-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeTableSettingsDialog(true);
+  });
+  byId("table-settings-dialog").addEventListener("close", function () {
+    state.runtimeSettingsOpen = false;
+    byId("runtime-settings-button").setAttribute("aria-expanded", "false");
+  });
+  byId("table-settings-dialog").addEventListener("click", function (event) {
+    if (event.target === byId("table-settings-dialog") && !state.settingsSaving) closeTableSettingsDialog(true);
+  });
+  byId("payout-place-count").addEventListener("change", function (event) {
+    if (event.target.disabled) return;
+    writePayoutShares(resizePayoutPlaces(event.target.value));
+    state.settingsDirty = true;
+    renderSettingsPanel(state.tableView, true);
+    updateHostReadiness(state.tableView, true);
+  });
+  byId("payout-sliders").addEventListener("input", function (event) {
+    var input = event.target.closest(".payout-slider");
+    if (!input || input.disabled) return;
+    var index = number(input.getAttribute("data-payout-index"), -1);
+    writePayoutShares(rebalanceEditedPayout(index, input.value));
+  });
+
+  function updateEndGameConfirmation() {
+    var confirmation = state.endConfirmation;
+    var busy = Boolean(confirmation.busy);
+    byId("end-game-confirm").disabled = busy;
+    byId("end-game-cancel").disabled = busy;
+    byId("end-game-close").disabled = busy;
+    if (confirmation.step === 1) {
+      byId("end-game-step").textContent = "The game will stop now. Confirm once more to end “" + (state.tableView && state.tableView.name || "this table") + "” with no final standings.";
+      byId("end-game-confirm").textContent = "End game";
+    } else {
+      byId("end-game-step").textContent = "You’ll confirm twice before the game ends.";
+      byId("end-game-confirm").textContent = "Continue";
+    }
+  }
+
+  function openEndGameDialog() {
+    var view = state.tableView;
+    if (!view || view.status !== "playing" || state.isAdmin) return;
+    var playerId = String(state.player && state.player.id || "");
+    if (String(view.host_id || "") !== playerId) return;
+    state.endConfirmation = { tableId: String(state.activeTableId), token: "", step: 0, busy: false };
+    byId("end-game-title").textContent = "End “" + (view.name || "this game") + "”?";
+    updateEndGameConfirmation();
+    var menu = byId("table-menu");
+    if (menu) menu.open = false;
+    var dialog = byId("end-game-dialog");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+    byId("end-game-confirm").focus();
+  }
+
+  function closeEndGameDialog(restoreFocus) {
+    var dialog = byId("end-game-dialog");
+    if (dialog && dialog.open) dialog.close();
+    state.endConfirmation = { tableId: "", token: "", step: 0, busy: false };
+    if (restoreFocus !== false) focusTableControl("end-game-button");
+  }
+
+  async function confirmEndGame() {
+    var confirmation = state.endConfirmation;
+    var tableId = confirmation.tableId;
+    var view = state.tableView;
+    var playerId = String(state.player && state.player.id || "");
+    if (confirmation.busy || !tableId || state.activeTableId !== tableId || !view ||
+        String(view.host_id || "") !== playerId || view.status !== "playing") {
+      closeEndGameDialog();
+      return;
+    }
+    confirmation.busy = true;
+    updateEndGameConfirmation();
+    try {
+      if (confirmation.step === 0) {
+        var first = await mutate("/tables/" + encodeURIComponent(tableId) + "/end", { confirm: true });
+        if (state.activeTableId !== tableId || state.endConfirmation.tableId !== tableId) return;
+        var token = String(first.confirmation_token || "");
+        if (!token) throw Error("The room did not issue an end-game confirmation token. Try again.");
+        state.endConfirmation.token = token;
+        state.endConfirmation.step = 1;
+        state.endConfirmation.busy = false;
+        updateEndGameConfirmation();
+        byId("end-game-confirm").focus();
+        return;
+      }
+      var token = confirmation.token;
+      if (!token) throw Error("This confirmation expired. Start again to end the game.");
+      var second = await mutate("/tables/" + encodeURIComponent(tableId) + "/end", { confirmation_token: token });
+      if (state.activeTableId !== tableId || state.endConfirmation.tableId !== tableId) return;
+      var table = second.table || second;
+      state.tableView = table;
+      state.settingsDirty = false;
+      closeEndGameDialog();
+      renderTable();
+      await refreshAll(true);
+      showNotice("The game ended. No final standings were created.", "success", false);
+    } catch (err) {
+      if (state.endConfirmation.tableId === tableId) {
+        state.endConfirmation.busy = false;
+        if (state.endConfirmation.step === 1) {
+          state.endConfirmation = { tableId: tableId, token: "", step: 0, busy: false };
+        }
+        updateEndGameConfirmation();
+      }
+      showNotice(err.message || "The game could not be ended.", "error", false);
+    }
+  }
+
+  byId("end-game-button").addEventListener("click", openEndGameDialog);
+  byId("end-game-confirm").addEventListener("click", function (event) {
+    if (event.detail > 1) return;
+    confirmEndGame();
+  });
+  byId("end-game-cancel").addEventListener("click", function () {
+    closeEndGameDialog(true);
+  });
+  byId("end-game-close").addEventListener("click", function () {
+    closeEndGameDialog(true);
+  });
+  byId("end-game-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeEndGameDialog(true);
+  });
+  byId("end-game-dialog").addEventListener("close", function () {
+    if (byId("end-game-dialog").open) return;
+    state.endConfirmation = { tableId: "", token: "", step: 0, busy: false };
+  });
+  byId("end-game-dialog").addEventListener("click", function (event) {
+    if (event.target === byId("end-game-dialog") && !state.endConfirmation.busy) closeEndGameDialog(true);
+  });
+
+  async function logoutFromRoom() {
     try {
       await mutate("/logout", {});
     } catch (err) {
       if (err.status !== 401) showNotice(err.message, "error", false);
     }
     setLoggedOut("");
+  }
+  ["logout-button", "table-logout-button", "admin-logout-button"].forEach(function (id) {
+    byId(id).addEventListener("click", logoutFromRoom);
   });
 
-  byId("create-form").addEventListener("submit", async function (event) {
-    event.preventDefault();
-    var form = event.currentTarget;
-    var small = number(byId("small-blind").value, 0);
-    var big = number(byId("big-blind").value, 0);
-    if (small < 1 || big <= small) {
-      showNotice("The big blind must be greater than the small blind.", "error", false);
-      return;
-    }
-    var button = form.querySelector('button[type="submit"]');
+  async function createNewGame() {
+    var button = byId("create-game-tab");
+    if (!state.player || state.isAdmin || button.disabled) return;
     button.disabled = true;
     try {
+      var tableName = String(state.player.name || "Friends") + "’s table";
       var data = await mutate("/tables", {
-        buy_in: number(byId("buy-in").value,0),
-        payout_percentages: payouts("payout"),
-        name: byId("table-name").value.trim(),
-        max_seats: number(byId("max-seats").value, 6),
-        starting_stack: number(byId("starting-stack").value, 1000),
-        small_blind: small,
-        big_blind: big,
-        level_minutes: number(byId("level-minutes").value, 5),
-        turn_seconds: number(byId("turn-seconds").value, 30),
-        runout_seconds: number(byId("runout-seconds").value, 2.5),
-        blind_announcement_seconds: number(byId("blind-announcement-seconds").value, 5),
-        elimination_announcement_seconds: number(byId("elimination-announcement-seconds").value, 5),
-        showdown_seconds: number(byId("showdown-seconds").value, 5)
+        buy_in: 10,
+        payout_percentages: [60, 25, 15],
+        name: tableName,
+        starting_stack: 1000,
+        small_blind: 10,
+        big_blind: 20,
+        level_minutes: 5,
+        turn_seconds: 30
       });
       var table = data.table || data;
       closeLastHandDialog(false);
       state.activeTableId = String(table.id || "");
       state.tableView = table.id ? table : null;
+      state.settingsTableId = "";
+      state.settingsDirty = false;
+      state.skipAutoResume = false;
+      state.restoreTableId = "";
       if (state.activeTableId) setHashTable(state.activeTableId);
       clearNotice();
       await refreshAll(true);
+      if (state.tableView && String(state.tableView.host_id || "") === String(state.player.id || "")) {
+        openTableSettingsDialog();
+      }
     } catch (err) {
       showNotice(err.message, "error", false);
     } finally {
       button.disabled = false;
     }
-  });
+  }
+  byId("create-game-tab").addEventListener("click", createNewGame);
 
   async function handleSeatControlClick(event) {
-    var button = event.target.closest("[data-take-seat], [data-add-bot-seat], [data-remove-bot-seat]");
-    if (!button || button.disabled || !state.activeTableId) return;
+    var button = event.target.closest("[data-take-seat]");
+    if (!button || button.disabled || !state.activeTableId || state.isAdmin) return;
     event.stopPropagation();
     var tableId = String(state.activeTableId);
     var playerId = String(state.player && state.player.id || "");
-    var rawSeatNo = button.hasAttribute("data-take-seat") ? button.getAttribute("data-take-seat") :
-      (button.hasAttribute("data-add-bot-seat") ? button.getAttribute("data-add-bot-seat") : button.getAttribute("data-remove-bot-seat"));
-    var seatNo = number(rawSeatNo, -1);
+    var seatNo = number(button.getAttribute("data-take-seat"), -1);
     if (seatNo < 0) return;
     button.disabled = true;
     try {
-      var message;
-      if (button.hasAttribute("data-take-seat")) {
-        await mutate("/tables/" + encodeURIComponent(tableId) + "/seat", { seat_no: seatNo });
-        message = "You took Seat " + (seatNo + 1) + ".";
-      } else if (button.hasAttribute("data-add-bot-seat")) {
-        await mutate("/tables/" + encodeURIComponent(tableId) + "/bots", { seat_no: seatNo });
-        message = "A test bot joined Seat " + (seatNo + 1) + ".";
-      } else {
-        await mutate("/tables/" + encodeURIComponent(tableId) + "/bots/" + seatNo, undefined, "DELETE");
-        message = "The test bot left Seat " + (seatNo + 1) + ".";
-      }
+      await mutate("/tables/" + encodeURIComponent(tableId) + "/seat", { seat_no: seatNo });
       if (state.activeTableId !== tableId || String(state.player && state.player.id || "") !== playerId) return;
       await refreshSelected();
       await refreshAll(true);
-      showNotice(message, "success", false);
     } catch (err) {
       if (state.activeTableId === tableId) showNotice(err.message, "error", false);
     } finally {
@@ -3401,7 +3894,6 @@
       await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/stand", {});
       await refreshSelected();
       await refreshAll(true);
-      showNotice("You stood up and can keep watching as a guest.", "success", false);
     } catch (err) {
       showNotice(err.message, "error", false);
     } finally {
@@ -3467,7 +3959,7 @@
       state.tableView = data.table || data;
       renderTable();
       await refreshAll(true);
-      if (!state.runtimeSettingsOpen) showNotice(paused ? "Game paused." : "Game resumed.", "success", false);
+      clearNotice();
     } catch (err) {
       if (state.activeTableId === tableId) showNotice(err.message, "error", false);
     } finally {
@@ -3477,14 +3969,39 @@
   });
 
   byId("start-button").addEventListener("click", async function () {
-    if (!state.activeTableId) return;
+    var view = state.tableView;
+    if (!state.activeTableId || !view || view.status !== "lobby") return;
+    var tableId = String(state.activeTableId);
+    var playerId = String(state.player && state.player.id || "");
+    if (String(view.host_id || "") !== playerId) return;
+    var entrants = Array.isArray(view.seats) ? view.seats.length : 0;
+    if (entrants < 2) {
+      showNotice("Invite or seat one more player before dealing.", "info", false);
+      return;
+    }
     var button = byId("start-button");
     button.disabled = true;
+    var adjustedPayouts = null;
     try {
-      await mutate("/tables/" + encodeURIComponent(state.activeTableId) + "/start", {});
+      var currentPayouts = readPayoutShares();
+      if (currentPayouts.length > entrants) {
+        adjustedPayouts = allocatePayoutShares(currentPayouts.slice(0, entrants), 100);
+        writePayoutShares(adjustedPayouts);
+        state.settingsDirty = true;
+        updateHostReadiness(view, true);
+        var saved = await saveSettings();
+        if (!saved || state.activeTableId !== tableId || !state.tableView || state.tableView.status !== "lobby") return;
+      }
+      var data = await mutate("/tables/" + encodeURIComponent(tableId) + "/start", {});
+      if (state.activeTableId !== tableId) return;
+      state.tableView = data.table || data;
       await refreshSelected();
       await refreshAll(true);
-      showNotice("The freezeout is underway. Good luck.", "success", false);
+      if (adjustedPayouts) {
+        showNotice("Payouts adjusted for " + adjustedPayouts.length + " seated players: " + adjustedPayouts.join(" / ") + "%.", "info", false);
+      } else {
+        clearNotice();
+      }
     } catch (err) {
       showNotice(err.message, "error", false);
     } finally {
@@ -3492,20 +4009,20 @@
     }
   });
 
-  function lobbyPane(which) {
-    byId("app-panel").dataset.pane = which;
-    byId("open-games-tab").setAttribute("aria-pressed", String(which !== "create"));
-    byId("create-game-tab").setAttribute("aria-pressed", String(which === "create"));
-  }
-  byId("open-games-tab").addEventListener("click",function () {lobbyPane("games");});
-  byId("create-game-tab").addEventListener("click",function () {lobbyPane("create");});
   byId("close-table-button").addEventListener("click", function () {
-    lobbyPane("games");
     clearBlindAnnouncement(true);
     closeRecentActionDialog();
     closeLastHandDialog(false);
+    var settingsDialog = byId("table-settings-dialog");
+    if (settingsDialog.open) settingsDialog.close();
+    var endDialog = byId("end-game-dialog");
+    if (endDialog.open) endDialog.close();
+    state.endConfirmation = { tableId: "", token: "", step: 0, busy: false };
+    var menu = byId("table-menu");
+    if (menu) menu.open = false;
     state.activeTableId = "";
     state.skipAutoResume = true;
+    state.restoreTableId = "";
     state.tableView = null;
     setHashTable("");
     renderTables();
@@ -3588,7 +4105,7 @@
   });
 
   byId("seat-grid").addEventListener("click", function (event) {
-    var seatAction = event.target.closest("[data-take-seat], [data-add-bot-seat]");
+    var seatAction = event.target.closest("[data-take-seat]");
     if (seatAction) {
       handleSeatControlClick(event);
       return;
@@ -3610,6 +4127,13 @@
     this.dataset.chatEditVersion = String(number(this.dataset.chatEditVersion, 0) + 1);
     setChatError("");
     updateChatCharacterCount();
+  });
+  byId("chat-input").addEventListener("keydown", function (event) {
+    if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 ||
+        event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    if (state.chat.sending || state.chat.postInFlight) return;
+    byId("chat-form").requestSubmit();
   });
   byId("chat-quick-input").addEventListener("input", function () {
     this.dataset.chatEditVersion = String(number(this.dataset.chatEditVersion, 0) + 1);
@@ -3708,6 +4232,109 @@
       var chat = state.chat;
       fetchChat(chat.requestId, chat.tableId, chat.playerId);
     }
+  });
+
+  var deferredInstallPrompt = null;
+
+  function isStandaloneApp() {
+    return Boolean((window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone);
+  }
+
+  function canShowManualInstall() {
+    return /iPhone|iPad|iPod/i.test(window.navigator.userAgent || "") && !isStandaloneApp();
+  }
+
+  function syncInstallControls() {
+    var available = !isStandaloneApp() && Boolean(deferredInstallPrompt || canShowManualInstall());
+    ["install-app-button", "table-install-button"].forEach(function (id) {
+      var button = byId(id);
+      if (button) button.hidden = !available;
+    });
+  }
+
+  function openInstallDialog() {
+    var dialog = byId("install-dialog");
+    var ios = canShowManualInstall();
+    byId("install-copy").textContent = ios
+      ? "In Safari, tap Share, then choose Add to Home Screen. The live table still needs a network connection."
+      : "Add this room to your device for a focused table. Live games require a network connection.";
+    byId("install-confirm").hidden = !deferredInstallPrompt;
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  async function promptInstallApp() {
+    if (!deferredInstallPrompt) {
+      openInstallDialog();
+      return;
+    }
+    var prompt = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    syncInstallControls();
+    try {
+      await prompt.prompt();
+      await prompt.userChoice;
+    } catch (err) {}
+    syncInstallControls();
+  }
+
+  ["install-app-button", "table-install-button"].forEach(function (id) {
+    byId(id).addEventListener("click", promptInstallApp);
+  });
+  byId("install-close").addEventListener("click", function () {
+    var dialog = byId("install-dialog");
+    if (dialog.open) dialog.close();
+  });
+  byId("install-dialog").addEventListener("click", function (event) {
+    if (event.target === byId("install-dialog")) byId("install-dialog").close();
+  });
+  byId("install-confirm").addEventListener("click", promptInstallApp);
+  window.addEventListener("beforeinstallprompt", function (event) {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    syncInstallControls();
+  });
+  window.addEventListener("appinstalled", function () {
+    deferredInstallPrompt = null;
+    syncInstallControls();
+  });
+  syncInstallControls();
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/poker/service-worker.js", { scope: "/poker/" }).catch(function () {});
+
+  function syncFullscreenButton() {
+    var button = byId("fullscreen-button");
+    var supported = Boolean(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+    button.hidden = !supported;
+    button.textContent = document.fullscreenElement || document.webkitFullscreenElement ? "Exit full screen" : "Full screen";
+  }
+  byId("fullscreen-button").addEventListener("click", async function () {
+    try {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+      } else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+      else if (document.documentElement.webkitRequestFullscreen) document.documentElement.webkitRequestFullscreen();
+    } catch (err) {
+      showNotice("Full screen is unavailable in this browser.", "info", false);
+    }
+    syncFullscreenButton();
+  });
+  document.addEventListener("fullscreenchange", syncFullscreenButton);
+  document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
+  syncFullscreenButton();
+
+  byId("open-table-window-button").addEventListener("click", function () {
+    if (!state.activeTableId) return;
+    var url = window.location.origin + window.location.pathname + "#table=" + encodeURIComponent(state.activeTableId);
+    var screenWidth = Number(window.screen && window.screen.availWidth) || 1180;
+    var screenHeight = Number(window.screen && window.screen.availHeight) || 880;
+    var width = Math.min(1400, Math.max(320, screenWidth - 80));
+    var height = Math.min(1050, Math.max(320, screenHeight - 100));
+    var left = Math.max(0, Math.round((screenWidth - width) / 2));
+    var top = Math.max(0, Math.round((screenHeight - height) / 2));
+    var features = "popup=yes,width=" + width + ",height=" + height + ",left=" + left + ",top=" + top + ",resizable=yes,scrollbars=yes";
+    var opened = window.open(url, "_blank", features);
+    if (!opened) showNotice("Your browser blocked the new window. The table remains open here; allow popups and try again if you want a separate window.", "info", false);
   });
 
   loadAuth();

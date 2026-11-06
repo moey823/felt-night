@@ -929,7 +929,6 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 
 /* Leave a clear board lane between the taller face-up seats on compact tables. */
 @media (max-width: 820px) {
-  .felt[data-compact-layout="true"].exposed-ring { min-height: 760px; }
 }
 
 
@@ -957,7 +956,6 @@ input[type=number] { font-variant-numeric: tabular-nums; }
   .felt[data-compact-layout="true"].is-playing[data-seat-count="5"],
   .felt[data-compact-layout="true"].is-playing[data-seat-count="6"] { min-height: 640px; }
   .felt[data-compact-layout="true"].is-playing[data-seat-count="9"] { min-height: clamp(630px, 78vh, 690px); }
-  .felt[data-compact-layout="true"].is-playing[data-seat-count="9"].exposed-ring { min-height: clamp(740px, 90vh, 800px); }
   .felt[data-compact-layout="true"].is-playing .board-center {
     top: 22%;
     transform: translate(-50%, -50%);
@@ -2349,7 +2347,6 @@ body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empt
 body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 34px; height: 45px; }
 
 /* Stable board and pot blocks remain collision-safe across every street. */
-body.gameplay-active #felt.exposed-ring { min-height: 0 !important; }
 body.gameplay-active #board-caption {
   box-sizing: border-box;
   display: block;

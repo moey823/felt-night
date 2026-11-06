@@ -6,6 +6,10 @@
   <meta name="theme-color" content="#111c19">
   <title>Felt Night — Private play-money poker</title>
   <link rel="icon" type="image/svg+xml" href="/poker/ace.svg">
+  <link rel="manifest" href="/poker/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/poker/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="stylesheet" href="/poker/style.css">
   <link rel="stylesheet" href="/poker/room.css">
   <script defer src="/poker/seat-layout.js"></script>
@@ -27,8 +31,7 @@
         <div id="identity" class="identity" hidden>
           <span class="identity-avatar" id="identity-avatar" aria-hidden="true">♠</span>
           <span id="welcome-name" class="welcome-name"></span>
-          <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
-          <button id="player-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="player-settings-dialog" aria-expanded="false">Bet presets</button>
+          <button id="lobby-history-button" class="button button-quiet button-small" type="button">My history</button>
           <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
         </div>
       </div>
@@ -37,15 +40,7 @@
     <main>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title"><div class="section-heading"><div><div class="panel-kicker">PLAYER RECORD</div><h2 id="history-title">My history</h2></div><button type="button" class="button button-quiet button-small" id="history-close">Close</button></div><div id="history-content" aria-live="polite"></div></dialog>
-      <dialog id="player-settings-dialog" class="player-prefs" aria-labelledby="player-settings-title">
-        <div class="section-heading"><div><div class="panel-kicker">YOUR TABLE PREFERENCES</div><h2 id="player-settings-title">Bet presets</h2></div><button type="button" class="button button-quiet button-small" id="player-settings-close">Close</button></div>
-        <form id="player-prefs-form" class="player-prefs-form">
-          <div class="player-prefs-field"><label for="prefs-preflop-bb">Preflop raise presets (big blinds)</label><input id="prefs-preflop-bb" name="preflop_bb" type="text" maxlength="80" value="2.5, 3, 4" required aria-describedby="prefs-preflop-note"><small id="prefs-preflop-note" class="muted">Enter 1 to 5 increasing sizes, such as 2.5, 3, 4.</small></div>
-          <div class="player-prefs-field"><label for="prefs-postflop-percent">Postflop raise presets (percent of pot)</label><input id="prefs-postflop-percent" name="postflop_percent" type="text" maxlength="80" value="50, 75, 100" required aria-describedby="prefs-postflop-note"><small id="prefs-postflop-note" class="muted">Enter 1 to 5 increasing percentages from 1 to 1000.</small></div>
-          <p id="player-prefs-error" class="player-prefs-error" role="alert" hidden></p>
-          <div class="player-prefs-actions"><button id="player-prefs-cancel" class="button button-outline button-small" type="button">Cancel</button><button class="button button-primary button-small" type="submit">Save preferences</button></div>
-        </form>
-      </dialog>
+
 
       <section id="login-panel" class="login-layout" aria-labelledby="login-title" hidden>
         <div class="login-story">
@@ -75,90 +70,55 @@
             </button>
           </form>
           <button type="button" id="auth-switch" class="button button-quiet auth-switch">Create an account</button>
+          <button type="button" id="admin-login-button" class="button button-quiet auth-switch">Admin configuration</button>
           <div class="login-card-foot"><span class="lock-icon" aria-hidden="true">▣</span> Your session stays on this device</div>
         </div>
+      </section>
+
+      <section id="admin-panel" class="admin-screen" aria-labelledby="admin-title" hidden>
+        <div class="admin-screen-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-line"></span> Room administration</div>
+            <h1 id="admin-title">Room defaults</h1>
+            <p>Pacing changes apply to upcoming transitions; active timers continue.</p>
+          </div>
+          <button id="admin-logout-button" class="button button-quiet button-small" type="button">Log out</button>
+        </div>
+        <form id="admin-config-form" class="panel admin-settings-form">
+          <div class="panel-kicker">GLOBAL TABLE SETTINGS</div>
+          <h2>Default pacing and bet presets</h2>
+          <div class="admin-config-grid">
+            <div class="settings-field"><label for="admin-runout-seconds">All-in street delay (seconds)</label><input id="admin-runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required></div>
+            <div class="settings-field"><label for="admin-blind-announcement-seconds">Blind announcement (seconds)</label><input id="admin-blind-announcement-seconds" name="blind_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
+            <div class="settings-field"><label for="admin-elimination-announcement-seconds">Elimination announcement (seconds)</label><input id="admin-elimination-announcement-seconds" name="elimination_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
+            <div class="settings-field"><label for="admin-showdown-seconds">Showdown result hold (seconds)</label><input id="admin-showdown-seconds" name="showdown_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
+            <div class="settings-field"><label for="admin-preflop-bb">Preflop raise presets (big blinds)</label><input id="admin-preflop-bb" name="preflop_bb" type="text" maxlength="80" value="2.5, 3, 4" required aria-describedby="admin-preflop-note"><small id="admin-preflop-note" class="muted">One to five increasing values, from 1 to 200.</small></div>
+            <div class="settings-field"><label for="admin-postflop-percent">Postflop raise presets (percent of pot)</label><input id="admin-postflop-percent" name="postflop_percent" type="text" maxlength="80" value="50, 75, 100" required aria-describedby="admin-postflop-note"><small id="admin-postflop-note" class="muted">One to five increasing values, from 1 to 1000.</small></div>
+          </div>
+          <p id="admin-config-error" class="player-prefs-error" role="alert" hidden></p>
+          <div class="settings-footer"><p id="admin-config-status" class="muted" role="status" aria-live="polite">These settings apply to all players.</p><button id="admin-config-save" class="button button-primary button-small" type="submit">Save room settings</button></div>
+        </form>
+        <details id="admin-tables-details" class="panel admin-tables-panel">
+          <summary><span><span class="panel-kicker">SECONDARY TOOLS</span><strong>Inspect and test tables</strong></span><button id="admin-tables-refresh" class="button button-outline button-small" type="button">Refresh</button></summary>
+          <div id="admin-tables-list" class="admin-tables-list"><p class="muted">Open this section to load tables.</p></div>
+        </details>
       </section>
 
       <section id="app-panel" class="app-panel" hidden>
         <div class="dashboard-heading">
           <div>
             <div class="eyebrow"><span class="eyebrow-line"></span> Private poker room</div>
-            <h1>Choose your table.</h1>
-            <p>Set up a freezeout, invite your crew, and let the cards fall.</p>
+            <h1>Your next table.</h1>
+            <p>Choose an open lobby or start a new game.</p>
           </div>
-          <div class="dashboard-mark" aria-hidden="true"><span>♠</span><span>♥</span><span>♦</span><span>♣</span></div>
+          <div class="dashboard-actions">
+            <button id="install-app-button" class="button button-outline button-small" type="button" hidden>Install Felt Night</button>
+            <button id="create-game-tab" class="button button-primary new-game-button" type="button"><span>New game</span><span aria-hidden="true">↗</span></button>
+          </div>
         </div>
 
-        <nav class="lobby-switch" aria-label="Lobby views"><button id="open-games-tab" type="button" class="button" aria-pressed="true">Open games</button><button id="create-game-tab" type="button" class="button" aria-pressed="false">Create game</button></nav>
         <div class="dashboard-grid">
           <aside class="sidebar">
-            <section class="panel create-panel" aria-labelledby="create-title">
-              <div class="section-heading">
-                <div>
-                  <div class="panel-kicker">START A GAME</div>
-                  <h2 id="create-title">New sit-and-go</h2>
-                </div>
-                <span class="section-icon" aria-hidden="true">＋</span>
-              </div>
-              <form id="create-form" class="create-form">
-<label for="buy-in">Buy-in (play credits)</label><input id="buy-in" type="number" min="0" max="1000000000" step="1" value="10" required>
-                <label for="payout">Payouts by place (%)</label><input id="payout" type="text" maxlength="48" value="60, 25, 15" required aria-describedby="payout-tip"><small id="payout-tip" class="muted">Enter shares from first place down, totaling 100%.</small>
-                <label for="table-name">Table name</label>
-                <input id="table-name" name="name" type="text" maxlength="40" value="Friends Table" required>
-                <div class="form-row">
-                  <div>
-                    <label for="max-seats">Seats</label>
-                    <select id="max-seats" name="max_seats">
-                      <option value="2">2 players</option>
-                      <option value="3">3 players</option>
-                      <option value="4">4 players</option>
-                      <option value="5">5 players</option>
-                      <option value="6">6 players</option>
-                      <option value="7">7 players</option>
-                      <option value="8">8 players</option>
-                      <option value="9" selected>9 players</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label for="starting-stack">Starting stack</label>
-                    <input id="starting-stack" name="starting_stack" type="number" min="100" max="1000000" step="100" value="1000" required>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <div>
-                    <label for="small-blind">Small blind</label>
-                    <input id="small-blind" name="small_blind" type="number" min="1" max="100000" step="1" value="10" required>
-                  </div>
-                  <div>
-                    <label for="big-blind">Big blind</label>
-                    <input id="big-blind" name="big_blind" type="number" min="2" max="200000" step="1" value="20" required>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <div>
-                    <label for="level-minutes">Blind levels (minutes)</label>
-                    <input id="level-minutes" name="level_minutes" type="number" min="0.01" max="2147483647" step="any" value="5" required>
-                  </div>
-                  <div>
-                    <label for="turn-seconds">Shot clock (seconds)</label>
-                    <input id="turn-seconds" name="turn_seconds" type="number" min="1" max="3600" step="1" value="30" required>
-                  </div>
-                </div>
-                <div class="form-row">
-                  <div><label for="runout-seconds">All-in street delay (seconds)</label><input id="runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required></div>
-                  <div><label for="blind-announcement-seconds">Blind announcement (seconds)</label><input id="blind-announcement-seconds" name="blind_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
-                </div>
-                <label for="elimination-announcement-seconds">Elimination announcement (seconds)</label>
-                <input id="elimination-announcement-seconds" name="elimination_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required>
-                <label for="showdown-seconds">Showdown result hold (seconds)</label>
-                <input id="showdown-seconds" name="showdown_seconds" type="number" min="0" max="60" step="1" value="5" required>
-                <button class="button button-primary button-wide" type="submit">
-                  <span>Create table</span><span aria-hidden="true">↗</span>
-                </button>
-                <p class="form-caption">Everyone starts with the same stack. No rebuys.</p>
-              </form>
-            </section>
-
             <section class="panel tables-panel" aria-labelledby="tables-title">
               <div class="section-heading compact">
                 <div>
@@ -189,27 +149,34 @@
             </div>
 
             <div id="table-view" class="table-view" hidden>
-              <div class="table-heading">
-                <div>
-                  <div class="table-title-row">
-                    <h2 id="view-table-name"></h2>
-                    <span id="view-status" class="status-pill"></span>
-                  </div>
+              <div class="table-heading table-shell-header">
+                <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to lobby"><span aria-hidden="true">←</span> Lobby</button>
+                <div class="table-shell-title">
+                  <div class="table-title-row"><h2 id="view-table-name"></h2><span id="view-status" class="status-pill"></span></div>
                   <p id="view-table-subtitle" class="muted"></p>
                 </div>
-                <div class="table-heading-tools">
-                  <button id="last-hand-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="last-hand-dialog" aria-expanded="false" hidden>Last hand</button>
-                  <button id="recent-action-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="recent-action-dialog" aria-expanded="false">Recent action</button>
-                  <button id="pause-button" class="button button-outline button-small" type="button" aria-pressed="false" aria-busy="false" hidden>Pause game</button>
-                  <button id="runtime-settings-button" class="button button-outline button-small" type="button" aria-controls="table-settings-form" aria-expanded="false" hidden>Game settings</button>
-                  <button id="reopen-results-button" class="button button-outline button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
-                  <button id="chat-button" class="button button-outline button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
-                  <button id="sit-out-button" class="button button-outline button-small" type="button" aria-pressed="false" hidden>Sit out</button>
-                  <button id="copy-invite-button" class="button button-outline button-small" type="button">Copy invite link</button>
-                  <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to all tables">All tables <span aria-hidden="true">↗</span></button>
-                </div>
+                <details id="table-menu" class="table-menu">
+                  <summary class="button button-outline button-small" aria-label="Open table menu">Menu</summary>
+                  <div class="table-menu-items" role="group" aria-label="Table options">
+                    <button id="last-hand-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="last-hand-dialog" aria-expanded="false" hidden>Last hand</button>
+                    <button id="recent-action-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="recent-action-dialog" aria-expanded="false">Recent action</button>
+                    <button id="pause-button" class="button button-quiet button-small" type="button" aria-pressed="false" aria-busy="false" hidden>Pause game</button>
+                    <button id="runtime-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="table-settings-dialog" aria-expanded="false" hidden>Game setup</button>
+                    <button id="reopen-results-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
+                    <button id="chat-button" class="button button-quiet button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
+                    <button id="sit-out-button" class="button button-quiet button-small" type="button" aria-pressed="false" hidden>Sit out</button>
+                    <button id="copy-invite-button" class="button button-quiet button-small" type="button">Copy invite link</button>
+                    <button id="fullscreen-button" class="button button-quiet button-small" type="button">Full screen</button>
+                    <button id="open-table-window-button" class="button button-quiet button-small" type="button">Open table window</button>
+                    <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
+                    <button id="table-logout-button" class="button button-quiet button-small" type="button">Log out</button>
+                    <button id="cancel-button" class="button button-quiet button-small" type="button" hidden>Cancel lobby</button>
+                    <button id="end-game-button" class="button button-danger button-small" type="button" hidden>End game</button>
+                    <button id="table-install-button" class="button button-quiet button-small" type="button" hidden>Install Felt Night</button>
+                  </div>
+                </details>
               </div>
-              <div id="chat-topline" class="chat-topline" hidden>
+              <div id="chat-topline" class="chat-topline" hidden aria-hidden="true">
                 <div id="chat-preview" class="chat-preview" role="region" aria-label="Latest table chat" aria-live="polite" hidden>
                   <div class="chat-preview-line" data-chat-preview-line="0">No messages yet.</div>
                   <div class="chat-preview-line" data-chat-preview-line="1">No earlier messages.</div>
@@ -279,7 +246,7 @@
                   <div class="panel-kicker">TAKE A SEAT OR WATCH</div>
                   <h3 id="seat-status-title">Watching the table</h3>
                   <p id="seat-status-description" class="muted">Choose an open seat to join, or keep watching as a guest.</p>
-                  <p class="lobby-deal-note">Start redraws the seats and places the first dealer button.</p>
+                  <p class="lobby-deal-note">Open seats are available to join or watch.</p>
                 </div>
                 <div class="lobby-seat-controls">
                   <div id="seat-controls" class="seat-controls" aria-label="Available seats and test bots"></div>
@@ -291,29 +258,32 @@
                 <div><div class="panel-kicker">HOST CONTROLS</div><h3>Ready to deal?</h3><p id="host-hint" class="muted">Wait for at least two seats, then start the freezeout.</p></div>
                 <div class="host-buttons">
                   <button id="start-button" class="button button-primary" type="button">Start game <span aria-hidden="true">↗</span></button>
-                  <button id="cancel-button" class="button button-danger button-small" type="button">Cancel table</button>
                 </div>
               </div>
 
-              <form id="table-settings-form" class="panel settings-panel" hidden>
+              <dialog id="table-settings-dialog" class="table-settings-dialog" aria-labelledby="table-settings-title">
+                <form id="table-settings-form" class="panel settings-panel">
                 <div class="section-heading settings-heading">
                   <div><div class="panel-kicker">HOST SETTINGS</div><h3 id="table-settings-title">Before you deal</h3></div>
-                  <span class="settings-lock-icon" aria-hidden="true">⚙</span>
+                  <button id="settings-dialog-close" class="button button-quiet button-small" type="button">Close</button>
                 </div>
                 <div class="settings-grid">
                   <div class="settings-field" data-lobby-only><label for="settings-buy-in">Buy-in (play credits)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
-                  <div class="settings-field" data-lobby-only><label for="settings-payout">Payouts by place (%)</label><input id="settings-payout" type="text" maxlength="48" value="60, 25, 15" required aria-describedby="settings-payout-tip"><small id="settings-payout-tip" class="muted">Enter shares from first place down, totaling 100%.</small></div>
+                  <div class="settings-field settings-payout-field" data-lobby-only>
+                    <label for="payout-place-count">Paid places</label>
+                    <select id="payout-place-count" aria-describedby="settings-payout-tip">
+                      <option value="1">1 place</option><option value="2">2 places</option><option value="3" selected>3 places</option>
+                      <option value="4">4 places</option><option value="5">5 places</option><option value="6">6 places</option>
+                      <option value="7">7 places</option><option value="8">8 places</option><option value="9">9 places</option>
+                    </select>
+                    <div id="payout-sliders" class="payout-sliders" role="group" aria-label="Payout percentage by place"></div>
+                    <input id="settings-payout" class="visually-hidden" type="text" readonly tabindex="-1" aria-hidden="true" value="60,25,15">
+                    <p id="settings-payout-summary" class="payout-summary" aria-live="polite"></p>
+                    <small id="settings-payout-tip" class="muted">Adjust one share; the others rebalance to keep the total at 100%.</small>
+                  </div>
                   <div class="settings-field settings-name-field" data-lobby-only>
                     <label for="settings-table-name">Table name</label>
                     <input id="settings-table-name" type="text" maxlength="40" required>
-                  </div>
-                  <div class="settings-field" data-lobby-only>
-                    <label for="settings-max-seats">Seats</label>
-                    <select id="settings-max-seats">
-                      <option value="2">2 players</option><option value="3">3 players</option><option value="4">4 players</option>
-                      <option value="5">5 players</option><option value="6">6 players</option><option value="7">7 players</option>
-                      <option value="8">8 players</option><option value="9">9 players</option>
-                    </select>
                   </div>
                   <div class="settings-field" data-lobby-only>
                     <label for="settings-starting-stack">Starting stack</label>
@@ -335,19 +305,23 @@
                     <label for="settings-turn-seconds">Shot clock (seconds)</label>
                     <input id="settings-turn-seconds" type="number" min="1" max="3600" step="1" required>
                   </div>
-                  <div class="settings-field" data-runtime-only>
-                    <label for="settings-runout-seconds">All-in street delay (seconds)</label>
-                    <input id="settings-runout-seconds" type="number" min="1" max="3600" step="any" required>
-                  </div>
-                  <div class="settings-field" data-runtime-only><label for="settings-blind-announcement-seconds">Blind announcement (seconds)</label><input id="settings-blind-announcement-seconds" type="number" min="0" max="60" step="1" required></div>
-                  <div class="settings-field" data-runtime-only><label for="settings-elimination-announcement-seconds">Elimination announcement (seconds)</label><input id="settings-elimination-announcement-seconds" type="number" min="0" max="60" step="1" required></div>
-                  <div class="settings-field" data-runtime-only><label for="settings-showdown-seconds">Showdown result hold (seconds)</label><input id="settings-showdown-seconds" type="number" min="0" max="60" step="1" required></div>
                 </div>
                 <div class="settings-footer">
                   <p id="settings-lock-note" class="muted">Save changes before starting the freezeout.</p>
                   <button id="save-settings-button" class="button button-outline button-small" type="submit">Save settings</button>
                 </div>
-              </form>
+                </form>
+              </dialog>
+
+              <dialog id="end-game-dialog" class="end-game-dialog" aria-labelledby="end-game-title" aria-describedby="end-game-description">
+                <div class="section-heading">
+                  <div><div class="panel-kicker">HOST CONTROL</div><h2 id="end-game-title">End this game?</h2></div>
+                  <button id="end-game-close" class="button button-quiet button-small" type="button">Close</button>
+                </div>
+                <p id="end-game-description" class="muted">This ends the current table immediately. It does not create final standings.</p>
+                <p id="end-game-step" class="end-game-step" role="status" aria-live="polite">You’ll confirm twice before the game ends.</p>
+                <div class="end-game-actions"><button id="end-game-cancel" class="button button-outline button-small" type="button">Keep playing</button><button id="end-game-confirm" class="button button-danger" type="button">Continue</button></div>
+              </dialog>
 
               <section id="results-panel" class="panel results-panel" role="dialog" aria-modal="false" aria-labelledby="results-title" aria-describedby="results-description" tabindex="-1" hidden>
                 <div class="results-panel-heading">
@@ -388,6 +362,12 @@
         </div>
       </section>
     </main>
+
+      <dialog id="install-dialog" class="install-dialog" aria-labelledby="install-title">
+        <div class="section-heading"><div><div class="panel-kicker">PLAY FROM YOUR HOME SCREEN</div><h2 id="install-title">Install Felt Night</h2></div><button id="install-close" class="button button-quiet button-small" type="button">Close</button></div>
+        <p id="install-copy" class="muted">Add this room to your device for a focused, full-screen table.</p>
+        <button id="install-confirm" class="button button-primary button-wide" type="button" hidden>Install app</button>
+      </dialog>
 
     <footer class="site-footer">
       <span>Private tables. Play money only.</span>
