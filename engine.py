@@ -77,7 +77,7 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
 def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise GameError("invalid_config", "Table settings are required.")
-    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "blind_announcement_seconds", "elimination_announcement_seconds", "showdown_seconds", "buy_in", "payout_percentages"}
+    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "blind_announcement_seconds", "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds", "buy_in", "payout_percentages"}
     unknown = set(config) - allowed
     if unknown:
         raise GameError("invalid_config", "Unknown table setting: %s." % sorted(unknown)[0])
@@ -90,6 +90,7 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
     values.setdefault("blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS)
     values.setdefault("elimination_announcement_seconds", ELIMINATION_ANNOUNCEMENT_SECONDS)
     values.setdefault("showdown_seconds", SHOWDOWN_SECONDS)
+    values.setdefault("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS)
     values.setdefault("buy_in", DEFAULT_BUY_IN)  # Tables saved before configurable play-money buy-ins.
     values.setdefault("payout_percentages", list(DEFAULT_PAYOUT_PERCENTAGES))
     values.update(config)
@@ -113,6 +114,10 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
     if (type(showdown_seconds) not in (int, float) or not 0 <= showdown_seconds <= 60
             or not math.isfinite(showdown_seconds)):
         raise GameError("invalid_config", "Showdown display length must be 0 to 60 seconds.")
+    uncontested_seconds = values["uncontested_seconds"]
+    if (type(uncontested_seconds) not in (int, float) or not 0 <= uncontested_seconds <= 60
+            or not math.isfinite(uncontested_seconds)):
+        raise GameError("invalid_config", "No-showdown winner hold must be 0 to 60 seconds.")
     payout_percentages = values["payout_percentages"]
     if (
         not isinstance(payout_percentages, (list, tuple))
@@ -132,6 +137,7 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
         "blind_announcement_seconds": blind_announcement,
         "elimination_announcement_seconds": elimination_announcement,
         "showdown_seconds": showdown_seconds,
+        "uncontested_seconds": uncontested_seconds,
         "buy_in": _integer(values["buy_in"], "Buy-in", 0, MAX_CHIPS),
         "payout_percentages": list(payout_percentages),
     }
@@ -308,6 +314,7 @@ def create_lobby(
             "blind_announcement_seconds": validated["blind_announcement_seconds"],
             "elimination_announcement_seconds": validated["elimination_announcement_seconds"],
             "showdown_seconds": validated["showdown_seconds"],
+            "uncontested_seconds": validated["uncontested_seconds"],
             "buy_in": validated["buy_in"],
             "payout_percentages": list(validated["payout_percentages"]),
         },
@@ -1789,7 +1796,7 @@ def _migrate_presentation_timing(state: Dict[str, Any], hand: Dict[str, Any], no
             )
         hand["hand_complete_at"] = hand["showdown_until"]
     elif complete_at is None:
-        complete_at = now + HAND_COMPLETE_PAUSE_SECONDS
+        complete_at = now + state["config"].get("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS)
         hand["hand_complete_at"] = complete_at
 
     result_end = max(
@@ -2635,8 +2642,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["bot_action_at"] = None
     hand["presentation_version"] = 2
 
-    # A contested showdown gets its own result window. An uncontested fold keeps
-    # the short hand-complete pause before any elimination announcement.
+    # Hold the result before elimination and blind announcements, then the next deal.
     if hand.get("showdown"):
         duration = state["config"].get("showdown_seconds", SHOWDOWN_SECONDS)
         hand["showdown_started_at"] = now
@@ -2645,7 +2651,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     else:
         hand["showdown_started_at"] = None
         hand["showdown_until"] = None
-        hand["hand_complete_at"] = now + HAND_COMPLETE_PAUSE_SECONDS
+        hand["hand_complete_at"] = now + state["config"].get("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS)
     hand["next_hand_at"] = hand["hand_complete_at"]
     hand["presentation_until"] = hand["hand_complete_at"]
 
@@ -2931,6 +2937,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "blind_announcement_seconds": state["config"].get("blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS),
             "elimination_announcement_seconds": state["config"].get("elimination_announcement_seconds", ELIMINATION_ANNOUNCEMENT_SECONDS),
             "showdown_seconds": state["config"].get("showdown_seconds", SHOWDOWN_SECONDS),
+            "uncontested_seconds": state["config"].get("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS),
             "buy_in": state["config"].get("buy_in", DEFAULT_BUY_IN),
             "payout_percentages": list(state["config"].get("payout_percentages", DEFAULT_PAYOUT_PERCENTAGES)),
         },
@@ -3006,6 +3013,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "standings": _standings_rows(state),
         "next_hand_at": public_deadline(hand.get("next_hand_at")) if hand else None,
         "showdown_until": public_deadline(hand.get("showdown_until")) if hand else None,
+        "hand_complete_at": public_deadline(hand.get("hand_complete_at")) if hand else None,
         "presentation_until": public_deadline(hand.get("presentation_until")) if hand else None,
         "runout_at": public_deadline(hand.get("runout_at")) if hand else None,
     }

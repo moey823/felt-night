@@ -52,6 +52,7 @@ DEFAULT_GLOBAL_CONFIG = {
     "blind_announcement_seconds": engine.BLIND_ANNOUNCEMENT_SECONDS,
     "elimination_announcement_seconds": engine.ELIMINATION_ANNOUNCEMENT_SECONDS,
     "showdown_seconds": engine.SHOWDOWN_SECONDS,
+    "uncontested_seconds": engine.HAND_COMPLETE_PAUSE_SECONDS,
     "bet_presets": {
         "preflop_bb": [2.5, 3, 4],
         "postflop_percent": [50, 75, 100],
@@ -168,7 +169,7 @@ def _validate_global_config(value, base=None):
         raise AppError(400, "invalid_admin_config", "Admin settings must be a JSON object.")
     allowed = {
         "runout_seconds", "blind_announcement_seconds",
-        "elimination_announcement_seconds", "showdown_seconds", "bet_presets",
+        "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds", "bet_presets",
     }
     unknown = set(value) - allowed
     if unknown:
@@ -179,6 +180,7 @@ def _validate_global_config(value, base=None):
         ("blind_announcement_seconds", 0, 60),
         ("elimination_announcement_seconds", 0, 60),
         ("showdown_seconds", 0, 60),
+        ("uncontested_seconds", 0, 60),
     ):
         if key not in value:
             continue
@@ -679,7 +681,7 @@ class Store:
             timings = {
                 key: updated[key] for key in (
                     "runout_seconds", "blind_announcement_seconds",
-                    "elimination_announcement_seconds", "showdown_seconds",
+                    "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds",
                 )
             }
             rows = conn.execute(
@@ -712,7 +714,7 @@ class Store:
             table_config["max_seats"] = engine.MAX_SEATS
             for key in (
                 "runout_seconds", "blind_announcement_seconds",
-                "elimination_announcement_seconds", "showdown_seconds",
+                "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds",
             ):
                 table_config[key] = global_config[key]
             state = engine.create_lobby(table_id, owner["id"], owner_name, table_config, now)

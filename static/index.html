@@ -91,6 +91,7 @@
             <div class="settings-field"><label for="admin-runout-seconds">All-in street delay (seconds)</label><input id="admin-runout-seconds" name="runout_seconds" type="number" min="1" max="3600" step="any" value="2.5" required></div>
             <div class="settings-field"><label for="admin-blind-announcement-seconds">Blind announcement (seconds)</label><input id="admin-blind-announcement-seconds" name="blind_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
             <div class="settings-field"><label for="admin-elimination-announcement-seconds">Elimination announcement (seconds)</label><input id="admin-elimination-announcement-seconds" name="elimination_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
+            <div class="settings-field"><label for="admin-uncontested-seconds">No-showdown winner hold (seconds)</label><input id="admin-uncontested-seconds" name="uncontested_seconds" type="number" min="0" max="60" step="any" value="1.5" required aria-describedby="admin-uncontested-note"><small id="admin-uncontested-note" class="muted">Highlight the winner before the next deal when everyone else folds. Blind and elimination announcements follow this hold.</small></div>
             <div class="settings-field"><label for="admin-showdown-seconds">Showdown result hold (seconds)</label><input id="admin-showdown-seconds" name="showdown_seconds" type="number" min="0" max="60" step="1" value="5" required></div>
             <div class="settings-field"><label for="admin-preflop-bb">Preflop raise presets (big blinds)</label><input id="admin-preflop-bb" name="preflop_bb" type="text" maxlength="80" value="2.5, 3, 4" required aria-describedby="admin-preflop-note"><small id="admin-preflop-note" class="muted">One to five increasing values, from 1 to 200.</small></div>
             <div class="settings-field"><label for="admin-postflop-percent">Postflop raise presets (percent of pot)</label><input id="admin-postflop-percent" name="postflop_percent" type="text" maxlength="80" value="50, 75, 100" required aria-describedby="admin-postflop-note"><small id="admin-postflop-note" class="muted">One to five increasing values, from 1 to 1000.</small></div>
@@ -171,6 +172,7 @@
                 <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to lobby"><span aria-hidden="true">←</span> Lobby</button>
                 <div class="table-shell-title">
                   <div class="table-title-row"><h2 id="view-table-name"></h2><span id="view-status" class="status-pill"></span></div>
+                  <div id="last-action-summary" class="last-action-summary" role="status" aria-live="polite" aria-atomic="true" hidden></div>
                   <p id="view-table-subtitle" class="muted"></p>
                 </div>
                 <details id="table-menu" class="table-menu">

@@ -1218,6 +1218,9 @@ class ServerAuthTests(unittest.TestCase):
         for bad_config in (
             {"runout_seconds": 0},
             {"showdown_seconds": 61},
+            {"uncontested_seconds": -1},
+            {"uncontested_seconds": 61},
+            {"uncontested_seconds": True},
             {"bet_presets": {"preflop_bb": [3, 2]}},
             {"bet_presets": {"postflop_percent": [0, 50]}},
         ):
@@ -1242,6 +1245,7 @@ class ServerAuthTests(unittest.TestCase):
         for field, default in (
             ("runout_seconds", 2.5), ("blind_announcement_seconds", 5),
             ("elimination_announcement_seconds", 5), ("showdown_seconds", 5),
+            ("uncontested_seconds", 1.5),
         ):
             self.assertEqual(table["config"][field], default)
         self.assertEqual(table["config"]["level_minutes"], 97)
@@ -1269,6 +1273,7 @@ class ServerAuthTests(unittest.TestCase):
             ("max_seats", 4), ("runout_seconds", 7),
             ("blind_announcement_seconds", 10),
             ("elimination_announcement_seconds", 10), ("showdown_seconds", 10),
+            ("uncontested_seconds", 10),
         ):
             status, _, rejected = self.request(
                 "POST", path + "/settings", {field: value}, **host_auth,
@@ -1283,6 +1288,7 @@ class ServerAuthTests(unittest.TestCase):
                 "blind_announcement_seconds": 4,
                 "elimination_announcement_seconds": 6,
                 "showdown_seconds": 7,
+                "uncontested_seconds": 8.25,
                 "bet_presets": {
                     "preflop_bb": [2, 2.5, 4, 5],
                     "postflop_percent": [25, 50, 75, 100, 150],
@@ -1292,11 +1298,13 @@ class ServerAuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 200, changed)
         self.assertEqual(changed["config"]["runout_seconds"], 3.25)
+        self.assertEqual(changed["config"]["uncontested_seconds"], 8.25)
         self.assertEqual(changed["config"]["bet_presets"]["postflop_percent"], [25, 50, 75, 100, 150])
 
         status, _, started = self.request("POST", path + "/start", {}, **host_auth)
         self.assertEqual(status, 200, started)
         self.assertEqual(started["table"]["config"]["max_seats"], 2)
+        self.assertEqual(started["table"]["config"]["uncontested_seconds"], 8.25)
         self.assertEqual(started["table"]["config"]["payout_percentages"], [71, 29])
         self.assertEqual(started["table"]["prize"]["payout_percentages"], [71, 29])
         self.assertAlmostEqual(

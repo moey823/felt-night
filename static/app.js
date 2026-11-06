@@ -55,6 +55,7 @@
     blind_announcement_seconds: 5,
     elimination_announcement_seconds: 5,
     showdown_seconds: 5,
+    uncontested_seconds: 1.5,
     bet_presets: { preflop_bb: [2.5, 3, 4], postflop_percent: [50, 75, 100] }
   };
   var state = {
@@ -1588,6 +1589,25 @@
     return names[action] || [action.toUpperCase() + value, action.toUpperCase() + value];
   }
 
+  function lastPlayerAction(view) {
+    return (Array.isArray(view && view.events) ? view.events : []).slice().reverse().find(function (event) {
+      return event.type === "action" && /^(fold|check|call|bet|raise|raise_to|all_in|allin)$/.test(String(event.action || ""));
+    }) || null;
+  }
+
+  function renderLastAction(view) {
+    var node = byId("last-action-summary");
+    var event = lastPlayerAction(view);
+    node.hidden = !event || view.status === "ended";
+    if (node.hidden) { node.replaceChildren(); return; }
+    var actor = String(event.actor_label || "Player");
+    var action = eventActionText(event)[0] + (event.timed_out ? " (timed out)" : "");
+    var markup = '<span class="last-action-actor">' + esc(actor) + '</span><strong class="last-action-detail">' + esc(action) + '</strong>';
+    if (node.innerHTML !== markup) node.innerHTML = markup;
+    node.title = "Last action: " + actor + " · " + action;
+    node.setAttribute("aria-label", node.title);
+  }
+
   function rememberTableEvent(event) {
     var fx = state.tableFx;
     if (!event || typeof event !== "object") return;
@@ -1925,6 +1945,8 @@
     }
     var positionCount = max;
     var actorId = String(view.actor_id || view.to_act_id || "");
+    var lastAction = lastPlayerAction(view);
+    var lastActorId = eventActorId(lastAction);
     var buttonId = String(view.button_id || "");
     var currentHand = view.status === "playing";
     var fx = state.tableFx;
@@ -1993,7 +2015,7 @@
         (view.status === "playing" && !seatCountsAsTournamentRemaining(view, seat)) ||
         terminalBust || completedBust;
       var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") +
-        (folded ? " is-folded" : "") + (bot ? " is-bot" : "") + (eliminated ? " is-eliminated" : "");
+        (folded ? " is-folded" : "") + (bot ? " is-bot" : "") + (eliminated ? " is-eliminated" : "") + (id === lastActorId ? " is-last-actor" : "");
       var label = eliminated ? "Out" : (sittingOut ? "Sitting out" : (folded ? "Folded" : (allIn ? "All in" : "")));
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
@@ -2025,6 +2047,7 @@
           number(view.pot_winnings && view.pot_winnings[id], number(showdownRow && showdownRow.payout, 0)));
         if (winnings > 0) {
           winnerFound = true;
+          classes += " is-hand-winner";
           var exactAmount = tableChips(winnings, view);
           var winnerName = String(winner && winner.name || seat.name || "Player");
           var winnerRank = String(winner && (winner.rank || winner.hand_name) || "");
@@ -2386,6 +2409,7 @@
       blind_announcement_seconds: number(config.blind_announcement_seconds, previous.blind_announcement_seconds),
       elimination_announcement_seconds: number(config.elimination_announcement_seconds, previous.elimination_announcement_seconds),
       showdown_seconds: number(config.showdown_seconds, previous.showdown_seconds),
+      uncontested_seconds: number(config.uncontested_seconds, previous.uncontested_seconds),
       bet_presets: {
         preflop_bb: validPresetArray(presets.preflop_bb, 1, 200) || previous.bet_presets.preflop_bb.slice(),
         postflop_percent: validPresetArray(presets.postflop_percent, 1, 1000) || previous.bet_presets.postflop_percent.slice()
@@ -2406,6 +2430,7 @@
     byId("admin-blind-announcement-seconds").value = String(config.blind_announcement_seconds);
     byId("admin-elimination-announcement-seconds").value = String(config.elimination_announcement_seconds);
     byId("admin-showdown-seconds").value = String(config.showdown_seconds);
+    byId("admin-uncontested-seconds").value = String(config.uncontested_seconds);
     byId("admin-preflop-bb").value = presets.preflop_bb.join(", ");
     byId("admin-postflop-percent").value = presets.postflop_percent.join(", ");
   }
@@ -2441,6 +2466,7 @@
         blind_announcement_seconds: number(byId("admin-blind-announcement-seconds").value, -1),
         elimination_announcement_seconds: number(byId("admin-elimination-announcement-seconds").value, -1),
         showdown_seconds: number(byId("admin-showdown-seconds").value, -1),
+        uncontested_seconds: number(byId("admin-uncontested-seconds").value, -1),
         bet_presets: {
           preflop_bb: parsePresetInput("admin-preflop-bb", 1, 200),
           postflop_percent: parsePresetInput("admin-postflop-percent", 1, 1000)
@@ -2449,7 +2475,8 @@
       if (!form.checkValidity() || payload.runout_seconds < 1 || payload.runout_seconds > 3600 ||
           payload.blind_announcement_seconds < 0 || payload.blind_announcement_seconds > 60 ||
           payload.elimination_announcement_seconds < 0 || payload.elimination_announcement_seconds > 60 ||
-          payload.showdown_seconds < 0 || payload.showdown_seconds > 60) throw Error("Check the pacing values and preset ranges.");
+          payload.showdown_seconds < 0 || payload.showdown_seconds > 60 ||
+          payload.uncontested_seconds < 0 || payload.uncontested_seconds > 60) throw Error("Check the pacing values and preset ranges.");
     } catch (err) {
       error.textContent = err.message || "Check the room settings.";
       error.hidden = false;
@@ -3323,8 +3350,11 @@
     if (!node) return;
     var rows = liveShowdownRows(view);
     var deadline = view && (view.showdown_until || (view.hand && view.hand.showdown_until));
-    var active = Boolean(rows.length &&
-      (deadline != null ? showdownRemainingMs(view) > 0 :
+    var uncontested = !rows.length && String(view.street || "").toLowerCase() === "showdown" &&
+      (view.winners || []).some(function (winner) { return number(winner.amount, 0) > 0; });
+    if (uncontested) deadline = view.hand_complete_at;
+    var active = Boolean((rows.length || uncontested) &&
+      (deadline != null ? (uncontested ? epochMilliseconds(deadline) > epochMilliseconds(view.server_now) : showdownRemainingMs(view) > 0) :
         String(view.street || "").toLowerCase() === "showdown"));
     if (!active) {
       node.hidden = true;
@@ -3348,7 +3378,7 @@
       var name = String(winner && winner.name || row.name || "Player");
       var rank = handRankName(row, rankMap, winner);
       return '<p class="showdown-winner-line"><strong>' + esc(name) + ' wins ' +
-        esc(tableChips(amount, view)) + (rank ? ' with ' + esc(rank) : '') + '.</strong></p>';
+        esc(tableChips(amount, view)) + (uncontested ? ' without showdown' : (rank ? ' with ' + esc(rank) : '')) + '.</strong></p>';
     }).filter(Boolean).join("");
     var rankRows = rows.map(function (row) {
       var name = String(row && row.name || "Player");
@@ -3444,6 +3474,7 @@
     renderBoard(view);
     renderActions(view);
     renderLog(view);
+    renderLastAction(view);
     renderResults(view);
 
     var viewer = view.viewer || {};

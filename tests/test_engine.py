@@ -571,6 +571,49 @@ class EngineTests(unittest.TestCase):
         engine.advance(state, now=hand["next_hand_at"])
         self.assertEqual(state["hand_no"], 2)
 
+    def test_uncontested_hold_controls_the_next_deal_and_keeps_cards_private(self):
+        for hold in (0, 3.25, 60):
+            with self.subTest(hold=hold):
+                state = heads_up()
+                state["config"]["uncontested_seconds"] = hold
+                state["blinds"]["next_level_at"] = 1000
+                hand = state["hand"]
+                actor = hand["to_act"]
+                engine.apply_action(state, actor, "fold", None, 1, state["turn_version"], now=104)
+                self.assertEqual(hand["next_hand_at"], 104 + hold)
+                self.assertIsNone(hand["showdown_until"])
+                with patch("engine.time.time", return_value=104):
+                    view = engine.public_view(state, actor)
+                self.assertEqual(view["hand_complete_at"], 104 + hold)
+                self.assertEqual(view["config"]["uncontested_seconds"], hold)
+                self.assertEqual(len(view["winners"]), 1)
+                self.assertEqual(view["showdown"], [])
+                opponent = next(seat for seat in view["seats"] if seat["id"] != actor)
+                self.assertNotIn("cards", opponent)
+                if hold:
+                    engine.advance(state, now=104 + hold - .01)
+                    self.assertEqual(state["hand_no"], 1)
+                engine.advance(state, now=104 + hold)
+                self.assertEqual(state["hand_no"], 2)
+
+    def test_uncontested_hold_defaults_validation_and_paused_deadlines(self):
+        for value in (-1, 61, True, float("nan"), float("inf"), "5"):
+            with self.subTest(value=value), self.assertRaises(engine.GameError):
+                engine.create_lobby("bad-hold", "p1", "Ada", config(uncontested_seconds=value), now=1)
+        state = heads_up()
+        self.assertEqual(state["config"]["uncontested_seconds"], 1.5)
+        state["config"]["uncontested_seconds"] = 10
+        engine.apply_action(state, state["hand"]["to_act"], "fold", None, 1, state["turn_version"], now=104)
+        engine.pause_table(state, "p1", True, now=106)
+        engine.advance(state, now=150)
+        self.assertEqual(state["hand_no"], 1)
+        engine.pause_table(state, "p1", False, now=156)
+        self.assertEqual(state["hand"]["hand_complete_at"], 164)
+        engine.advance(state, now=163.99)
+        self.assertEqual(state["hand_no"], 1)
+        engine.advance(state, now=164)
+        self.assertEqual(state["hand_no"], 2)
+
     def test_raise_to_rules_and_short_all_in(self):
         state = heads_up(starting_stack=100)
         hand = state["hand"]

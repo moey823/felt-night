@@ -2541,3 +2541,32 @@ body .mini-card .mini-suit {
   line-height: .9;
 }
 body .mini-card .mini-rank { font-size: min(17px, 36cqh) !important; line-height: 1; }
+
+/* Keep the latest player action readable without opening the activity menu. */
+.last-action-summary { display: flex; justify-content: center; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; color: #fff2cc; font-size: 12px; line-height: 15px; }
+.last-action-summary[hidden] { display: none; }
+.last-action-actor { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
+.last-action-detail { flex: 0 0 auto; color: #d4f59a; white-space: nowrap; font-size: 11px; }
+body.gameplay-active .table-shell-title:has(.last-action-summary:not([hidden])) .table-title-row { display: none !important; }
+body.gameplay-active .last-action-summary:not([hidden]) { display: flex; flex-direction: column; align-items: center; gap: 0; line-height: 13px; }
+body.gameplay-active .last-action-actor { max-width: 100%; }
+body.gameplay-active .last-action-detail { font-size: 11px; }
+
+/* Strong static rings remain visible for reduced motion and between polls. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-acting:not(.seat-empty) {
+  border-color: #e1ff80 !important;
+  outline: 3px solid #e1ff80 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px rgba(192, 238, 94, .22), 0 0 22px rgba(203, 255, 109, .7) !important;
+  background: #25452d !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-acting .seat-name { color: #f1ffd5 !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-last-actor .seat-action { color: #fff2cc !important; background: #3c4c2b !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-hand-winner:not(.seat-empty) {
+  border-color: #ffd979 !important;
+  outline: 3px solid #ffd979 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px rgba(255, 210, 100, .2), 0 0 22px rgba(255, 210, 100, .55) !important;
+  background: #453b22 !important;
+  opacity: 1 !important;
+}
