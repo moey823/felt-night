@@ -1042,6 +1042,10 @@ class ServerAuthTests(unittest.TestCase):
             {"player_id": owner_id, "name": "Morgan", "place": 1, "chips": 1000},
             {"player_id": guest_id, "name": "Avery", "place": 2, "chips": 0},
         ]
+        # Simulate the older retained table shape, before hand header metadata existed.
+        for field in ("small_blind", "big_blind", "blind_level", "button_id"):
+            state["hand"].pop(field, None)
+        state["blinds"] = {"level": 1}
         serialized_state = server._json_dumps(state)
 
         conn = sqlite3.connect(database)
@@ -1067,6 +1071,7 @@ class ServerAuthTests(unittest.TestCase):
                 "INSERT INTO meta(key,value) VALUES(?,?)",
                 (
                     ("csrf_secret", server.secrets.token_hex(32)),
+                    ("history_backfill_v1", "1"),
                     ("password_salt", password_salt.hex()),
                     ("password_verifier", server.Store._password_verifier(
                         self.password, password_salt,
@@ -1110,6 +1115,21 @@ class ServerAuthTests(unittest.TestCase):
                 ).fetchone()["value"],
                 "1",
             )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT value FROM meta WHERE key='history_text_metadata_v1'",
+                ).fetchone()["value"],
+                "1",
+            )
+            migrated_hand = conn.execute(
+                "SELECT small_blind,big_blind,blind_level,button_player_id "
+                "FROM hand_history WHERE table_id=? AND number=1",
+                (table_id,),
+            ).fetchone()
+            self.assertEqual(
+                tuple(migrated_hand),
+                (10, 20, 1, state["hand"]["small_blind_id"]),
+            )
         finally:
             conn.close()
 
@@ -1145,12 +1165,15 @@ class ServerAuthTests(unittest.TestCase):
         summary = next(item for item in history_page["tournaments"] if item["id"] == table_id)
         self.assertEqual(summary["results"], state["results"])
         self.assertEqual(summary["hand_count"], 1)
+        self.assertIn("Felt Night Tournament Summary", summary["summary_text"])
+        self.assertIn("Starting blinds: 10/20", summary["summary_text"])
         status, _, detail = self.request(
             "GET", "/poker/api/history/" + table_id,
             cookie=cookie, proof=proof,
         )
         self.assertEqual(status, 200, detail)
         self.assertEqual(detail["hands"][0]["ended"], old_updated)
+        self.assertIn("Felt Night Hand #1", detail["hands"][0]["history_text"])
         migrated_players = {
             player["player_id"]: player for player in detail["hands"][0]["players"]
         }
@@ -1236,6 +1259,8 @@ class ServerAuthTests(unittest.TestCase):
         host_players = {item["player_id"]: item for item in first_hand["players"]}
         self.assertEqual(len(host_players[host["id"]]["cards"]), 2)
         self.assertIsNone(host_players[guest["id"]]["cards"])
+        self.assertIn("Felt Night Hand #1", first_hand["history_text"])
+        self.assertIn("Dealt to Robin [" + " ".join(host_players[host["id"]]["cards"]) + "]", first_hand["history_text"])
 
         status, _, guest_detail = self.request(
             "GET", "/poker/api/history/" + table_id,
@@ -1247,6 +1272,9 @@ class ServerAuthTests(unittest.TestCase):
         }
         self.assertEqual(len(guest_players[guest["id"]]["cards"]), 2)
         self.assertIsNone(guest_players[host["id"]]["cards"])
+        hidden_host_pair = "[" + " ".join(host_players[host["id"]]["cards"]) + "]"
+        self.assertNotIn(hidden_host_pair, guest_detail["hands"][0]["history_text"])
+        self.assertIn("Dealt to Morgan [" + " ".join(guest_players[guest["id"]]["cards"]) + "]", guest_detail["hands"][0]["history_text"])
 
         # Simulate a later hand after Morgan is eliminated. Only a legitimate
         # reveal event may make Robin's cards available to Morgan's history.
@@ -1306,6 +1334,7 @@ class ServerAuthTests(unittest.TestCase):
         }
         self.assertEqual(later_players[host["id"]]["cards"], host_cards)
         self.assertTrue(later_players[host["id"]]["revealed"])
+        self.assertIn("[" + " ".join(host_cards) + "]", guest_final["hands"][1]["history_text"])
         self.assertNotIn(guest["id"], later_players)
 
         # The history survives app reconstruction and does not depend on the
@@ -1875,6 +1904,21 @@ class ServerAuthTests(unittest.TestCase):
             item["cards"] is None and not item["revealed"]
             for item in detail["hands"][0]["players"]
         ))
+        self.assertIn("Felt Night Tournament Summary", detail["tournament"]["summary_text"])
+        hand_text = detail["hands"][0]["history_text"]
+        self.assertIn("Felt Night Hand #1", hand_text)
+        self.assertNotIn("Dealt to History Host", hand_text)
+        conn = self.app.store.connect()
+        try:
+            private_row = conn.execute(
+                "SELECT cards_json FROM hand_history_players WHERE hand_id=? AND player_id=?",
+                (detail["hands"][0]["hand_id"], host["id"]),
+            ).fetchone()
+        finally:
+            conn.close()
+        private_pair = "[" + " ".join(json.loads(private_row["cards_json"])) + "]"
+        self.assertNotIn(private_pair, hand_text)
+        self.assertNotIn(private_pair, json.dumps(detail["hands"][0]))
         status, _, host_denied = self.request(
             "GET", "/poker/api/admin/history/" + table_id,
             cookie=host_cookie, proof=host_proof,
@@ -2307,6 +2351,46 @@ class ServerAuthTests(unittest.TestCase):
             for player_id, item in spectator_players.items()
             if player_id in (host["id"], guest["id"])
         ))
+        self.assertNotIn(
+            "[" + " ".join(folded_cards["cards"]) + "]",
+            spectator_replay["hand"]["history_text"],
+        )
+
+        def complete_second_hand(state):
+            hand = state["hand"]
+            used = {card for cards in hand["holes"].values() for card in cards}
+            hand["board"] = [card for card in server.engine._deck() if card not in used][:5]
+            hand["street"] = "river"
+            hand["folded"] = []
+            hand["contrib"] = {player_id: amount for player_id, amount in zip(hand["holes"], (10, 20, 5))}
+            hand["bets"] = {player_id: 0 for player_id in hand["holes"]}
+            for seat in state["seats"]:
+                seat["stack"] = max(0, seat["stack"] - hand["contrib"].get(seat["player_id"], 0))
+            server.engine._settle_showdown(state, now=time.time())
+            return state
+
+        self.app.store.mutate_table(table_id, complete_second_hand, time.time())
+        status, _, latest_replay = self.request(
+            "GET", replay_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, latest_replay)
+        self.assertEqual(latest_replay["hand"]["number"], 2)
+        self.assertEqual(latest_replay["hand"]["history_count"], 2)
+        self.assertEqual(latest_replay["hand"]["previous_hand_number"], 1)
+        self.assertIsNone(latest_replay["hand"]["next_hand_number"])
+        status, _, older_replay = self.request(
+            "GET", replay_path + "?number=1", cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, older_replay)
+        self.assertEqual(older_replay["hand"]["number"], 1)
+        self.assertIsNone(older_replay["hand"]["previous_hand_number"])
+        self.assertEqual(older_replay["hand"]["next_hand_number"], 2)
+        self.assertIn("Felt Night Hand #1", older_replay["hand"]["history_text"])
+        status, _, invalid_number = self.request(
+            "GET", replay_path + "?number=0", cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid_number["error"]["code"], "invalid_url")
 
         unknown_id = server.uuid.uuid4().hex
         status, _, unknown = self.request(

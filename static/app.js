@@ -702,7 +702,10 @@
     var streetLabel = byId("last-hand-street");
     var previous = byId("last-hand-prev");
     var next = byId("last-hand-next");
-    if (!content || !streetLabel || !previous || !next) return;
+    var olderHand = byId("last-hand-older");
+    var newerHand = byId("last-hand-newer");
+    var historyPosition = byId("last-hand-history-position");
+    if (!content || !streetLabel || !previous || !next || !olderHand || !newerHand || !historyPosition) return;
 
     if (stateReplay.loading) {
       streetLabel.textContent = "Loading";
@@ -710,6 +713,9 @@
       content.innerHTML = '<p class="replay-status" role="status">Loading the last hand…</p>';
       previous.disabled = true;
       next.disabled = true;
+      olderHand.disabled = true;
+      newerHand.disabled = true;
+      historyPosition.textContent = "";
       return;
     }
     content.setAttribute("aria-busy", "false");
@@ -718,6 +724,9 @@
       content.innerHTML = '<p class="replay-error" role="alert">' + esc(stateReplay.error) + '</p>';
       previous.disabled = true;
       next.disabled = true;
+      olderHand.disabled = true;
+      newerHand.disabled = true;
+      historyPosition.textContent = "";
       return;
     }
     if (!stateReplay.hand) {
@@ -725,6 +734,9 @@
       content.innerHTML = '<p class="replay-empty">No completed hand is available yet.</p>';
       previous.disabled = true;
       next.disabled = true;
+      olderHand.disabled = true;
+      newerHand.disabled = true;
+      historyPosition.textContent = "";
       return;
     }
 
@@ -738,7 +750,10 @@
     var showdownRows = Array.isArray(hand.showdown) ? hand.showdown : [];
     var rankMap = hand.hand_ranks && typeof hand.hand_ranks === "object" ? hand.hand_ranks : {};
     var winnerRows = Array.isArray(hand.winners) ? hand.winners : [];
-    streetLabel.textContent = "Hand " + number(hand.number, 0) + " · " + replayStreetName(street.name);
+    var handNumber = number(hand.number, 0);
+    var historyCount = Math.max(1, number(hand.history_count, 1));
+    streetLabel.textContent = "Hand " + handNumber + (historyCount > 1 ? " · " + historyCount + " saved hands" : "") + " · " + replayStreetName(street.name);
+    historyPosition.textContent = historyCount > 1 ? "Hand " + handNumber + " · " + historyCount + " saved hands" : "Only saved hand";
     var boardMarkup = board.length
       ? board.map(function (card) { return playingCardHTML(card, true); }).join("")
       : '<span class="replay-no-cards">No community cards yet</span>';
@@ -802,6 +817,9 @@
         '<div class="replay-player-cards" aria-label="' + esc(cards.length ? "Visible cards" : "No visible cards") + '">' + cardMarkup + '</div>' +
       '</article>';
     }).join("");
+    var transcript = hand.history_text
+      ? '<details class="replay-transcript"><summary>Hand history text</summary><pre>' + esc(hand.history_text) + '</pre></details>'
+      : '';
     content.innerHTML =
       '<p class="replay-live-note">Replay of this completed hand.</p>' +
       outcomeMarkup +
@@ -810,9 +828,11 @@
       '</section>' +
       '<div class="replay-players" role="list" aria-label="Players in the hand">' +
         (playerMarkup || '<p class="replay-empty">Player details are unavailable.</p>') +
-      '</div>';
+      '</div>' + transcript;
     previous.disabled = index <= 0;
     next.disabled = index >= streets.length - 1;
+    olderHand.disabled = !Number.isInteger(hand.previous_hand_number);
+    newerHand.disabled = !Number.isInteger(hand.next_hand_number);
   }
 
   function lastHandRequestIsCurrent(requestId, tableId, playerId) {
@@ -823,9 +843,11 @@
       String(state.player && state.player.id || "") === playerId && dialog && dialog.open);
   }
 
-  async function fetchLastHand(requestId, tableId, playerId) {
+  async function fetchLastHand(requestId, tableId, playerId, handNumber) {
     try {
-      var data = await request("/tables/" + encodeURIComponent(tableId) + "/last-hand");
+      var path = "/tables/" + encodeURIComponent(tableId) + "/last-hand";
+      if (Number.isInteger(handNumber)) path += "?number=" + encodeURIComponent(handNumber);
+      var data = await request(path);
       if (!lastHandRequestIsCurrent(requestId, tableId, playerId)) return;
       state.lastHandReplay.hand = data && data.hand && typeof data.hand === "object" ? data.hand : null;
       state.lastHandReplay.streetIndex = state.lastHandReplay.hand
@@ -857,7 +879,7 @@
     dialog.showModal();
     syncLastHandButton();
     renderLastHandReplay();
-    fetchLastHand(replay.requestId, replay.tableId, replay.playerId);
+    fetchLastHand(replay.requestId, replay.tableId, replay.playerId, null);
   }
 
   function closeLastHandDialog(restoreFocus) {
@@ -882,8 +904,14 @@
     if (streetLabel) streetLabel.textContent = "Preflop";
     var previous = byId("last-hand-prev");
     var next = byId("last-hand-next");
+    var olderHand = byId("last-hand-older");
+    var newerHand = byId("last-hand-newer");
+    var historyPosition = byId("last-hand-history-position");
     if (previous) previous.disabled = true;
     if (next) next.disabled = true;
+    if (olderHand) olderHand.disabled = true;
+    if (newerHand) newerHand.disabled = true;
+    if (historyPosition) historyPosition.textContent = "";
     syncLastHandButton();
     if (restoreFocus) focusTableControl(trigger && trigger.id || "last-hand-button");
   }
@@ -896,6 +924,22 @@
     if (nextIndex < 0 || nextIndex >= streets.length) return;
     replay.streetIndex = nextIndex;
     renderLastHandReplay();
+  }
+
+  function moveLastHandRecord(delta) {
+    var replay = state.lastHandReplay;
+    if (!replay.hand || replay.loading) return;
+    var handNumber = delta < 0
+      ? replay.hand.previous_hand_number
+      : replay.hand.next_hand_number;
+    if (!Number.isInteger(handNumber)) return;
+    replay.requestId += 1;
+    replay.hand = null;
+    replay.streetIndex = 0;
+    replay.loading = true;
+    replay.error = "";
+    renderLastHandReplay();
+    fetchLastHand(replay.requestId, replay.tableId, replay.playerId, handNumber);
   }
 
   function clearNotice() {
@@ -3031,6 +3075,7 @@
         '<p class="muted">No final standings were recorded for this game.</p>') +
       '<button class="button button-danger button-small" type="button" data-admin-history-delete="' +
       esc(tournamentId) + '">Delete past game</button></div>';
+    var summaryText = historySummaryText(tournament);
     var handMarkup = hands.map(historyHand).join("");
     var noHands = hands.length ? "" : '<p class="muted">No saved hands for this game.</p>';
     var more = detail.nextOffset == null ? "" :
@@ -3038,7 +3083,7 @@
       esc(detail.nextOffset) + '">Load more hands</button>';
     var error = state.adminHistoryDetailError ? '<p class="muted admin-history-detail-error" role="alert">' + esc(state.adminHistoryDetailError) + '</p>' : "";
     var loading = state.adminHistoryDetailLoading ? '<p class="muted" role="status">Loading hands…</p>' : "";
-    content.innerHTML = meta + handMarkup + noHands + error + more + loading;
+    content.innerHTML = summaryText + meta + handMarkup + noHands + error + more + loading;
   }
 
   async function loadAdminHistoryDetail(id, offset, append) {
@@ -4430,12 +4475,22 @@
       return esc((r.tied ? "T-" : "") + r.place + ". " + r.name + (r.award_cents == null ? "" : " · " + credits(r.award_cents) + " credits"));
     }).join("<br>");
   }
+  function historySummaryText(tournament) {
+    var text = String(tournament && tournament.summary_text || "");
+    return text ? '<details class="history-text-panel"><summary>Felt Night tournament summary</summary><pre>' + esc(text) + '</pre></details>' : "";
+  }
   function historyHand(h) {
+    var text = String(h && h.history_text || "");
+    if (text) {
+      return '<details class="history-entry"><summary>Hand ' + esc(h.number) + ' · ' + esc(historyCards(h.board) || "Preflop") + '</summary><pre class="history-text">' + esc(text) + '</pre></details>';
+    }
     var seats = (h.players || []).map(function (p) {
       return '<li>' + esc(p.name) + (p.player_id === state.player?.id ? " (you)" : "") + (p.cards?.length ? " · " + esc(historyCards(p.cards)) : "") + (p.stack_before != null ? " · " + chips(p.stack_before) + " chips" : "") + '</li>';
     }).join("");
-    var pots = (h.result?.pots || []).map(function (p,i) {
-      return (i ? "Side pot "+i : "Main pot") + ": " + (p.recipients || []).map(function (r) {return r.actor_label + " +" + chips(r.amount);}).join(", ");
+    var pots = (h.result?.pots || []).map(function (p, i) {
+      return (i ? "Side pot " + i : "Main pot") + ": " + (p.recipients || []).map(function (r) {
+        return r.actor_label + " +" + chips(r.amount);
+      }).join(", ");
     });
     var actions = (h.events || []).map(historyEvent).filter(Boolean);
     return '<details class="history-entry"><summary>Hand ' + esc(h.number) + ' · ' + esc(historyCards(h.board) || "Preflop") + '</summary>' +
@@ -4444,6 +4499,7 @@
       (h.events_complete === false ? '<p>Earlier actions in this hand were not retained.</p>' : '') +
       '<ol>' + actions.map(function (line) {return '<li>' + esc(line) + '</li>';}).join("") + '</ol></details>';
   }
+
   async function loadHistory(id, offset) {
     var gen = ++historyGeneration, el = byId("history-content");
     el.textContent = "Loading history…";
@@ -4454,7 +4510,7 @@
         var t = data.tournament;
         var partial = t.partial_history || (!offset && data.hands?.length && data.hands[0].number > 1);
         var legacyNote = partial ? "<p>Only the hands the room still had when history tracking began are available for this tournament.</p>" : "";
-        el.innerHTML = '<button class="button button-quiet history-back" data-history-list>← All tournaments</button><h3>' + esc(t.name) + '</h3><p>' + historyResults(t.results) + '</p>' + legacyNote +
+        el.innerHTML = '<button class="button button-quiet history-back" data-history-list>← All tournaments</button><h3>' + esc(t.name) + '</h3><p>' + historyResults(t.results) + '</p>' + historySummaryText(t) + legacyNote +
           (data.hands || []).map(historyHand).join("") + (data.hands?.length ? '' : '<p>No saved hands for this tournament.</p>');
       } else {
         el.innerHTML = (data.tournaments || []).map(function (t) {
@@ -4486,6 +4542,12 @@
   });
   byId("last-hand-next").addEventListener("click", function () {
     moveLastHandStreet(1);
+  });
+  byId("last-hand-older").addEventListener("click", function () {
+    moveLastHandRecord(-1);
+  });
+  byId("last-hand-newer").addEventListener("click", function () {
+    moveLastHandRecord(1);
   });
 
   byId("recent-action-button").addEventListener("click", function () {

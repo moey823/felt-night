@@ -1002,6 +1002,7 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
     hand: Dict[str, Any] = {
         "number": state["hand_no"],
         "hand_id": "%s:%d" % (state["id"], state["hand_no"]),
+        "blind_level": int(state["blinds"]["level"]),
         "event_seq": 0,
         "event_base_seq": 1,
         "events": [],
