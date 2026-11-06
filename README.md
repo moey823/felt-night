@@ -54,6 +54,8 @@ Set `FELT_NIGHT_ADMIN_USERNAME=admin` only behind a trusted private network such
 
 Global configuration is stored with the room database. Normal players cannot change it. Removing the environment setting disables admin access and revokes its sessions.
 
+Admins can open **Past games** to inspect completed, ended, cancelled, and expired games, including saved hands. Deleting a game requires an explicit confirmation and permanently removes that game's table, chat, and saved history; player accounts and sessions remain.
+
 ## Tests
 
 Run `python3 -m unittest discover -s tests` for the engine, authentication, permissions, persistence, and HTTP contracts. Browser tests use isolated data, a dummy invite, and a test-only enabled admin:
@@ -62,9 +64,11 @@ Run `python3 -m unittest discover -s tests` for the engine, authentication, perm
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs flow
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs layout
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs compact
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs stability
 ```
 
-Set `QA_SCREEN_DIR` to a directory on the development machine to retain screenshots. The default suite plays real hands and checks action submission, reconnects, and history. The flow suite covers host setup, payouts, admin separation, mobile dialogs, and ending a game. The layout suite checks crowded tables across screen sizes. See [the design and verification priorities](docs/ux-design.md).
+Set `QA_SCREEN_DIR` to a directory on the development machine to retain screenshots. The default suite plays real hands and checks action submission, reconnects, and history. The flow suite covers host setup, payouts, admin separation, mobile dialogs, and ending a game. The layout suite checks crowded tables across screen sizes. The stability suite checks a nine-player game, timer pause/resume, compact chat, viewport controls, seat markers, winner badges, and the admin past-game flow. See [the design and verification priorities](docs/ux-design.md).
 
 ## License
 

@@ -9,8 +9,12 @@ The table is the primary workspace. A player needs their cards, opponents and st
 - The dedicated admin account configures shared bet presets, all-in pacing, announcement durations, result holds, and test bots.
 - Host End game requires two deliberate confirmations. An ended game has no invented winner or payout.
 - Gameplay announcements use the header title area without changing the felt or card positions.
+- The betting dock reserves three equal, stationary primary-action slots for Fold, Check or Call, and Bet or Raise. Presets and the sizing slider use separate rows, so changing the action label or amount does not move a primary button.
+- The blind-level strip shows a live countdown. A paused clock stays frozen, and a pending level change reads “Next hand.”
+- Showdown winners get a compact Won + amount badge beside their seat, with a brief gold pulse that respects reduced-motion preferences. Eliminated players retain an OUT label in the stack row.
 - Table controls live in a compact menu. Settings use a native modal dialog with a visible close control and scrolling content.
-- Desktop and portrait layouts reserve distinct zones for seat labels/cards, wagers, the board/pot, and the action dock. Short screens may scroll rather than shrink controls below usable sizes.
+- Gameplay stays inside a fixed viewport without document scrolling: a compact, readable chat preview and quick-send rail stays visible, and the full original seat ring keeps stable positions as players leave. Dealer, turn clock, action, and wager markers stay beside their owning seat. Short landscape places actions in a side dock; portrait keeps the dock below the felt. Modal content scrolls internally with its close control kept reachable.
+- Admins can inspect archived finished games and delete them through a separate confirmation step.
 - Fullscreen and a requested pop-out are optional. Installed mobile use requests standalone presentation; browser chrome remains browser-controlled.
 
 ## Reference observations

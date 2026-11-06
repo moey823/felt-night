@@ -4,26 +4,47 @@
   // Compact portrait tables use reserved ring slots around the board. Wide
   // tables keep the same evenly spaced ellipse supplied by the renderer.
   var MOBILE_RINGS = {
-    2: [[50, 92], [50, 22]],
-    3: [[50, 92], [34, 12], [66, 12]],
-    4: [[50, 92], [20, 84], [50, 12], [80, 84]],
-    5: [[50, 92], [18, 88], [8, 30], [92, 30], [82, 88]],
-    6: [[50, 92], [18, 88], [8, 70], [50, 14], [92, 70], [82, 88]],
-    7: [[50, 92], [18, 88], [8, 70], [32, 14], [68, 14], [92, 70], [82, 88]],
-    8: [[50, 92], [16, 88], [8, 70], [8, 27], [50, 9], [92, 27], [92, 70], [84, 88]],
-    9: [[50, 92], [16, 88], [8, 70], [8, 27], [32, 9], [68, 9], [92, 27], [92, 70], [84, 88]]
+    2: [[50, 94], [50, 16]],
+    3: [[50, 94], [32, 12], [68, 12]],
+    4: [[50, 94], [7, 55], [50, 10], [93, 55]],
+    5: [[50, 94], [18, 84], [32, 14], [68, 14], [82, 84]],
+    6: [[50, 94], [16, 85], [7, 30], [50, 10], [93, 30], [84, 85]],
+    7: [[50, 94], [0, 85], [0, 60], [38, 10], [62, 10], [100, 60], [100, 85]],
+    8: [[50, 94], [0, 85], [0, 60], [0, 35], [38, 10], [62, 10], [100, 35], [100, 60]],
+    9: [[50, 94], [0, 85], [0, 60], [0, 35], [38, 10], [62, 10], [100, 35], [100, 60], [100, 85]]
   };
 
   var SHORT_RINGS = {
-    7: [[50, 92], [18, 88], [8, 70], [32, 14], [68, 14], [92, 70], [82, 88]],
-    8: [[50, 92], [16, 88], [8, 70], [8, 27], [50, 9], [92, 27], [92, 70], [84, 88]],
-    9: [[50, 92], [16, 88], [8, 70], [8, 27], [32, 9], [68, 9], [92, 27], [92, 70], [84, 88]]
+    7: [[50, 94], [0, 85], [0, 60], [38, 10], [62, 10], [100, 60], [100, 85]],
+    8: [[50, 94], [0, 85], [0, 60], [0, 35], [38, 10], [62, 10], [100, 35], [100, 60]],
+    9: [[50, 94], [0, 85], [0, 60], [0, 35], [38, 10], [62, 10], [100, 35], [100, 60], [100, 85]]
+  };
+
+  // Short landscape can fit two readable rows of seats. Stagger the ring
+  // horizontally across those rows instead of stacking cards along the sides.
+  // At tiny phone widths, keep all nine seats in three stable bands:
+  // four at the top, two outside the board, and three along the bottom.
+  var TINY_RINGS = {
+    7: [[50, 85], [18, 85], [0, 50], [0, 15], [100, 15], [100, 50], [82, 85]],
+    8: [[50, 85], [18, 85], [0, 50], [0, 15], [38, 15], [62, 15], [100, 15], [82, 85]],
+    9: [[50, 85], [18, 85], [0, 50], [0, 15], [38, 15], [62, 15], [100, 15], [100, 50], [82, 85]]
   };
 
   var LANDSCAPE_RINGS = {
-    7: [[50, 92], [28, 82], [8, 60], [30, 12], [70, 12], [92, 60], [72, 82]],
-    8: [[50, 92], [28, 82], [8, 60], [8, 32], [50, 12], [92, 32], [92, 60], [72, 82]],
-    9: [[50, 92], [28, 82], [8, 60], [8, 32], [32, 12], [68, 12], [92, 32], [92, 60], [72, 82]]
+    // Keep the central board lane clear in a shallow viewport by moving the
+    // usual top-center opponent into an upper corner. The hero stays bottom-center.
+    2: [[50, 94], [16, 15]],
+    4: [[50, 94], [7, 62], [16, 15], [93, 62]],
+    6: [[50, 94], [5, 90], [5, 10], [24, 10], [95, 10], [95, 90]],
+    7: [[50, 94], [22, 90], [5, 90], [5, 10], [95, 10], [95, 90], [78, 90]],
+    8: [[50, 94], [22, 90], [5, 90], [5, 10], [24, 10], [76, 10], [95, 10], [78, 90]],
+    9: [[50, 94], [22, 90], [5, 90], [5, 10], [24, 10], [76, 10], [95, 10], [95, 90], [78, 90]]
+  };
+
+  var WIDE_RINGS = {
+    7: [[50, 92], [22, 84], [5, 62], [30, 10], [70, 10], [95, 62], [78, 84]],
+    8: [[50, 92], [22, 84], [5, 62], [5, 30], [30, 10], [70, 10], [95, 30], [95, 62]],
+    9: [[50, 92], [22, 84], [5, 62], [5, 30], [30, 10], [70, 10], [95, 30], [95, 62], [78, 84]]
   };
 
   function number(value, fallback) {
@@ -59,10 +80,13 @@
     var viewportHeight = Math.max(0, number(input.viewportHeight, number(root.innerHeight, height)));
     var compact = viewportWidth < 780;
     var shortPortrait = compact && viewportHeight < 640;
-    var shortWide = !compact && viewportWidth < 900 && viewportHeight < 600;
-    var ring = compact
-      ? ((shortPortrait && SHORT_RINGS[seats.length]) || MOBILE_RINGS[seats.length])
-      : (shortWide ? LANDSCAPE_RINGS[seats.length] : null);
+    var tinyPortrait = viewportWidth <= 340 && viewportHeight <= 600 && viewportHeight >= viewportWidth;
+    var shortWide = viewportWidth > viewportHeight && viewportWidth < 1000 && viewportHeight < 500;
+    var ring = shortWide
+      ? LANDSCAPE_RINGS[seats.length]
+      : (tinyPortrait
+        ? (TINY_RINGS[seats.length] || MOBILE_RINGS[seats.length])
+        : (compact ? ((shortPortrait && SHORT_RINGS[seats.length]) || MOBILE_RINGS[seats.length]) : WIDE_RINGS[seats.length]));
     return seats.map(function (source, index) {
       var seat = source || {};
       var x = number(seat.x, width / 2);

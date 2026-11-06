@@ -5,6 +5,8 @@ export default async function presentation([one, two], sleep, roomPassword) {
   const assert = (condition, message) => { if (!condition) throw Error(message); };
   const layoutFailures = [];
   const cardBaselines = new Map();
+  const seatBaselines = new Map();
+  const presetBaselines = new Map();
   const visible = selector => {
     const node = document.querySelector(selector);
     if (!node) return false;
@@ -129,7 +131,18 @@ export default async function presentation([one, two], sleep, roomPassword) {
         const felt = box(document.querySelector('#felt'));
         const issues = [];
         const viewport = [0, 0, innerWidth, innerHeight];
-        if (!felt) return {issues:['felt is not visible'], felt, viewport};
+        const presetGroup=document.querySelector('#action-panel .raise-presets');
+        const presetButtons=[...(presetGroup?.querySelectorAll('[data-raise-preset]') || [])];
+        const presetSlots=Number.parseInt(getComputedStyle(presetGroup || document.body)
+          .getPropertyValue('--preset-slots'),10) || 0;
+        const presetRects=presetButtons.map(box);
+        const boardCardCount=[...document.querySelectorAll('#board-cards .playing-card')]
+          .filter(node=>!node.classList.contains('placeholder')).length;
+        if (presetGroup && presetSlots !== 5) issues.push('preset grid did not reserve the max five slots: ' + presetSlots);
+        if (boardCardCount >= 3 && presetButtons.length !== 5) issues.push('postflop preset count changed: ' + presetButtons.length);
+        if (window.scrollY > 1) issues.push('gameplay page scrolled vertically');
+        if (document.documentElement.scrollHeight > innerHeight + 1) issues.push('gameplay page has vertical overflow');
+        if (!felt) return {issues:['felt is not visible', ...issues], felt, viewport};
         const parts = [];
         for (const node of document.querySelectorAll('#seat-grid .seat-card')) {
           parts.push(['seat ' + (node.dataset.seatNo || '?'), node]);
@@ -137,6 +150,11 @@ export default async function presentation([one, two], sleep, roomPassword) {
           if (cards) parts.push(['seat cards ' + (node.dataset.seatNo || '?'), cards]);
           const equity = node.querySelector('.seat-equity:not(.is-empty)');
           if (equity) parts.push(['equity ' + (node.dataset.seatNo || '?'), equity]);
+          const result = node.querySelector('.seat-result.is-winner');
+          if (result) parts.push(['winner result ' + (node.dataset.seatNo || '?'), result]);
+          for (const marker of node.querySelectorAll('.seat-local-markers .seat-action, .seat-local-markers .seat-turn-clock, .seat-local-markers .seat-wager, .seat-local-markers .dealer-marker')) {
+            parts.push(['local marker ' + (node.dataset.seatNo || '?'), marker]);
+          }
         }
         for (const [index, node] of [...document.querySelectorAll(
           '#board-cards .playing-card, #seat-grid .mini-card'
@@ -169,14 +187,28 @@ export default async function presentation([one, two], sleep, roomPassword) {
           if (overlaps(rect, felt)) issues.push(selector + ' overlaps the felt');
           if (!within(rect, viewport)) issues.push(selector + ' escaped viewport');
         }
-        const seatNodes = [...document.querySelectorAll('#seat-grid .seat-card')];
+        const seatNodes = [...document.querySelectorAll('#seat-grid .seat-card[data-seat-no]')];
+        const seatRows = seatNodes.map(node => ({
+          seatNo:node.dataset.seatNo || '',playerId:node.dataset.playerId || '',
+          relativeIndex:node.dataset.relativeSeat || '',rect:box(node),
+        }));
+        const markerRows = [...document.querySelectorAll('#seat-grid .seat-local-markers .seat-action, #seat-grid .seat-local-markers .seat-turn-clock, #seat-grid .seat-local-markers .seat-wager, #seat-grid .seat-local-markers .dealer-marker')].map(node => {
+          const owner=node.closest('.seat-card[data-seat-no]'), local=node.closest('.seat-local-markers');
+          const marker=box(node), ownerBox=box(owner), cards=box(owner?.querySelector('.seat-cards'));
+          const markerSeat=node.getAttribute('data-seat-no') || node.getAttribute('data-action-seat') || node.getAttribute('data-marker-seat') || '';
+          if (marker && (!owner || !local?.contains(node) || !within(marker,ownerBox))) issues.push('marker escaped its associated seat lane');
+          if (marker && markerSeat && owner?.dataset.seatNo !== markerSeat) issues.push('marker seat id differs from its containing seat');
+          if (marker && overlaps(marker,cards)) issues.push('seat-local marker overlaps its own cards');
+          return {seatNo:owner?.dataset.seatNo || '',type:String(node.className),rect:marker};
+        });
         const cardRows = seatNodes.map(node => ({
           playerId:node.dataset.playerId || '',
           seatNo:node.dataset.seatNo || '',
           cards:[...node.querySelectorAll('.mini-card')].map(box).filter(Boolean),
         })).filter(row => row.cards.length);
         return {
-          issues, felt, viewport, blockers, cardRows,
+          issues, felt, viewport, blockers, cardRows, seatRows, markerRows,
+          presetLayout:{slots:presetSlots,rects:presetRects,boardCardCount},
           viewerId:document.querySelector('#seat-grid .seat-card.is-me')?.dataset.playerId || '',
           tableName:document.querySelector('#view-table-name')?.textContent || '',
           seatIds:seatNodes.map(node => node.dataset.playerId || '').filter(Boolean).sort(),
@@ -187,6 +219,37 @@ export default async function presentation([one, two], sleep, roomPassword) {
         data.tableName, data.viewport[2], data.viewport[3], data.viewerId,
         data.seatIds.join(','),
       ].join('|');
+      const previousPresets = presetBaselines.get(stabilityKey);
+      if (!previousPresets) {
+        presetBaselines.set(stabilityKey, data.presetLayout);
+      } else {
+        if (previousPresets.slots !== data.presetLayout.slots) {
+          layoutFailures.push(label + ': reserved preset column count changed from ' +
+            previousPresets.slots + ' to ' + data.presetLayout.slots);
+        }
+        const stableCount=Math.min(previousPresets.rects.length,data.presetLayout.rects.length);
+        for (let index=0; index<stableCount; index++) {
+          const before=previousPresets.rects[index], after=data.presetLayout.rects[index];
+          if (!before || !after || before.some((value,axis)=>Math.abs(value-after[axis])>1)) {
+            layoutFailures.push(label + ': preset slot ' + index + ' moved across streets: ' +
+              JSON.stringify({before,after}));
+          }
+        }
+      }
+      const previousSeats = seatBaselines.get(stabilityKey);
+      if (!previousSeats) {
+        seatBaselines.set(stabilityKey, data.seatRows);
+      } else {
+        const beforeBySeat = new Map(previousSeats.map(row => [row.seatNo,row]));
+        for (const row of data.seatRows) {
+          const before=beforeBySeat.get(row.seatNo);
+          if (!before || before.playerId !== row.playerId || before.relativeIndex !== row.relativeIndex ||
+              !before.rect || !row.rect || before.rect.some((value,index) => Math.abs(value-row.rect[index])>1)) {
+            layoutFailures.push(label + ': original seat ring changed at seat ' + row.seatNo +
+              ' before=' + JSON.stringify(before) + ' after=' + JSON.stringify(row));
+          }
+        }
+      }
       const previous = cardBaselines.get(stabilityKey);
       if (!previous) {
         cardBaselines.set(stabilityKey, data.cardRows);
@@ -237,9 +300,8 @@ export default async function presentation([one, two], sleep, roomPassword) {
         expected.status === 'playing' ? 'HAND IN PROGRESS' :
         expected.status === 'completed' ? 'TOURNAMENT COMPLETE' :
         expected.status === 'ended' ? 'ENDED BY HOST' : 'TABLE LOBBY';
-      const streetRendered = streetExpected === 'preflop' || streetExpected === 'lobby'
-        ? (!street || streetNode?.hidden)
-        : (!streetNode?.hidden && street.includes(streetExpected));
+      const streetRendered = !streetNode || streetNode.hidden || !street ||
+        streetExpected === 'preflop' || streetExpected === 'lobby' || street.includes(streetExpected);
       return document.querySelector('#view-table-name')?.textContent === expected.name &&
         handStatus === liveStatusExpected &&
         (expected.handNo <= 0 || handNumber.includes(String(expected.handNo))) &&
@@ -262,7 +324,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
   await setGlobalConfig({
     runout_seconds:1, showdown_seconds:3,
     blind_announcement_seconds:0, elimination_announcement_seconds:0,
-    bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]},
+    bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,60,75,90,100]},
   });
   const host = await register('Host', stamp);
   const guest = await register('Guest', stamp);
@@ -333,6 +395,30 @@ export default async function presentation([one, two], sleep, roomPassword) {
       assert(hiddenOpponents.every(seat => seat.cards === undefined),
         'A hidden opponent card leaked before public exposure: ' + JSON.stringify(hiddenOpponents));
     }
+  }
+  async function assertPublicFaceCards(page, view, label) {
+    const expectedIds=(view.showdown || []).map(row=>row.player_id).filter(Boolean);
+    const rows=await evaluate(page, ids => {
+      const viewerId=document.querySelector('#seat-grid .seat-card.is-me')?.dataset.playerId || '';
+      return ids.map(id => {
+        const seat=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')]
+          .find(node=>node.dataset.playerId===id);
+        const row=seat?.querySelector('.seat-cards');
+        const cards=[...(row?.querySelectorAll('.mini-card') || [])];
+        const visible=element=>Boolean(element && getComputedStyle(element).display!=='none' &&
+          getComputedStyle(element).visibility!=='hidden' && element.getBoundingClientRect().width>0 &&
+          element.getBoundingClientRect().height>0);
+        return {id,seatFound:Boolean(seat),rowFound:Boolean(row),rowVisible:visible(row),
+          correctClass:id===viewerId ? Boolean(row?.classList.contains('is-viewer-cards')) :
+            Boolean(row?.classList.contains('is-exposed')),
+          cardCount:cards.length,visibleCards:cards.filter(visible).length,
+          backs:cards.filter(card=>card.classList.contains('back')).length};
+      });
+    }, expectedIds);
+    assert(expectedIds.length>0 && rows.length===expectedIds.length &&
+      rows.every(row=>row.seatFound && row.rowFound && row.rowVisible && row.correctClass &&
+        row.cardCount===2 && row.visibleCards===2 && row.backs===0),
+    label + ' did not keep every public face-up hand visible: ' + JSON.stringify(rows));
   }
 
   // Normal check/call hand: verify actual Enter chat, polling/reconnect, ranks, and replay.
@@ -441,16 +527,18 @@ export default async function presentation([one, two], sleep, roomPassword) {
         getComputedStyle(node).visibility === 'hidden' || node.getClientRects().length === 0;
     };
     return {
-      topline:hidden('#chat-topline'),
-      preview:hidden('#chat-preview'),
-      quickForm:hidden('#chat-quick-form'),
+      toplineVisible:!hidden('#chat-topline'),
+      previewVisible:!hidden('#chat-preview'),
+      quickFormVisible:!hidden('#chat-quick-form'),
+      preview:document.querySelector('#chat-preview')?.textContent || '',
       panelVisible:!document.querySelector('#chat-panel').hidden,
       latest:document.querySelector('#chat-messages').textContent,
     };
   });
-  assert(collapsedChat.topline && collapsedChat.preview && collapsedChat.quickForm &&
-    collapsedChat.panelVisible && collapsedChat.latest.includes('drawer-latest-' + stamp),
-  'Chat must stay in the full drawer with the compact topline and quick entry hidden: ' +
+  assert(collapsedChat.toplineVisible && collapsedChat.previewVisible && collapsedChat.quickFormVisible &&
+    collapsedChat.panelVisible && collapsedChat.latest.includes('drawer-latest-' + stamp) &&
+    collapsedChat.preview.includes('drawer-latest-' + stamp),
+  'Gameplay chat rail and full drawer must both remain available with the latest message: ' +
     JSON.stringify(collapsedChat));
   await evaluate(normalActorPage, text => {
     window.presentationEnter = {keys:0, submits:0, posts:[], response:null};
@@ -546,12 +634,13 @@ export default async function presentation([one, two], sleep, roomPassword) {
   const reconnectedChat = await evaluate(normalActorPage, () => ({
     visible:!document.querySelector('#chat-panel').hidden,
     message:document.querySelector('#chat-messages').textContent,
-    quickEntryHidden:!document.querySelector('#chat-quick-form') ||
-      document.querySelector('#chat-quick-form').hidden ||
-      getComputedStyle(document.querySelector('#chat-quick-form')).display === 'none',
+    quickEntryVisible:Boolean(document.querySelector('#chat-quick-form') &&
+      !document.querySelector('#chat-quick-form').hidden &&
+      getComputedStyle(document.querySelector('#chat-quick-form')).display !== 'none'),
+    preview:document.querySelector('#chat-preview')?.textContent || '',
   }));
   assert(reconnectedChat.visible && reconnectedChat.message.includes(chatMessage) &&
-    reconnectedChat.quickEntryHidden,
+    reconnectedChat.quickEntryVisible && reconnectedChat.preview.includes(chatMessage),
   'Reconnected chat drawer did not restore the sent message or compact layout: ' +
     JSON.stringify(reconnectedChat));
   console.log('Full chat drawer receives shared messages, submits on Enter once, and reconnects without quick-entry clutter.');
@@ -603,6 +692,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
   await Promise.all([waitForRenderedView(one, normalShowdown), waitForRenderedView(two, normalShowdown)]);
   await recordGeometry(one, 'normal showdown result desktop');
   await recordGeometry(two, 'normal showdown result mobile');
+  await assertPublicFaceCards(one, normalShowdown, 'Normal showdown');
 
   const summary = await waitFor(one, () => {
     const node = document.querySelector('#showdown-summary');
@@ -771,6 +861,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
     await Promise.all([waitForRenderedView(one, riverResult), waitForRenderedView(two, riverResult)]);
     await recordGeometry(one, 'river all-in result desktop');
     await recordGeometry(two, 'river all-in result mobile');
+    if (riverResult.street === 'showdown') await assertPublicFaceCards(one, riverResult, 'River all-in showdown');
     if (riverResult.status === 'completed') break;
     const previousHand = Number(riverResult.hand_no);
     let nextView = riverResult;
@@ -796,10 +887,51 @@ export default async function presentation([one, two], sleep, roomPassword) {
     !document.querySelector('#showdown-summary').hidden &&
     document.querySelector('#results-panel')?.hidden === true,
   'river result hold before final standings');
+  await wait(one, () => document.querySelector('#blind-level-countdown')?.textContent.trim() === 'Final',
+    'terminal blind countdown');
   const riverSummary = await evaluate(one, () => document.querySelector('#showdown-summary').innerText);
   assert(riverSummary.includes(finalWinner.name) && riverSummary.includes(finalWinner.hand_name),
     'River all-in result UI omitted the winner or hand rank: ' +
       JSON.stringify({finalWinner,riverSummary}));
+  const boundedWinner = await evaluate(one, playerId => {
+    const seat=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')].find(node => node.dataset.playerId===playerId);
+    const result=seat?.querySelector('.seat-result.is-winner');
+    const label=result?.querySelector('.seat-result-label'), amount=result?.querySelector('.seat-result-amount');
+    const rect=node=>{if(!node)return null;const r=node.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom];};
+    const clipped=node=>Boolean(node && (node.scrollWidth>node.clientWidth+1 || node.scrollHeight>node.clientHeight+1));
+    return {found:Boolean(result),label:label?.textContent.trim()||'',amount:amount?.textContent.trim()||'',
+      aria:result?.getAttribute('aria-label')||'',title:result?.getAttribute('title')||'',
+      seat:rect(seat),result:rect(result),labelClipped:clipped(label),amountClipped:clipped(amount)};
+  }, finalWinner.player_id);
+  const visualMatch=boundedWinner.amount.match(/^\+([\d,.]+)([kKmMbB]?)$/);
+  const visualNumber=visualMatch ? Number(visualMatch[1].replace(/,/g,'')) : NaN;
+  const visualSuffix=(visualMatch?.[2]||'').toLowerCase();
+  const visualMultiplier=visualSuffix==='k' ? 1000 : visualSuffix==='m' ? 1000000 : visualSuffix==='b' ? 1000000000 : 1;
+  const visualWinnerAmount=visualNumber*visualMultiplier;
+  const visualDigits=(visualMatch?.[1].split('.')[1]||'').length;
+  const visualTolerance=visualMultiplier/(2*Math.pow(10,visualDigits)) + 0.5;
+  const accessibleWinnerAmount=Number(boundedWinner.aria.replace(/,/g,'').match(/plus\s+([\d.]+)/i)?.[1]);
+  const titleWinnerAmount=Number(boundedWinner.title.replace(/,/g,'').match(/\+([\d.]+)\s+chips/i)?.[1]);
+  assert(boundedWinner.found && boundedWinner.label==='Won' &&
+    Math.abs(visualWinnerAmount-Number(finalWinner.amount))<=visualTolerance &&
+    (Number(finalWinner.amount)<1000 || Boolean(visualSuffix)) &&
+    boundedWinner.aria.toLowerCase().startsWith('winner ') && boundedWinner.aria.toLowerCase().includes('chips') &&
+    accessibleWinnerAmount===Number(finalWinner.amount) && titleWinnerAmount===Number(finalWinner.amount) &&
+    !boundedWinner.labelClipped && !boundedWinner.amountClipped &&
+    boundedWinner.result[0]>=boundedWinner.seat[0]-1 && boundedWinner.result[2]<=boundedWinner.seat[2]+1,
+  'Winner amount is clipped, not compacted, or its exact chip value is missing from title/accessible label: ' +
+    JSON.stringify({winner:finalWinner,boundedWinner,visualWinnerAmount,visualTolerance}));
+  await sleep(1200);
+  const winnerMotionAfterPoll = await evaluate(one, playerId => {
+    const result=[...document.querySelectorAll('#seat-grid .seat-result.is-winner')]
+      .find(node=>node.dataset.playerId===playerId);
+    const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+    return {reduced,active:result?.getAnimations().some(animation => animation.playState==='running' &&
+      (animation.effect?.getComputedTiming().progress ?? 1)<1) || false,
+      className:String(result?.className||''),delay:result ? getComputedStyle(result).animationDelay : ''};
+  }, finalWinner.player_id);
+  assert(winnerMotionAfterPoll.reduced || !winnerMotionAfterPoll.active,
+    'Winner pulse restarted during later table renders for the same hand: ' + JSON.stringify(winnerMotionAfterPoll));
   await one.screenshot('river-allin-result-desktop');
   await two.screenshot('river-allin-result-mobile');
   await recordGeometry(one, 'river completed result hold desktop');
@@ -917,6 +1049,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
     await Promise.all([waitForRenderedView(one, runoutView), waitForRenderedView(two, runoutView)]);
     await recordGeometry(one, 'three-player showdown result desktop');
     await recordGeometry(two, 'three-player showdown result mobile');
+    await assertPublicFaceCards(one, runoutView, 'Three-player all-in showdown');
 
     const busted = runoutView.seats.filter(seat => Number(seat.stack) === 0);
     const survivors = runoutView.seats.filter(seat => Number(seat.stack) > 0);

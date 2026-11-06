@@ -102,7 +102,25 @@
           <summary><span><span class="panel-kicker">SECONDARY TOOLS</span><strong>Inspect and test tables</strong></span><button id="admin-tables-refresh" class="button button-outline button-small" type="button">Refresh</button></summary>
           <div id="admin-tables-list" class="admin-tables-list"><p class="muted">Open this section to load tables.</p></div>
         </details>
+        <details id="admin-history-details" class="panel admin-history-panel">
+          <summary><span><span class="panel-kicker">PAST GAMES</span><strong>Inspect and remove archived games</strong></span><span class="admin-history-chevron" aria-hidden="true">⌄</span></summary>
+          <div id="admin-history-list" class="admin-history-list"><p class="muted">Open this section to load completed games.</p></div>
+        </details>
       </section>
+
+      <dialog id="admin-history-dialog" class="admin-history-dialog" aria-labelledby="admin-history-title">
+        <div class="admin-history-shell">
+          <header class="section-heading admin-history-heading">
+            <div><div class="panel-kicker">PAST GAME</div><h2 id="admin-history-title">Game details</h2></div>
+            <button id="admin-history-close" class="button button-quiet button-small" type="button">Close</button>
+          </header>
+          <div id="admin-history-content" class="admin-history-content" aria-live="polite"><p class="muted">Choose a past game to inspect it.</p></div>
+          <section id="admin-history-delete-step" class="admin-history-delete-step" aria-labelledby="admin-history-delete-title" hidden>
+            <div><h3 id="admin-history-delete-title">Delete this past game?</h3><p class="muted">This permanently removes the archived game:</p><strong id="admin-history-delete-name"></strong></div>
+            <div class="admin-history-delete-actions"><button id="admin-history-delete-cancel" class="button button-outline button-small" type="button">Keep game</button><button id="admin-history-delete-confirm" class="button button-danger button-small" type="button">Delete game</button></div>
+          </section>
+        </div>
+      </dialog>
 
       <section id="app-panel" class="app-panel" hidden>
         <div class="dashboard-heading">
@@ -184,7 +202,7 @@
                 </div>
                 <form id="chat-quick-form" class="chat-quick-form" hidden>
                   <label class="visually-hidden" for="chat-quick-input">Message to this table, up to 500 characters</label>
-                  <input id="chat-quick-input" name="message" type="text" maxlength="500" autocomplete="off" placeholder="Message the table…" aria-describedby="chat-quick-error chat-quick-status">
+                  <input id="chat-quick-input" name="message" type="text" maxlength="500" autocomplete="off" placeholder="Message" aria-describedby="chat-quick-error chat-quick-status">
                   <button id="chat-quick-send" class="button button-primary button-small" type="submit">Send</button>
                 </form>
                 <p id="chat-quick-error" class="chat-error" role="alert" aria-live="assertive" hidden></p>

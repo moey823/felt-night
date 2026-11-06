@@ -237,8 +237,9 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const hits=controls.map(node=>{
         const r=rect(node), x=r.left+r.width/2, y=r.top+r.height/2, top=document.elementFromPoint(x,y);
         const hit=Boolean(top && (top===node || node.contains(top)));
-        if(normalPhone && node.tagName==='BUTTON' && r.height<44) {
-          errors.push('tap target below 44px '+(node.textContent||node.id||node.tagName).trim()+': '+r.height.toFixed(1));
+        const minimumTarget=node.matches('[data-raise-preset]')?28:(node.matches('input[type="range"]')?32:44);
+        if(normalPhone && (node.tagName==='BUTTON'||node.matches('input[type="range"]')) && r.height<minimumTarget) {
+          errors.push('tap target below '+minimumTarget+'px '+(node.textContent||node.id||node.tagName).trim()+': '+r.height.toFixed(1));
         }
         if(!r.width || !r.height || r.left<0 || r.right>innerWidth+1 || r.top<0 || r.bottom>innerHeight+1 || !hit) errors.push('control hit test failed '+(node.textContent||node.id||node.tagName).trim());
         return {label:(node.textContent||node.id||node.tagName).trim(),hit};
@@ -392,6 +393,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const touchButtons=[...document.querySelectorAll('#action-panel button')].map(button=>({
         label:(button.textContent||button.getAttribute('aria-label')||button.id||'').trim(),
         rect:rect(button),
+        minimum:button.matches('[data-raise-preset]')?28:44,
         hit:(()=>{const r=button.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
           return hit===button||button.contains(hit);})(),
       }));
@@ -406,7 +408,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const footer=panel?rect(panel):null, surfaceBox=surface?rect(surface):null, feltBox=felt?rect(felt):null, pairBox=pair?rect(pair):null;
       if(footer && (footer.top< -1 || footer.bottom>innerHeight+1)) errors.push('runout action dock is clipped after scrolling into view');
       if(footer && surfaceBox && (footer.left<surfaceBox.left-1 || footer.right>surfaceBox.right+1 || footer.top<surfaceBox.top-1 || footer.bottom>surfaceBox.bottom+1)) errors.push('runout footer escapes surface');
-      if(touchButtons.some(button=>button.rect.height<43 || !button.hit)) {
+      if(touchButtons.some(button=>button.rect.height<button.minimum || !button.hit)) {
         errors.push('runout action buttons are undersized or obstructed: '+JSON.stringify(touchButtons));
       }
       const center=pairBox&&feltBox?{

@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const modes = new Set(['adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'flow', 'layout']);
+const modes = new Set(['adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'flow', 'layout', 'stability', 'compact']);
 const suite = modes.has(mode) ? mode : 'tournament';
 const game = (await import('./' + suite + '.mjs')).default;
 const testRoomPassword = 'test-room-invite';
@@ -30,6 +30,7 @@ backendEnv.FELT_NIGHT_ADMIN_USERNAME = 'admin';
 const backend = spawn(process.env.PYTHON || 'python3', ['-B','server.py','--port',String(port),
   '--public-origin',origin,'--data-dir',join(directory,'data')], {cwd:root,env:backendEnv,stdio:['ignore','pipe','inherit']});
 let browser;
+let pages = [];
 const pending = new Map(), errors = [];
 let serial = 0;
 async function command(method, params = {}, sessionId) {
@@ -131,11 +132,29 @@ try {
     }
   });
   await Promise.race([
-    Promise.all([makePage(),makePage()]).then(pages=>game(pages,sleep,testRoomPassword)),
+    Promise.all([makePage(),makePage()]).then(createdPages=>{ pages=createdPages; return game(createdPages,sleep,testRoomPassword); }),
     once(browser,'exit').then(()=>{throw Error('Browser closed before the game finished');}),
     new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser check exceeded 150 s')),150000);})
   ]);
   if(errors.length) throw Error(errors.join('\n'));
+} catch (error) {
+  if(process.env.QA_SCREEN_DIR) {
+    for(let index=0;index<pages.length;index++) {
+      const page=pages[index];
+      try {
+        await page.screenshot("failure-"+(index+1));
+      } catch (captureError) {
+        console.error("Failure screenshot "+(index+1)+" could not be captured: "+String(captureError));
+      }
+      try {
+        const snapshot=await page.evaluate('(() => { const rect=s => { const n=document.querySelector(s); if(!n) return null; const r=n.getBoundingClientRect(); return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}; }; const d=document.documentElement,b=document.body; return {viewport:{width:innerWidth,height:innerHeight},scroll:{x:scrollX,y:scrollY,width:d.scrollWidth,height:d.scrollHeight,bodyHeight:b.scrollHeight},tableView:rect("#table-view"),tableSurface:rect("#table-surface"),felt:rect("#felt"),actionPanel:rect("#action-panel")}; })()');
+        console.error("Failure viewport "+(index+1)+": "+JSON.stringify(snapshot));
+      } catch (captureError) {
+        console.error("Failure geometry "+(index+1)+" could not be read: "+String(captureError));
+      }
+    }
+  }
+  throw error;
 } finally {
   clearTimeout(timer);
   await Promise.all([stop(browser),stop(backend)]);

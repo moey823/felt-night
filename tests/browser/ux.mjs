@@ -153,7 +153,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     return request('/admin/config', admin, {
       runout_seconds:runoutSeconds, blind_announcement_seconds:blindSeconds,
       elimination_announcement_seconds:eliminationSeconds, showdown_seconds:showdownSeconds,
-      bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]},
+      bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,60,75,90,100]},
     });
   }
   await setAdminTiming(1);
@@ -204,21 +204,24 @@ export default async function ux([one, two], sleep, roomPassword) {
       return width>1 && height>1 ? width*height : 0;
     };
 
-    const header = document.querySelector('.topbar');
+    const header = document.querySelector('.table-shell-header');
     const surface = document.querySelector('.table-surface');
     const blindStrip = document.querySelector('#blind-strip');
     const felt = document.querySelector('#felt');
     const seatGrid = document.querySelector('#seat-grid');
     const panel = document.querySelector('#action-panel');
     const board = document.querySelector('#board-cards');
+    const boardCards = [...document.querySelectorAll('#board-cards .playing-card:not(.placeholder)')];
     const heroPair = document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
     const actionButtons = [...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
-    const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
+    const primarySlots = [...document.querySelectorAll('#action-panel .action-buttons [data-action-slot]')];
+    const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-seat-no]')];
     const markers = [...document.querySelectorAll(
-      '#seat-grid .seat-action.kind-turn:not(.is-unplaced), ' +
-      '#seat-grid .seat-wager:not(.is-unplaced), ' +
-      '#seat-grid .dealer-marker:not(.is-unplaced)'
-    )];
+      '#seat-grid .seat-local-markers .seat-action, ' +
+      '#seat-grid .seat-local-markers .seat-turn-clock, ' +
+      '#seat-grid .seat-local-markers .seat-wager, ' +
+      '#seat-grid .seat-local-markers .dealer-marker'
+    )].filter(marker => marker.offsetWidth && marker.offsetHeight);
     const blindNumbers = [...(blindStrip?.querySelectorAll('.blind-tile strong') || [])];
     const turnMarker = document.querySelector('#seat-grid .seat-action.kind-turn');
     const turnClock = document.querySelector('#seat-grid .seat-turn-clock');
@@ -226,19 +229,26 @@ export default async function ux([one, two], sleep, roomPassword) {
     const heroCards = [...document.querySelectorAll(
       '.seat-card.is-me .seat-cards.is-viewer-cards .mini-card'
     )];
+    const liveSeatCardRows = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')]
+      .filter(seat => !seat.classList.contains('is-folded') && !seat.classList.contains('is-eliminated'))
+      .map(seat => {
+        const row=seat.querySelector('.seat-cards');
+        const cards=[...(row?.querySelectorAll('.mini-card') || [])];
+        const visible=card=>Boolean(getComputedStyle(card).display!=='none' &&
+          getComputedStyle(card).visibility!=='hidden' && card.getBoundingClientRect().width>0 &&
+          card.getBoundingClientRect().height>0);
+        return {seatNo:seat.dataset.seatNo,rowVisible:Boolean(row?.offsetWidth && row?.offsetHeight),
+          count:cards.length,visible:cards.filter(visible).length,backs:cards.filter(card=>card.classList.contains('back')).length};
+      });
     const controls = [...document.querySelectorAll(
       '#action-panel button:not([disabled]), #action-panel input:not([disabled])'
     )];
     const errors = [];
-    const scrollViewport = innerWidth <= 340 ||
-      (innerWidth > innerHeight && innerHeight <= 390);
     const normalPhoneViewport =
       (innerWidth === 390 && innerHeight === 844) ||
       (innerWidth === 360 && innerHeight === 740);
 
-    if (!header || !['sticky', 'fixed'].includes(getComputedStyle(header).position)) {
-      errors.push('header is not sticky');
-    }
+    if (!header || !header.offsetWidth) errors.push('active table shell header is not visible');
     if (header && header.getBoundingClientRect().height > (innerWidth < 800 ? 64 : 90)) {
       errors.push('header is too tall');
     }
@@ -248,17 +258,26 @@ export default async function ux([one, two], sleep, roomPassword) {
     }
     if (felt?.contains(panel)) errors.push('action panel is inside the felt');
     if (actionButtons.length !== 3) errors.push('expected three persistent primary actions, saw ' + actionButtons.length);
+    if (primarySlots.map(button => button.dataset.actionSlot).join(',') !== 'fold,call,raise') {
+      errors.push('primary action slots are missing or reordered: ' + primarySlots.map(button => button.dataset.actionSlot).join(','));
+    }
     if (!canAct && actionButtons.some(button => !button.disabled)) errors.push('an off-turn primary action is enabled');
     if (document.querySelector('[data-preaction], #allInConfirm, [data-action="confirm-all-in"], #hand-result')) {
       errors.push('removed gameplay control or payout box remains in the DOM');
     }
     if (/uncalled/i.test(document.body.innerText)) errors.push('uncalled-bet UI remains');
-    if (!board?.offsetWidth) errors.push('community card area is not visible');
+    if (boardCards.length && (!board?.offsetWidth || boardCards.some(card => !card.offsetWidth || !card.offsetHeight))) {
+      errors.push('dealt community cards are not visible');
+    }
     if (seats.length !== expectedSeats) errors.push('expected ' + expectedSeats + ' seats, saw ' + seats.length);
     if (document.querySelector('#seat-grid .seat-empty')) errors.push('empty seat placeholders remain');
     if (heroCards.length !== 2) errors.push('expected two visible hero cards, saw ' + heroCards.length);
+    if (liveSeatCardRows.some(row => !row.rowVisible || row.count !== 2 || row.visible !== 2)) {
+      errors.push('every live un-folded seat must retain two visible faces or card backs: ' + JSON.stringify(liveSeatCardRows));
+    }
     if (document.documentElement.scrollWidth > innerWidth + 1) errors.push('horizontal page overflow');
-    if (!scrollViewport && window.scrollY > 1) errors.push('page was scrolled in a viewport expected to fit');
+    if (window.scrollY > 1) errors.push('gameplay page scrolled vertically');
+    if (document.documentElement.scrollHeight > innerHeight + 1) errors.push('gameplay page has vertical overflow');
     if (!blindNumbers.length) errors.push('blind strip has no numeric HUD values');
     if (!turnMarker || turnMarker.classList.contains('is-unplaced') || !turnMarker.offsetWidth) {
       errors.push('TO ACT marker is missing or unplaced');
@@ -271,14 +290,19 @@ export default async function ux([one, two], sleep, roomPassword) {
     const panelBox = panel && rect(panel);
     const heroPairBox = heroPair && rect(heroPair);
     const boardBox = board && rect(board);
-    const touchButtons = [...(panel?.querySelectorAll('button') || [])];
+    const touchButtons = actionButtons;
     const undersizedButtons = touchButtons.map(button => ({
       label: (button.textContent || button.getAttribute('aria-label') || button.id || '').trim(),
       height: rect(button).height,
-    })).filter(button => button.height < 43);
+    })).filter(button => button.height < 44);
     if (undersizedButtons.length) {
-      errors.push('action buttons are below 44px: ' + JSON.stringify(undersizedButtons));
+      errors.push('primary action buttons are below 44px: ' + JSON.stringify(undersizedButtons));
     }
+    const presetMinHeight = innerWidth <= 320 || innerHeight <= 390 ? 28 : 30;
+    const undersizedPresets = [...(panel?.querySelectorAll('[data-raise-preset]') || [])]
+      .map(button => ({label:button.textContent.trim(), height:rect(button).height}))
+      .filter(button => button.height < presetMinHeight);
+    if (undersizedPresets.length) errors.push('secondary raise presets are below ' + presetMinHeight + 'px: ' + JSON.stringify(undersizedPresets));
     if (normalPhoneViewport && heroPairBox && panelBox &&
       (heroPairBox.top < -1 || heroPairBox.bottom > innerHeight + 1 ||
        panelBox.top < -1 || panelBox.bottom > innerHeight + 1 ||
@@ -305,17 +329,25 @@ export default async function ux([one, two], sleep, roomPassword) {
     }
     const gridBox = seatGrid && rect(seatGrid);
     const stripBox = blindStrip && rect(blindStrip);
+    const potBox = document.querySelector('#pot-display') && rect(document.querySelector('#pot-display'));
     const seatBoxes = seats.map(seat => ({
       seatNo: seat.dataset.seatNo,
       name: seat.querySelector('.seat-name')?.innerText || '',
       ...rect(seat),
     }));
+    if (stripBox) {
+      for (const seatBox of seatBoxes) {
+        if (overlap(stripBox, seatBox) > 1) errors.push('blind strip overlaps seat ' + seatBox.seatNo);
+      }
+    }
     const markerBoxes = markers.map(marker => ({
-      type: marker.classList.contains('seat-action') ? 'action' :
+      type: marker.classList.contains('seat-turn-clock') ? 'clock' :
+        marker.classList.contains('seat-action') ? 'action' :
         marker.classList.contains('seat-wager') ? 'wager' : 'dealer',
       seatNo: marker.getAttribute('data-seat-no') ||
         marker.getAttribute('data-action-seat') ||
         marker.getAttribute('data-marker-seat') || '',
+      ownerSeatNo: marker.closest('.seat-card[data-seat-no]')?.dataset.seatNo || '',
       ...rect(marker),
     }));
     const blindNumberBoxes = blindNumbers.map(value => ({
@@ -330,14 +362,14 @@ export default async function ux([one, two], sleep, roomPassword) {
     const turnMarkerBox = turnMarker && rect(turnMarker);
     const turnClockBox = turnClock && rect(turnClock);
 
-    if (!scrollViewport && feltBox && (feltBox.top < -1 || feltBox.bottom > innerHeight + 1)) {
+    if (feltBox && (feltBox.top < -1 || feltBox.bottom > innerHeight + 1)) {
       errors.push('felt is clipped by the viewport');
     }
     if (panelBox && (
       panelBox.left < -1 || panelBox.right > innerWidth + 1 ||
       panelBox.top < -1 || panelBox.bottom > innerHeight + 1
     )) errors.push('action panel is clipped by the viewport');
-    if (!scrollViewport && boardBox && boardBox.width && (
+    if (boardBox && boardBox.width && (
       boardBox.left < -1 || boardBox.right > innerWidth + 1 ||
       boardBox.top < -1 || boardBox.bottom > innerHeight + 1
     )) errors.push('community card area is clipped');
@@ -348,22 +380,55 @@ export default async function ux([one, two], sleep, roomPassword) {
     if (boardBox && stripBox && overlap(boardBox, stripBox) > 1) {
       errors.push('community cards overlap blind strip');
     }
-    if (stripBox && gridBox && stripBox.bottom > gridBox.top + 1) {
-      errors.push('blind strip is not above the seat area');
-    }
     for (const [label, markerBox] of [['TO ACT', turnMarkerBox], ['seat turn clock', turnClockBox]]) {
       if (!markerBox) continue;
       if (feltBox && (
         markerBox.left < feltBox.left - 1 || markerBox.right > feltBox.right + 1 ||
         markerBox.top < feltBox.top - 1 || markerBox.bottom > feltBox.bottom + 1
       )) errors.push(label + ' escapes felt bounds');
-      if (!scrollViewport && (
+      if ((
         markerBox.left < -1 || markerBox.right > innerWidth + 1 ||
         markerBox.top < -1 || markerBox.bottom > innerHeight + 1
       )) errors.push(label + ' is clipped by viewport');
     }
     for (let index = 0; index < markers.length; index++) {
+      const marker = markers[index];
       const markerBox = markerBoxes[index];
+      const ownerSeat = marker.closest('.seat-card[data-seat-no]');
+      const localLane = marker.closest('.seat-local-markers');
+      const ownerBox = ownerSeat && rect(ownerSeat);
+      const laneBox = localLane && rect(localLane);
+      if (!ownerSeat || !localLane?.contains(marker)) errors.push(markerBox.type + ' marker is not inside its owner seat lane');
+      if (ownerSeat && markerBox.seatNo && markerBox.seatNo !== ownerSeat.dataset.seatNo) {
+        errors.push(markerBox.type + ' marker seat id does not match its containing seat');
+      }
+      if (ownerBox && (markerBox.left < ownerBox.left - 1 || markerBox.right > ownerBox.right + 1 ||
+          markerBox.top < ownerBox.top - 1 || markerBox.bottom > ownerBox.bottom + 1)) {
+        errors.push(markerBox.type + ' marker escaped its seat ' + ownerSeat.dataset.seatNo);
+      }
+      if (laneBox && (markerBox.left < laneBox.left - 1 || markerBox.right > laneBox.right + 1 ||
+          markerBox.top < laneBox.top - 1 || markerBox.bottom > laneBox.bottom + 1)) {
+        errors.push(markerBox.type + ' marker escaped its fixed local lane');
+      }
+      if (marker.classList.contains('seat-action')) {
+        if (!(marker.getAttribute('aria-label') || '').trim()) errors.push('action marker lacks an accessible label');
+      } else {
+        const markerText = [marker, ...marker.querySelectorAll('strong,.wager-unit,.seat-turn-clock')]
+          .filter(node => node.textContent.trim() && getComputedStyle(node).display !== 'none' &&
+            getComputedStyle(node).visibility !== 'hidden' && node.getClientRects().length);
+        for (const node of markerText) {
+          if (node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1) {
+            errors.push(markerBox.type + ' marker text is clipped: ' + node.textContent.trim());
+          }
+        }
+      }
+      const ownerCards = ownerSeat?.querySelector('.seat-cards');
+      if (ownerCards && overlap(markerBox, rect(ownerCards)) > 1) errors.push(markerBox.type + ' marker overlaps cards in seat ' + ownerSeat.dataset.seatNo);
+      const markerBlockers = [['board',boardBox],['pot',potBox],['blind strip',stripBox]]
+        .filter(([,blocker]) => blocker && overlap(markerBox, blocker) > 1)
+        .map(([name,blocker]) => ({name,rect:blocker}));
+      if (markerBlockers.length) errors.push(markerBox.type + ' marker overlaps blockers: ' +
+        JSON.stringify({marker:markerBox,blockers:markerBlockers}));
       if (!markerBox.width || !markerBox.height) {
         errors.push(markerBox.type + ' marker for seat ' + markerBox.seatNo + ' has no visible bounds');
       }
@@ -371,10 +436,17 @@ export default async function ux([one, two], sleep, roomPassword) {
         markerBox.left < feltBox.left - 1 || markerBox.right > feltBox.right + 1 ||
         markerBox.top < feltBox.top - 1 || markerBox.bottom > feltBox.bottom + 1
       )) errors.push(markerBox.type + ' marker for seat ' + markerBox.seatNo + ' escapes felt bounds');
-      if (!scrollViewport && (
+      if ((
         markerBox.left < -1 || markerBox.right > innerWidth + 1 ||
         markerBox.top < -1 || markerBox.bottom > innerHeight + 1
       )) errors.push(markerBox.type + ' marker for seat ' + markerBox.seatNo + ' is clipped by viewport');
+      for (let previous = 0; previous < index; previous++) {
+        const other=markers[previous];
+        if (marker.contains(other) || other.contains(marker)) continue;
+        if (overlap(markerBox,markerBoxes[previous]) > 1) {
+          errors.push(markerBox.type + ' marker intersects another seat-local marker');
+        }
+      }
     }
     for (const value of blindNumbers) {
       if (value.scrollWidth > value.clientWidth + 1 || value.scrollHeight > value.clientHeight + 1) {
@@ -401,7 +473,7 @@ export default async function ux([one, two], sleep, roomPassword) {
 
     for (const card of heroCards) {
       const cardBox = rect(card);
-      if (!scrollViewport && (
+      if ((
         cardBox.left < -1 || cardBox.right > innerWidth + 1 ||
         cardBox.top < -1 || cardBox.bottom > innerHeight + 1
       )) errors.push('hero card is clipped');
@@ -453,11 +525,13 @@ export default async function ux([one, two], sleep, roomPassword) {
       felt: feltBox,
       action: panelBox,
       touchButtons: undersizedButtons,
+      undersizedPresets,
       actionButtons: actionButtons.length,
       heroPair: heroPairBox,
       heroCenterOffset,
       heroBottomGap,
       cards: heroCards.map(rect),
+      liveSeatCardRows,
       board: boardBox,
       strip: stripBox,
       seats: seatBoxes,
@@ -487,16 +561,6 @@ export default async function ux([one, two], sleep, roomPassword) {
     for (const viewport of viewports) {
       await page.resize(viewport.width, viewport.height);
       await sleep(950); // Let the normal live-table refresh run after each resize.
-      const allowScroll = viewport.width <= 340 ||
-        (viewport.width > viewport.height && viewport.height <= 390);
-      if (allowScroll) {
-        await evaluate(page, () =>
-          document.querySelector('#action-panel')?.scrollIntoView({block:'end'})
-        );
-        await sleep(120);
-      } else {
-        await evaluate(page, () => window.scrollTo(0,0));
-      }
       const report = await evaluate(page, layoutSnapshot, seatCount, canAct);
       const name = label + '-' + viewport.width + 'x' + viewport.height;
       await page.screenshot(name);
@@ -566,6 +630,20 @@ export default async function ux([one, two], sleep, roomPassword) {
   );
   console.log('Recent action dialog closes by button and Escape with synchronized aria-expanded.');
 
+  const countdownBefore = await wait(one, () => {
+    const value = document.querySelector('#blind-level-countdown')?.textContent.trim() || '';
+    return /^\d{1,3}:\d{2}$/.test(value) ? value : false;
+  });
+  const countdownSeconds = value => {
+    const [minutes, seconds] = value.split(':').map(Number);
+    return minutes * 60 + seconds;
+  };
+  await sleep(1250);
+  const countdownAfter = await evaluate(one, () => document.querySelector('#blind-level-countdown')?.textContent.trim() || '');
+  assert(countdownAfter && countdownSeconds(countdownAfter) < countdownSeconds(countdownBefore) &&
+    countdownSeconds(countdownBefore) - countdownSeconds(countdownAfter) <= 2,
+  'Blind-level countdown did not tick between table polls: ' + countdownBefore + ' to ' + countdownAfter);
+
   const initialView = await request(headsUp.path, headsUpActor);
   const hero = initialView.seats.find(seat => seat.id === headsUpActor.player.id);
   const bigBlind = initialView.blinds?.big || headsUp.config.big_blind;
@@ -617,8 +695,34 @@ export default async function ux([one, two], sleep, roomPassword) {
   });
   await click(one, '[data-raise-preset][data-target="50"]');
   await wait(one, () => Number(document.querySelector('#raise-amount')?.value) === 50);
+  const actionSlotBefore = await evaluate(one, () => {
+    const nodes = [...document.querySelectorAll('#action-panel .action-buttons [data-action-slot]')];
+    window.uxActionSlotRefs = nodes.map(node => ({node, slot:node.dataset.actionSlot}));
+    return nodes.map(node => {
+      const r = node.getBoundingClientRect();
+      return {slot:node.dataset.actionSlot, rect:[r.left,r.top,r.right,r.bottom]};
+    });
+  });
   await click(one, '[data-poker-action="raise_to"]');
   await wait(one, () => Boolean(window.uxActionPayload));
+  await wait(one, () => {
+    const buttons = [...document.querySelectorAll('#action-panel .action-buttons [data-action-slot]')];
+    return buttons.length === 3 && buttons.every(button => button.disabled);
+  });
+  const actionSlotAfter = await evaluate(one, () => {
+    const nodes = [...document.querySelectorAll('#action-panel .action-buttons [data-action-slot]')];
+    return {
+      sameNodes: nodes.length === window.uxActionSlotRefs?.length && nodes.every((node,index) => node === window.uxActionSlotRefs[index].node),
+      slots:nodes.map(node => node.dataset.actionSlot),
+      disabled:nodes.map(node => node.disabled),
+      rects:nodes.map(node => {const r=node.getBoundingClientRect(); return [r.left,r.top,r.right,r.bottom];}),
+    };
+  });
+  assert(actionSlotAfter.sameNodes && actionSlotAfter.slots.join(',') === 'fold,call,raise' &&
+    actionSlotAfter.disabled.every(Boolean) && actionSlotAfter.rects.every((rect,index) =>
+      rect.every((value,axis) => Math.abs(value - actionSlotBefore[index].rect[axis]) <= 1)),
+  'Primary action nodes or fixed slots moved when the actor became a waiting player: ' +
+    JSON.stringify({before:actionSlotBefore,after:actionSlotAfter}));
   const payload = await evaluate(one, () => window.uxActionPayload);
   assert(
     payload.amount === 50 && ['raise', 'bet'].includes(payload.action),
@@ -697,6 +801,14 @@ export default async function ux([one, two], sleep, roomPassword) {
   await openTable(one, multiway.name);
   await openTable(two, multiway.name);
   await wait(one, visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]');
+  const multiwayRingBaselines = await Promise.all(pages.map(page => evaluate(page, () => ({
+    seats:[...document.querySelectorAll('#seat-grid .seat-card[data-seat-no]')].map(node => {
+      const r=node.getBoundingClientRect();
+      return {seatNo:node.dataset.seatNo,playerId:node.dataset.playerId || '',
+        relativeIndex:node.dataset.relativeSeat,left:r.left,top:r.top,right:r.right,bottom:r.bottom};
+    }),
+    scrollY:window.scrollY,scrollHeight:document.documentElement.scrollHeight,
+  }))));
 
   // Off-turn players keep all three actions visible but disabled; no preaction control exists.
   let waitingPage = null;
@@ -806,33 +918,33 @@ export default async function ux([one, two], sleep, roomPassword) {
   );
   const finalLayout = await evaluate(livePage, () => {
     const felt = document.querySelector('#felt').getBoundingClientRect();
-    const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')].map(node => {
+    const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-seat-no]')].map(node => {
       const bounds = node.getBoundingClientRect();
-      return {
-        id: node.dataset.playerId,
-        left: bounds.left,
-        top: bounds.top,
-        right: bounds.right,
-        bottom: bounds.bottom,
-      };
+      return {id:node.dataset.playerId || '',seatNo:node.dataset.seatNo,
+        relativeIndex:Number(node.dataset.relativeSeat),left:bounds.left,top:bounds.top,right:bounds.right,bottom:bounds.bottom};
     });
-    return {
-      seats,
-      empty: document.querySelectorAll('#seat-grid .seat-empty').length,
-      felt: {left: felt.left, top: felt.top, right: felt.right, bottom: felt.bottom},
-    };
+    return {seats,empty:document.querySelectorAll('#seat-grid .seat-empty').length,
+      felt:{left:felt.left,top:felt.top,right:felt.right,bottom:felt.bottom},
+      scrollY:window.scrollY,scrollHeight:document.documentElement.scrollHeight,viewportHeight:innerHeight};
   });
-  assert(
-    finalLayout.seats.length === current.seats.filter(seat => seat.in_hand).length && finalLayout.empty === 0,
-    'Final-hand participants were removed: ' + JSON.stringify(finalLayout)
-  );
+  const ringBaseline = multiwayRingBaselines[pages.indexOf(livePage)];
+  const finalBySeat = new Map(finalLayout.seats.map(seat => [seat.seatNo, seat]));
+  const ringStable = ringBaseline.seats.length === finalLayout.seats.length && ringBaseline.seats.every(before => {
+    const after=finalBySeat.get(before.seatNo);
+    return after && after.id===before.playerId && after.relativeIndex===Number(before.relativeIndex) &&
+      ['left','top','right','bottom'].every(key => Math.abs(after[key]-before[key])<=1);
+  });
+  assert(finalLayout.seats.length === current.seats.length && finalLayout.empty === 0 && ringStable &&
+    finalLayout.scrollY <= 1 && finalLayout.scrollHeight <= finalLayout.viewportHeight + 1,
+  'Elimination/completion changed the original seat ring or caused page scroll: ' +
+    JSON.stringify({finalLayout,ringBaseline,ringStable,apiSeats:current.seats.length}));
   const survivor = finalLayout.seats.find(seat => seat.id === current.seats.find(row => row.stack > 0).id);
   assert(
     survivor.left >= finalLayout.felt.left - 1 && survivor.right <= finalLayout.felt.right + 1 &&
     survivor.top >= finalLayout.felt.top - 1 && survivor.bottom <= finalLayout.felt.bottom + 1,
     'Survivor is outside the felt after reflow: ' + JSON.stringify(finalLayout)
   );
-  console.log('Zero-stack all-ins and final-hand participants stayed visible without empty seats.');
+  console.log('Zero-stack all-ins retained the original seat ring through completion without page scroll.');
 
   const losingUser = findUser(multiway.entrants, current.seats.find(seat => seat.in_hand && seat.stack === 0).id);
   await switchUser(one, losingUser);
@@ -1083,6 +1195,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       for(let j=0;j<i;j++) if(area(rect(seats[i]),rect(seats[j]))>5) errors.push('seats overlap '+seats[j].dataset.seatNo+'/'+seats[i].dataset.seatNo);
     }
     return {errors,seatCount:seats.length,scrollY:window.scrollY,
+      scrollHeight:document.documentElement.scrollHeight,viewportHeight:innerHeight,
       feltClass:felt?.className||'',seatCountData:felt?.dataset.seatCount||'',
       felt:rect(felt),grid:rect(document.querySelector('#seat-grid')),board,panel,seatRects};
   });
@@ -1099,8 +1212,9 @@ export default async function ux([one, two], sleep, roomPassword) {
     ['after two frames', geometryAfterFrames],
     ['after one polling interval', geometryAfterPoll],
   ]) {
-    assert(snapshot.seatCount === 9 && !snapshot.errors.length,
-      '2-to-9 seat geometry was unstable ' + label + ': ' + JSON.stringify(snapshot));
+    assert(snapshot.seatCount === 9 && !snapshot.errors.length && snapshot.scrollY <= 1 &&
+      snapshot.scrollHeight <= snapshot.viewportHeight + 1,
+      '2-to-9 seat geometry was unstable or scrolled ' + label + ': ' + JSON.stringify(snapshot));
   }
   await one.resize(1366, 768);
   await sleep(900);
@@ -1125,6 +1239,8 @@ export default async function ux([one, two], sleep, roomPassword) {
   let boundaryState = await request(nineSeats.path, nineActor);
   assert(boundaryState.blinds.level === 1 && boundaryState.street !== 'showdown',
     'Blinds advanced during a live hand: ' + JSON.stringify(boundaryState.blinds));
+  await wait(one, () => document.querySelector('#blind-level-countdown')?.textContent.trim() === 'Next hand',
+    'pending blind countdown label');
   assert(await evaluate(one, () => window.uxBlindTransitions.length === 0),
     'A blind announcement appeared during the hand');
   while (boundaryState.actor_id && boundaryState.street !== 'showdown') {

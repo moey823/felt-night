@@ -174,7 +174,6 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   await actorPage.resize(320, 568);
   await otherPage.resize(390, 844);
   await wait(actorPage, visible, '#action-panel:not([hidden]) #raise-amount:enabled');
-  await evaluate(actorPage, () => document.querySelector('#action-panel').scrollIntoView({block: 'center'}));
   const fivePresets = await evaluate(actorPage, () => {
     const buttons = [...document.querySelectorAll('#action-panel [data-raise-preset]')];
     return {
@@ -187,6 +186,8 @@ export default async function adjustments([one, two], sleep, roomPassword) {
         return [r.left, r.top, r.right, r.bottom];
       }),
       overflow: document.documentElement.scrollWidth > innerWidth + 1,
+      scrollY:window.scrollY,
+      verticalOverflow:document.documentElement.scrollHeight > innerHeight + 1,
       viewport: [innerWidth, innerHeight],
     };
   });
@@ -197,7 +198,9 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     'Five preflop preset targets do not reflect the shared admin settings: ' + JSON.stringify(fivePresets));
   assert(!fivePresets.overflow && fivePresets.boxes.every(([left, top, right, bottom]) =>
     left >= -1 && top >= -1 && right <= 321 && bottom <= 569),
-  'Preset buttons are clipped or cause horizontal overflow at 320px: ' + JSON.stringify(fivePresets));
+  'Preset buttons are clipped or cause page overflow at 320px: ' + JSON.stringify(fivePresets));
+  assert(fivePresets.scrollY <= 1 && !fivePresets.verticalOverflow,
+    'Gameplay page scrolled or overflowed vertically at 320px: ' + JSON.stringify(fivePresets));
   await actorPage.screenshot('presets-320x568');
 
   // Desktop mouse-wheel input is exercised separately from the 320px mobile preset layout.
@@ -263,16 +266,18 @@ export default async function adjustments([one, two], sleep, roomPassword) {
         getComputedStyle(node).visibility === 'hidden' || node.getClientRects().length === 0;
     };
     return {
-      topline:hidden('#chat-topline'),
-      preview:hidden('#chat-preview'),
-      quickForm:hidden('#chat-quick-form'),
+      toplineVisible:!hidden('#chat-topline'),
+      previewVisible:!hidden('#chat-preview'),
+      quickFormVisible:!hidden('#chat-quick-form'),
+      preview:document.querySelector('#chat-preview')?.textContent || '',
       panelVisible:!document.querySelector('#chat-panel').hidden,
       latest:document.querySelector('#chat-messages').textContent,
     };
   });
-  assert(chatLayout.topline && chatLayout.preview && chatLayout.quickForm &&
-    chatLayout.panelVisible && chatLayout.latest.includes('drawer-latest-' + stamp),
-  'Chat must use the full drawer with collapsed topline/quick entry: ' + JSON.stringify(chatLayout));
+  assert(chatLayout.toplineVisible && chatLayout.previewVisible && chatLayout.quickFormVisible &&
+    chatLayout.panelVisible && chatLayout.latest.includes('drawer-latest-' + stamp) &&
+    chatLayout.preview.includes('drawer-latest-' + stamp),
+  'Gameplay chat rail and full drawer must both remain available: ' + JSON.stringify(chatLayout));
   const chatMessage = 'drawer-enter-' + stamp;
   await evaluate(actorPage, text => {
     window.adjustmentsChatPosts = [];
@@ -434,6 +439,8 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       felt: [felt.left, felt.top, felt.right, felt.bottom],
       viewport: [innerWidth, innerHeight],
       overflow: document.documentElement.scrollWidth > innerWidth + 1,
+      scrollY:window.scrollY,
+      verticalOverflow:document.documentElement.scrollHeight > innerHeight + 1,
       geometry: {
         tableSurface: rect('#table-surface') || rect('.table-surface'),
         felt: rect('#felt'),
@@ -492,6 +499,8 @@ export default async function adjustments([one, two], sleep, roomPassword) {
             ['seat', node],
             ['cards', node.querySelector('.seat-cards')],
             ['equity', node.querySelector('.seat-equity:not(.is-empty)')],
+            ...[...node.querySelectorAll('.seat-local-markers .seat-action, .seat-local-markers .seat-turn-clock, .seat-local-markers .seat-wager, .seat-local-markers .dealer-marker')]
+              .map((marker,index) => ['marker ' + index, marker]),
           ];
           for (const [part, element] of components) {
             const box = asBox(element);
@@ -515,6 +524,20 @@ export default async function adjustments([one, two], sleep, roomPassword) {
         }
         return overlaps;
       })(),
+      markerAssociationIssues: (() => {
+        const issues=[];
+        for (const marker of document.querySelectorAll('#seat-grid .seat-local-markers .seat-action, #seat-grid .seat-local-markers .seat-turn-clock, #seat-grid .seat-local-markers .seat-wager, #seat-grid .seat-local-markers .dealer-marker')) {
+          const owner=marker.closest('.seat-card[data-seat-no]'), lane=marker.closest('.seat-local-markers');
+          if (!owner || !lane?.contains(marker)) issues.push({type:String(marker.className),reason:'outside owner lane'});
+          const declared=marker.getAttribute('data-seat-no') || marker.getAttribute('data-action-seat') || marker.getAttribute('data-marker-seat');
+          if (declared && owner?.dataset.seatNo !== declared) issues.push({type:String(marker.className),reason:'owner seat mismatch',declared,actual:owner?.dataset.seatNo});
+          const box=node=>{if(!node)return null;const style=getComputedStyle(node),r=node.getBoundingClientRect();if(style.display==='none'||style.visibility==='hidden'||r.width<=0||r.height<=0)return null;return [r.left,r.top,r.right,r.bottom];};
+          const markerBox=box(marker), ownerBox=box(owner), cardsBox=box(owner?.querySelector('.seat-cards'));
+          if (markerBox && ownerBox && (markerBox[0]<ownerBox[0]-1 || markerBox[1]<ownerBox[1]-1 || markerBox[2]>ownerBox[2]+1 || markerBox[3]>ownerBox[3]+1)) issues.push({type:String(marker.className),reason:'outside seat bounds'});
+          if (markerBox && cardsBox && markerBox[0]<cardsBox[2] && markerBox[2]>cardsBox[0] && markerBox[1]<cardsBox[3] && markerBox[3]>cardsBox[1]) issues.push({type:String(marker.className),reason:'overlaps hole cards'});
+        }
+        return issues;
+      })(),
       oddsHitAtCenter: point(odds.left + odds.width / 2, odds.top + odds.height / 2),
       oddsHitNearBottom: point(odds.left + odds.width / 2, Math.min(innerHeight - 1, odds.bottom - 1)),
     };
@@ -532,16 +555,16 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     afterAllIn.odds[2] > afterAllIn.felt[2] + 1 ||
     afterAllIn.odds[1] < afterAllIn.felt[1] - 1 ||
     afterAllIn.odds[3] > afterAllIn.felt[3] + 1 ||
-    afterAllIn.overflow;
+    afterAllIn.overflow || afterAllIn.scrollY > 1 || afterAllIn.verticalOverflow;
   if (shifted || internalCardShift) layoutFailures.push(
     'Heads-up opponent card bounds or card faces moved when all-in odds appeared: ' +
     JSON.stringify({beforeAllIn, afterAllIn}));
   if (escaped) layoutFailures.push(
     'All-in odds escaped the felt bounds or caused page overflow: ' +
     JSON.stringify({beforeAllIn, afterAllIn}));
-  if (afterAllIn.seatBlockerOverlaps.length) layoutFailures.push(
-    'Visible seats, cards, or equity overlap the board, pot, blind strip, or street: ' +
-    JSON.stringify(afterAllIn.seatBlockerOverlaps));
+  if (afterAllIn.seatBlockerOverlaps.length || afterAllIn.markerAssociationIssues.length) layoutFailures.push(
+    'Seat content or local markers overlap blockers or leave their associated seat: ' +
+    JSON.stringify({overlaps:afterAllIn.seatBlockerOverlaps,markerAssociationIssues:afterAllIn.markerAssociationIssues}));
   console.log('320px all-in geometry diagnostics: ' +
     JSON.stringify({before: beforeAllIn, after: afterAllIn}));
   console.log('320px shared presets and chat drawer, plus desktop focus-free wheel, pass; strict odds geometry is deferred to the suite end.');
@@ -662,6 +685,10 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     stacks: pausedView.seats.map(seat => seat.stack),
     timer: pausedView.turn_deadline - pausedView.server_now,
   };
+  const pausedBlindCountdown = await wait(one, () => {
+    const value=document.querySelector('#blind-level-countdown')?.textContent.trim() || '';
+    return /^\d{1,3}:\d{2}$/.test(value) ? value : false;
+  });
   await sleep(4200);
   pausedView = await request(pausePath, host);
   assert(pausedView.paused && pausedView.hand_no === pausedSnapshot.hand &&
@@ -670,6 +697,9 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     JSON.stringify(pausedView.seats.map(seat => seat.stack)) === JSON.stringify(pausedSnapshot.stacks) &&
     Math.abs((pausedView.turn_deadline - pausedView.server_now) - pausedSnapshot.timer) < 0.35,
   'Bot/action/shot-clock state advanced while the host pause was active: ' + JSON.stringify({pausedSnapshot, pausedView}));
+  const pausedBlindCountdownAfter = await evaluate(one, () => document.querySelector('#blind-level-countdown')?.textContent.trim() || '');
+  assert(pausedBlindCountdownAfter === pausedBlindCountdown,
+    'Blind-level countdown moved while the game was paused: ' + pausedBlindCountdown + ' to ' + pausedBlindCountdownAfter);
   assert(pausedView.actor_id && String(pausedView.actor_id).startsWith('bot:'),
     'Pause fixture did not stop on the bot turn.');
   console.log('Host pause stopped the bot turn and shot clock; mobile runtime Save worked at 320x568 and 390x844.');

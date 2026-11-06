@@ -155,6 +155,7 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
     {width:768,height:1024,together:true},
     {width:1366,height:768,together:false},
     {width:844,height:390,together:false},
+    {width:667,height:375,together:false},
     {width:320,height:568,together:false},
   ];
   const failures=[];
@@ -168,29 +169,69 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
     const board=document.querySelector('#felt .board-center');
     const panel=document.querySelector('#action-panel'),felt=document.querySelector('#felt');
     const errors=[];
+    const boardCollisions=[];
+    const clippedNames=[];
+    const winnerOverflows=[];
+    const eliminatedTags=[];
     if(seats.length!==expected) errors.push('seat count '+seats.length);
     if(!board||!board.offsetWidth) errors.push('center board missing');
+    if(scrollY!==0||document.documentElement.scrollHeight>innerHeight+1) errors.push('gameplay page scrolls');
     if(document.documentElement.scrollWidth>innerWidth+1) errors.push('horizontal overflow');
     if(document.querySelectorAll('#board-cards .playing-card.placeholder').length) errors.push('empty board ghosts');
     for(let i=0;i<seats.length;i++) {
       const seat=seats[i],name=seat.querySelector('.seat-name'),font=parseFloat(getComputedStyle(name).fontSize||'0');
       if(font<(innerWidth>820?12:11)) errors.push('seat label too small '+i+':'+font);
-      if(name.scrollWidth>name.clientWidth+1) errors.push('seat label clipped '+i);
-      if(area(rect(seat),rect(board))>5) errors.push('board overlaps seat '+i);
+      if(name.scrollWidth>name.clientWidth+1) {
+        errors.push('seat label clipped '+i);
+        clippedNames.push({index:i,relative:seat.dataset.relativeSeat,name:name.textContent,clientWidth:name.clientWidth,scrollWidth:name.scrollWidth,seat:rect(seat),label:rect(name)});
+      }
+      const winner=seat.querySelector('.seat-result.is-winner');
+      if(winner) {
+        const winnerLabel=winner.querySelector('.seat-result-label'),winnerAmount=winner.querySelector('.seat-result-amount');
+        const details={index:i,relative:seat.dataset.relativeSeat,seat:rect(seat),result:rect(winner),
+          label:winnerLabel?{text:winnerLabel.textContent,rect:rect(winnerLabel),clientWidth:winnerLabel.clientWidth,scrollWidth:winnerLabel.scrollWidth}:null,
+          amount:winnerAmount?{text:winnerAmount.textContent,rect:rect(winnerAmount),clientWidth:winnerAmount.clientWidth,scrollWidth:winnerAmount.scrollWidth}:null,
+          clientWidth:winner.clientWidth,scrollWidth:winner.scrollWidth};
+        if(!winnerLabel||!winnerAmount||winner.scrollWidth>winner.clientWidth+1||
+          winnerLabel.scrollWidth>winnerLabel.clientWidth+1||winnerAmount.scrollWidth>winnerAmount.clientWidth+1||
+          (winnerLabel&&area(rect(winnerLabel),rect(winner))<rect(winnerLabel).width*rect(winnerLabel).height-.5)||
+          (winnerAmount&&area(rect(winnerAmount),rect(winner))<rect(winnerAmount).width*rect(winnerAmount).height-.5)) {
+          errors.push('winner badge clipped '+i);
+          winnerOverflows.push(details);
+        }
+      }
+      if(seat.classList.contains('is-eliminated')) {
+        const outTag=seat.querySelector('.seat-tags .eliminated-label'),outStyle=outTag?getComputedStyle(outTag):null;
+        const stack=seat.querySelector('.seat-stack'),tagRect=outTag?rect(outTag):null,stackRect=stack?rect(stack):null;
+        const visible=Boolean(outTag&&outStyle.display!=='none'&&outStyle.visibility!=='hidden'&&tagRect.height>=10);
+        eliminatedTags.push({index:i,relative:seat.dataset.relativeSeat,visible,text:outTag?.textContent,tag:tagRect,stack:stackRect});
+        if(!visible||!stack||getComputedStyle(stack).visibility!=='hidden') errors.push('eliminated OUT tag missing or stack row not replaced '+i);
+      }
+      if(rect(board).width>4&&area(rect(seat),rect(board))>5) {
+        errors.push('board overlaps seat '+i);
+        boardCollisions.push({index:i,relative:seat.dataset.relativeSeat,name:name?.textContent,seat:rect(seat),board:rect(board),area:area(rect(seat),rect(board))});
+      }
       for(let j=0;j<i;j++) if(area(rect(seat),rect(seats[j]))>5) errors.push('seats overlap '+j+'/'+i);
       const stack=seat.querySelector('.seat-stack'),row=seat.querySelector('.seat-cards');
       if(stack&&row&&area(rect(stack),rect(row))>1) errors.push('stack overlaps cards '+i);
       if(!row||row.getBoundingClientRect().height<1) errors.push('card row collapsed '+i);
-      if(getComputedStyle(row).overflow==='hidden'&&row.scrollHeight>row.clientHeight+1) errors.push('card row clips content '+i);
-      for(const card of seat.querySelectorAll('.mini-card')) {
-        const b=rect(card),parent=rect(seat);
-        if(b.width<17||b.height<25||b.left<parent.left-1||b.right>parent.right+1||b.top<parent.top-1||b.bottom>parent.bottom+1) {
+      if(row&&getComputedStyle(row).display==='none') errors.push('opponent card row hidden '+i);
+      if(row&&getComputedStyle(row).overflow==='hidden'&&row.scrollHeight>row.clientHeight+1) errors.push('card row clips content '+i);
+      const miniCards=[...seat.querySelectorAll('.mini-card')];
+      if(!seat.classList.contains('is-folded')&&!seat.classList.contains('is-eliminated')&&miniCards.length!==2) errors.push('visible card pair missing '+i);
+      if(row?.classList.contains('is-exposed')&&miniCards.length!==2) errors.push('exposed opponent pair missing '+i);
+      for(const card of miniCards) {
+        const b=rect(card),parent=rect(seat),cardStyle=getComputedStyle(card);
+        const needsFullCards=innerWidth<=340||(innerWidth>innerHeight&&innerHeight<=450);
+        const minWidth=needsFullCards?20:17,minHeight=needsFullCards?28:25;
+        if(cardStyle.display==='none'||cardStyle.visibility==='hidden'||b.width<minWidth||b.height<minHeight||b.left<parent.left-1||b.right>parent.right+1||b.top<parent.top-1||b.bottom>parent.bottom+1) {
           errors.push('card clipped in seat '+i);
         }
       }
     }
     for(const wager of document.querySelectorAll('#seat-grid .seat-wager:not(.is-unplaced)')) {
-      for(let i=0;i<seats.length;i++) if(area(rect(wager),rect(seats[i]))>5) errors.push('wager overlaps seat '+i);
+      const owner=wager.closest('.seat-card');
+      for(let i=0;i<seats.length;i++) if(seats[i]!==owner&&area(rect(wager),rect(seats[i]))>5) errors.push('wager overlaps seat '+i);
     }
     if(active) {
       if(!panel||panel.hidden||felt.contains(panel)) errors.push('action dock missing or inside felt');
@@ -203,12 +244,13 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
       if(presets.length!==3) errors.push('bet presets missing');
       for(const control of [...buttons,...presets,range].filter(Boolean)) {
         const b=rect(control),hit=document.elementFromPoint(b.left+b.width/2,b.top+b.height/2);
-        if(b.height<44) errors.push('touch target below 44px '+(control.textContent||control.id));
+        const minimum=control.matches('[data-raise-preset]')?28:(control===range?32:44);
+        if(b.height<minimum) errors.push('touch target below '+minimum+'px '+(control.textContent||control.id));
         if(b.left>=0&&b.right<=innerWidth&&b.top>=0&&b.bottom<=innerHeight&&(!hit||!(hit===control||control.contains(hit)))) errors.push('touch target covered '+(control.textContent||control.id));
       }
       if(together&&heroPair) {
         const h=rect(heroPair),p=rect(panel),b=rect(board);
-        if(h.top<0||h.bottom>innerHeight||p.bottom>innerHeight||b.top<0||b.bottom>innerHeight) {
+        if(h.top<0||h.bottom>innerHeight||p.bottom>innerHeight||(b.width>4&&(b.top<0||b.bottom>innerHeight))) {
           errors.push('board, hero cards, and actions do not fit together');
         }
       }
@@ -223,7 +265,7 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
       const controls=[...panel.querySelectorAll(".action-buttons [data-poker-action]")];
       if(controls.some(button=>!button.disabled)) errors.push("all-in action buttons should be disabled");
     }
-    return {errors,viewport:[innerWidth,innerHeight],grid:rect(document.querySelector("#seat-grid")),felt:rect(felt),board:rect(board),
+    return {errors,viewport:[innerWidth,innerHeight],grid:rect(document.querySelector("#seat-grid")),felt:rect(felt),board:rect(board),boardCollisions,clippedNames,winnerOverflows,eliminatedTags,
       hero:heroPair?rect(heroPair):null,action:panel&&!panel.hidden?rect(panel):null,seatCount:seats.length};
   }
 
@@ -240,16 +282,17 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
     if(width===390&&height===844) {
       const structure=await ev(activePage,()=>{
         const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
-        const summary=node=>{const s=getComputedStyle(node);return {id:node.id,className:node.className,hidden:node.hidden,rect:rect(node),display:s.display,position:s.position,marginTop:s.marginTop,marginBottom:s.marginBottom,paddingTop:s.paddingTop,gridRow:s.gridRow,flex:s.flex,minHeight:s.minHeight,height:s.height};};
+        const summary=node=>{const s=getComputedStyle(node);return {id:node.id,className:node.className,hidden:node.hidden,rect:rect(node),display:s.display,position:s.position,marginTop:s.marginTop,marginBottom:s.marginBottom,paddingTop:s.paddingTop,gridRow:s.gridRow,gridTemplateRows:s.gridTemplateRows,gridAutoRows:s.gridAutoRows,flex:s.flex,minHeight:s.minHeight,height:s.height,overflow:s.overflow,scrollTop:node.scrollTop,scrollHeight:node.scrollHeight,clientHeight:node.clientHeight};};
         const view=document.querySelector('#table-view');
-        return {scrollY,view:summary(view),children:[...view.children].map(summary),
+        const path=['html','body','main','#app-panel','.dashboard-grid','.workspace','#table-view','#table-surface','#felt','#seat-grid','#action-panel'];
+        return {scrollY,document:{scrollHeight:document.documentElement.scrollHeight,clientHeight:document.documentElement.clientHeight,scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth},path:path.map(selector=>summary(document.querySelector(selector))),view:summary(view),children:[...view.children].map(summary),
           app:summary(document.querySelector('#app-panel')),shell:summary(document.querySelector('.app-shell')),
           seats:[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')].map(node=>({index:node.dataset.relativeSeat,name:node.querySelector('.seat-name')?.textContent,seat:rect(node),label:rect(node.querySelector('.seat-name')),labelWidth:node.querySelector('.seat-name')?.clientWidth,labelScrollWidth:node.querySelector('.seat-name')?.scrollWidth}))};
       });
       console.log('Structure 390x844',JSON.stringify(structure));
     }
     console.log('Observer '+width+'x'+height,JSON.stringify(observer));
-    if((width===320&&height===568)||(width===360&&height===740)||(width===844&&height===390)) {
+    if((width===320&&height===568)||(width===360&&height===740)||(width===844&&height===390)||(width===1366&&height===768)) {
       const seats=await ev(activePage,()=>{
         const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
         return [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')].map(node=>({relative:node.dataset.relativeSeat,name:node.querySelector('.seat-name')?.textContent,rect:rect(node),stack:rect(node.querySelector('.seat-stack')),cards:rect(node.querySelector('.seat-cards'))}));
@@ -300,6 +343,26 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
   }
 
   await wait(activePage,()=>((document.querySelector('#street-label')?.textContent||'').toLowerCase().includes('showdown')));
+  await sleep(520);
+  await wait(activePage,()=>document.querySelectorAll('.chip-flight').length===0);
+  for(const {width,height} of [
+    {width:320,height:568},{width:390,height:844},{width:667,height:375},
+    {width:844,height:390},{width:1366,height:768}
+  ]) {
+    await activePage.resize(width,height);
+    await spectatorPage.resize(width,height);
+    await sleep(180);
+    await ev(activePage,()=>window.scrollTo(0,0));
+    await ev(spectatorPage,()=>window.scrollTo(0,0));
+    const active=await ev(activePage,geometry,9,false,false);
+    const observer=await ev(spectatorPage,geometry,9,false,false);
+    const boardCardCount=await ev(activePage,()=>document.querySelectorAll('#board-cards .playing-card:not(.placeholder)').length);
+    console.log('Showdown '+width+'x'+height,JSON.stringify({active,observer,boardCardCount}));
+    if(boardCardCount!==5) failures.push('Showdown '+width+'x'+height+': expected five visible community cards, found '+boardCardCount);
+    if(active.errors.length) failures.push('Showdown '+width+'x'+height+': '+active.errors.join(', '));
+    if(observer.errors.length) failures.push('Showdown observer '+width+'x'+height+': '+observer.errors.join(', '));
+    await activePage.screenshot('showdown-'+width+'x'+height);
+  }
   const announcementMetrics=await ev(activePage,()=>{
     const region=document.querySelector("#table-announcements");
     const banner=document.querySelector("#announcement-banner");

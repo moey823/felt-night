@@ -6,6 +6,7 @@ import json
 
 PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
+TERMINAL_STATUSES = frozenset({"completed", "ended", "cancelled", "expired"})
 
 
 def _dumps(value):
@@ -396,16 +397,54 @@ def list_for_player(conn, player_id, offset=0, limit=PAGE_SIZE):
     }
 
 
-def get_for_player(conn, table_id, player_id, offset=0, limit=PAGE_SIZE):
+def list_for_admin(conn, offset=0, limit=PAGE_SIZE):
+    """List terminal saved games for the room admin."""
     limit = min(MAX_PAGE_SIZE, max(1, int(limit)))
     offset = max(0, int(offset))
-    access = conn.execute(
-        """SELECT 1 FROM tournament_participants p
-           WHERE p.table_id=? AND p.player_id=? AND p.is_bot=0 LIMIT 1""",
-        (table_id, player_id),
-    ).fetchone()
-    if access is None:
-        return None
+    statuses = tuple(sorted(TERMINAL_STATUSES))
+    placeholders = ",".join("?" for _ in statuses)
+    where = "status IN (" + placeholders + ")"
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM tournament_history WHERE " + where,
+        statuses,
+    ).fetchone()["n"]
+    rows = conn.execute(
+        "SELECT * FROM tournament_history WHERE " + where +
+        " ORDER BY COALESCE(completed,started,created) DESC,table_id DESC LIMIT ? OFFSET ?",
+        statuses + (limit, offset),
+    ).fetchall()
+    tournaments = [_summary(conn, row) for row in rows]
+    end = offset + len(tournaments)
+    return {
+        "tournaments": tournaments,
+        "next_offset": end if end < total else None,
+    }
+
+
+def get_for_player(conn, table_id, player_id, offset=0, limit=PAGE_SIZE):
+    return _history_detail(
+        conn, table_id, player_id, offset, limit, require_participant=True,
+    )
+
+
+def get_for_admin(conn, table_id, offset=0, limit=PAGE_SIZE):
+    """Read saved hands as an admin without revealing unrevealed hole cards."""
+    return _history_detail(
+        conn, table_id, None, offset, limit, require_participant=False,
+    )
+
+
+def _history_detail(conn, table_id, viewer_id, offset, limit, require_participant):
+    limit = min(MAX_PAGE_SIZE, max(1, int(limit)))
+    offset = max(0, int(offset))
+    if require_participant:
+        access = conn.execute(
+            """SELECT 1 FROM tournament_participants p
+               WHERE p.table_id=? AND p.player_id=? AND p.is_bot=0 LIMIT 1""",
+            (table_id, viewer_id),
+        ).fetchone()
+        if access is None:
+            return None
     tournament_row = conn.execute(
         "SELECT * FROM tournament_history WHERE table_id=?", (table_id,),
     ).fetchone()
@@ -434,8 +473,12 @@ def get_for_player(conn, table_id, player_id, offset=0, limit=PAGE_SIZE):
         players = []
         for item in player_rows:
             revealed = item["revealed_cards_json"] is not None
-            cards = (_loads(item["cards_json"], []) if item["player_id"] == player_id
-                     else _loads(item["revealed_cards_json"], None) if revealed else None)
+            cards = (
+                _loads(item["cards_json"], [])
+                if viewer_id is not None and item["player_id"] == viewer_id
+                else _loads(item["revealed_cards_json"], None) if revealed
+                else None
+            )
             players.append({
                 "player_id": item["player_id"],
                 "name": item["name"],
@@ -456,7 +499,10 @@ def get_for_player(conn, table_id, player_id, offset=0, limit=PAGE_SIZE):
             "events": [_loads(event["payload_json"], {}) for event in events],
             "events_complete": bool(row["events_complete"]),
             "events_coverage_start_seq": row["events_coverage_start_seq"],
-            "events_end_seq": max((_loads(event["payload_json"], {}).get("seq", 0) for event in events), default=0),
+            "events_end_seq": max(
+                (_loads(event["payload_json"], {}).get("seq", 0) for event in events),
+                default=0,
+            ),
             "players": players,
             "result": _loads(row["result_json"], {}),
         })
@@ -467,6 +513,22 @@ def get_for_player(conn, table_id, player_id, offset=0, limit=PAGE_SIZE):
         "next_offset": end if end < total else None,
     }
 
+
+def delete_tournament_history(conn, table_id):
+    """Remove a tournament archive and every child history row in the current transaction."""
+    conn.execute(
+        """DELETE FROM hand_history_events
+           WHERE hand_id IN (SELECT hand_id FROM hand_history WHERE table_id=?)""",
+        (table_id,),
+    )
+    conn.execute(
+        """DELETE FROM hand_history_players
+           WHERE hand_id IN (SELECT hand_id FROM hand_history WHERE table_id=?)""",
+        (table_id,),
+    )
+    conn.execute("DELETE FROM tournament_participants WHERE table_id=?", (table_id,))
+    conn.execute("DELETE FROM hand_history WHERE table_id=?", (table_id,))
+    conn.execute("DELETE FROM tournament_history WHERE table_id=?", (table_id,))
 
 def _safe_card_list(value, allowed_lengths):
     """Validate card codes before placing stored history in a public response."""

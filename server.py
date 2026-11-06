@@ -953,6 +953,64 @@ class Store:
         finally:
             conn.close()
 
+    def list_admin_history(self, offset=0):
+        conn = self.connect()
+        try:
+            return tournament_history.list_for_admin(conn, offset)
+        finally:
+            conn.close()
+
+    def get_admin_history(self, table_id, offset=0):
+        conn = self.connect()
+        try:
+            detail = tournament_history.get_for_admin(conn, table_id, offset)
+            if detail is not None and detail["tournament"]["status"] not in tournament_history.TERMINAL_STATUSES:
+                raise AppError(409, "game_active", "Only terminal saved games are in admin history.")
+            return detail
+        finally:
+            conn.close()
+
+    def delete_admin_history(self, table_id):
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            table_row = conn.execute(
+                "SELECT state FROM tables WHERE id=?", (table_id,),
+            ).fetchone()
+            history_row = conn.execute(
+                "SELECT name,status FROM tournament_history WHERE table_id=?",
+                (table_id,),
+            ).fetchone()
+            if table_row is None and history_row is None:
+                raise AppError(404, "history_not_found", "Past game not found.")
+            if table_row is not None:
+                state = json.loads(table_row["state"])
+                status = state.get("status")
+                name = str(state.get("name") or (
+                    history_row["name"] if history_row is not None else "Tournament"
+                ))
+            else:
+                state = None
+                status = history_row["status"]
+                name = history_row["name"]
+            if status not in tournament_history.TERMINAL_STATUSES:
+                raise AppError(
+                    409, "game_active",
+                    "Only completed, ended, cancelled, or expired games can be deleted.",
+                )
+            conn.execute("DELETE FROM chat_messages WHERE table_id=?", (table_id,))
+            conn.execute("DELETE FROM end_confirmations WHERE table_id=?", (table_id,))
+            tournament_history.delete_tournament_history(conn, table_id)
+            conn.execute("DELETE FROM tables WHERE id=?", (table_id,))
+            conn.commit()
+            return {"deleted": True, "id": table_id, "name": name, "status": status}
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def get_last_hand(self, table_id, player_id):
         conn = self.connect()
         try:
@@ -1030,6 +1088,8 @@ class Handler(BaseHTTPRequestHandler):
             history_route = (
                 parsed.path == "/poker/api/history"
                 or re.fullmatch(r"/poker/api/history/[a-f0-9]{32}", parsed.path)
+                or parsed.path == "/poker/api/admin/history"
+                or re.fullmatch(r"/poker/api/admin/history/[a-f0-9]{32}", parsed.path)
             )
             if self.command != "GET" or not history_route:
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
@@ -1290,6 +1350,22 @@ class Handler(BaseHTTPRequestHandler):
                     "player": player,
                 })
                 return
+            if path == "/poker/api/admin/history":
+                self._require_admin()
+                self._json(200, self.app.store.list_admin_history(self.request_offset))
+                return
+            admin_history_match = re.fullmatch(
+                r"/poker/api/admin/history/([a-f0-9]{32})", path,
+            )
+            if admin_history_match:
+                self._require_admin()
+                history_page = self.app.store.get_admin_history(
+                    admin_history_match.group(1), self.request_offset,
+                )
+                if history_page is None:
+                    raise AppError(404, "history_not_found", "Past game not found.")
+                self._json(200, history_page)
+                return
             if path == "/poker/api/history":
                 player, _ = self._require_player()
                 history_page = self.app.store.list_history(player["id"], self.request_offset)
@@ -1446,6 +1522,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise AppError(403, "admin_required", "Room admin access is required.")
                 config = self.app.store.update_global_config(body, now)
                 self._json(200, {"config": config})
+                return
+
+            admin_history_delete = re.fullmatch(
+                r"/poker/api/admin/history/([a-f0-9]{32})/delete", path,
+            )
+            if admin_history_delete:
+                if not player.get("is_admin"):
+                    raise AppError(403, "admin_required", "Room admin access is required.")
+                if body.get("confirm_delete") is not True:
+                    raise AppError(
+                        400, "confirmation_required",
+                        "Confirm permanent deletion of this past game.",
+                    )
+                result = self.app.store.delete_admin_history(admin_history_delete.group(1))
+                self._json(200, result)
                 return
 
             admin_bot_match = re.fullmatch(

@@ -66,6 +66,19 @@
     adminTables: [],
     adminConfigSaving: false,
     adminTablesLoading: false,
+    adminHistory: [],
+    adminHistoryLoading: false,
+    adminHistoryNextOffset: null,
+    adminHistoryError: "",
+    adminHistoryListGeneration: 0,
+    adminHistoryDetailGeneration: 0,
+    adminHistoryDetailLoading: false,
+    adminHistoryDetail: null,
+    adminHistoryDetailError: "",
+    adminHistoryDetailId: "",
+    adminHistoryTrigger: null,
+    adminHistoryDeleteTarget: null,
+    adminHistoryDeleting: false,
     adminConfigLoaded: false,
     adminConfigRefreshAt: 0,
     restoreTableId: "",
@@ -92,6 +105,14 @@
     seatTurnClockUpdatedAt: 0,
     seatTurnClockTimer: 0,
     seatTurnClockPaused: false,
+    blindLevelClockKey: "",
+    blindLevelRemainingMs: 0,
+    blindLevelClockUpdatedAt: 0,
+    blindLevelClockTimer: 0,
+    blindLevelClockPaused: false,
+    winnerAnimationKey: "",
+    winnerAnimationStartedAt: 0,
+    winnerAnimationDurationMs: 0,
     blindAnnouncementTimer: 0,
     eliminationAnnouncementTimer: 0,
     pausePending: false,
@@ -232,6 +253,29 @@
     var bigBlind = blindParts(view || state.tableView).big;
     var units = number(value, 0) / bigBlind;
     return new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(units);
+  }
+
+  function winnerChipValue(value, view) {
+    var amount = number(value, 0);
+    var displayValue = tableChipValue(amount, view);
+    var unitValue = amount;
+    if (tableUsesBigBlinds(view)) {
+      unitValue = amount / Math.max(1, blindParts(view || state.tableView).big);
+    }
+    if (unitValue < 1000) return displayValue;
+    var divisor = 1000;
+    var suffix = "k";
+    if (unitValue >= 1000000000) {
+      divisor = 1000000000;
+      suffix = "B";
+    } else if (unitValue >= 1000000) {
+      divisor = 1000000;
+      suffix = "M";
+    }
+    var scaled = unitValue / divisor;
+    var digits = scaled < 10 ? 2 : (scaled < 100 ? 1 : 0);
+    var formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(scaled);
+    return formatted + suffix;
   }
 
   function tableChips(value, view) {
@@ -749,6 +793,19 @@
     setAuthMode("login");
     if (byId("history-dialog").open) byId("history-dialog").close();
     byId("history-content").replaceChildren();
+    closeAdminHistoryDialog(false);
+    state.adminHistoryListGeneration += 1;
+    state.adminHistoryDetailGeneration += 1;
+    state.adminHistoryLoading = false;
+    state.adminHistoryDetailLoading = false;
+    state.adminHistory = [];
+    state.adminHistoryNextOffset = null;
+    state.adminHistoryError = "";
+    state.adminHistoryDetail = null;
+    state.adminHistoryDetailError = "";
+    state.adminHistoryDetailId = "";
+    state.adminHistoryTrigger = null;
+    state.adminHistoryDeleteTarget = null;
     clearAuth();
     state.tableView = null;
     state.tables = [];
@@ -757,6 +814,7 @@
     state.polling = false;
     state.refreshPending = false;
     clearSeatTurnClock();
+    clearBlindLevelClock();
     if (state.refreshTimer) {
       window.clearTimeout(state.refreshTimer);
       state.refreshTimer = 0;
@@ -835,9 +893,12 @@
     if (!button || !panel) return;
     var available = Boolean(state.player && !state.isAdmin && state.activeTableId && state.tableView);
     button.hidden = !available;
-    if (topline) topline.hidden = true;
-    if (preview) preview.hidden = true;
-    if (quickForm) quickForm.hidden = true;
+    if (topline) {
+      topline.hidden = !available;
+      topline.classList.toggle("is-chat-active", available);
+    }
+    if (preview) preview.hidden = !available;
+    if (quickForm) quickForm.hidden = !available;
     button.setAttribute("aria-expanded", String(Boolean(state.chat.open && !panel.hidden)));
     updateChatCharacterCount();
   }
@@ -861,21 +922,20 @@
     if (!preview) return;
     var lines = preview.querySelectorAll(".chat-preview-line");
     if (lines.length !== 3) return;
-    var messages = state.chat.messages.slice(-3);
-    if (!messages.length) {
+    var latest = state.chat.messages[state.chat.messages.length - 1];
+    if (!latest) {
       setChatPreviewLine(lines[0], state.chat.error ? "Chat is unavailable." : (state.chat.loaded ? "No messages yet." : "Loading chat…"), null, null);
-      setChatPreviewLine(lines[1], "No earlier messages.", null, null);
-      setChatPreviewLine(lines[2], "No earlier messages.", null, null);
-      return;
+    } else {
+      var text = String(latest.name || "Player") + ": " + String(latest.text || "");
+      setChatPreviewLine(lines[0], text, text, latest.id);
     }
-    var offset = 3 - messages.length;
-    for (var i = 0; i < offset; i += 1) {
-      setChatPreviewLine(lines[i], "No earlier messages.", null, null);
+    for (var i = 1; i < lines.length; i += 1) {
+      lines[i].textContent = "";
+      lines[i].hidden = true;
+      if (lines[i].hasAttribute("title")) lines[i].removeAttribute("title");
+      if (lines[i].hasAttribute("data-message-id")) lines[i].removeAttribute("data-message-id");
     }
-    messages.forEach(function (message, index) {
-      var text = String(message.name || "Player") + ": " + String(message.text || "");
-      setChatPreviewLine(lines[offset + index], text, text, message.id);
-    });
+    lines[0].hidden = false;
   }
 
   function setChatError(message, source) {
@@ -1289,6 +1349,7 @@
     if (status === "completed") return "Complete";
     if (status === "ended") return "Ended by host";
     if (status === "cancelled") return "Cancelled";
+    if (status === "expired") return "Expired";
     return "Waiting";
   }
 
@@ -1319,6 +1380,70 @@
     }
     if (blinds.seconds >= 0) return blinds.seconds;
     return -1;
+  }
+
+  function blindLevelSecondsRemaining() {
+    if (!state.blindLevelClockKey) return -1;
+    if (state.blindLevelClockPaused) return Math.max(0, Math.ceil(state.blindLevelRemainingMs / 1000));
+    var elapsed = monotonicNow() - state.blindLevelClockUpdatedAt;
+    return Math.max(0, Math.ceil((state.blindLevelRemainingMs - elapsed) / 1000));
+  }
+
+  function updateBlindLevelCountdownNode() {
+    var node = byId("blind-level-countdown");
+    if (!node) return;
+    var seconds = blindLevelSecondsRemaining();
+    var label = seconds >= 0 ? formatClock(seconds) : "—:—";
+    if (node.textContent !== label) node.textContent = label;
+    node.setAttribute("aria-label", seconds < 0
+      ? "Blind level countdown unavailable"
+      : (state.blindLevelClockPaused ? "Blind level countdown paused at " : "Next blind level in ") + label);
+  }
+
+  function clearBlindLevelClock() {
+    if (state.blindLevelClockTimer) window.clearInterval(state.blindLevelClockTimer);
+    state.blindLevelClockTimer = 0;
+    state.blindLevelClockKey = "";
+    state.blindLevelRemainingMs = 0;
+    state.blindLevelClockUpdatedAt = 0;
+    state.blindLevelClockPaused = false;
+    updateBlindLevelCountdownNode();
+  }
+
+  function syncBlindLevelClock(view, blinds) {
+    var node = byId("blind-level-countdown");
+    if (!node || !view) return;
+    if (["completed", "ended", "cancelled", "expired"].indexOf(String(view.status || "")) >= 0) {
+      clearBlindLevelClock();
+      node.textContent = "Final";
+      node.setAttribute("aria-label", "Final blind level");
+      return;
+    }
+    if (blinds.pending && !view.paused) {
+      clearBlindLevelClock();
+      node.textContent = "Next hand";
+      node.setAttribute("aria-label", "Next blind level starts after this hand");
+      return;
+    }
+    var deadline = epochMilliseconds(blinds.nextAt);
+    var serverNow = epochMilliseconds(view.server_now) || Date.now();
+    var paused = Boolean(view.paused);
+    var seconds = deadline > 0
+      ? Math.max(0, (deadline - serverNow) / 1000)
+      : number(blinds.seconds, -1);
+    if (seconds < 0) {
+      clearBlindLevelClock();
+      return;
+    }
+    var tableId = String(view.id || state.activeTableId || "");
+    state.blindLevelClockKey = [tableId, blinds.level, deadline || "relative", paused ? "paused" : "live"].join("|");
+    state.blindLevelRemainingMs = Math.max(0, seconds * 1000);
+    state.blindLevelClockUpdatedAt = monotonicNow();
+    state.blindLevelClockPaused = paused;
+    if (!state.blindLevelClockTimer) {
+      state.blindLevelClockTimer = window.setInterval(updateBlindLevelCountdownNode, 250);
+    }
+    updateBlindLevelCountdownNode();
   }
 
   function renderTables() {
@@ -1594,73 +1719,17 @@
     return action;
   }
 
-  function addLayerPoint(node, gridRect, x, y) {
-    if (!node || !gridRect.width || !gridRect.height) return;
-    node.style.left = (x / gridRect.width * 100).toFixed(2) + "%";
-    node.style.top = (y / gridRect.height * 100).toFixed(2) + "%";
-  }
 
   function boxForNode(node, gridRect) {
     if (!node || node.hidden) return null;
     var rect = node.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
-    return { left: rect.left - gridRect.left, top: rect.top - gridRect.top, right: rect.right - gridRect.left, bottom: rect.bottom - gridRect.top };
-  }
-
-  function boxesOverlap(a, b, gap) {
-    var pad = gap || 0;
-    return a.left < b.right + pad && a.right + pad > b.left && a.top < b.bottom + pad && a.bottom + pad > b.top;
-  }
-
-  function findBadgeSpot(node, seatNode, gridRect, blockers) {
-    var seatRect = boxForNode(seatNode, gridRect);
-    if (!seatRect) return null;
-    var width = node.offsetWidth || 20;
-    var height = node.offsetHeight || 20;
-    var seatWidth = seatRect.right - seatRect.left;
-    var seatHeight = seatRect.bottom - seatRect.top;
-    var cx = (seatRect.left + seatRect.right) / 2;
-    var cy = (seatRect.top + seatRect.bottom) / 2;
-    var baseAngle = Math.atan2(gridRect.height / 2 - cy, gridRect.width / 2 - cx);
-    var offsets = [0, 36, -36, 72, -72, 108, -108, 144, -144, 180];
-    var steps = [0, 14, 28, 42, 56, 70, 84, 98];
-
-    function valid(x, y) {
-      var box = { left: x - width / 2, right: x + width / 2, top: y - height / 2, bottom: y + height / 2 };
-      if (box.left < 4 || box.top < 4 || box.right > gridRect.width - 4 || box.bottom > gridRect.height - 4) return null;
-      for (var i = 0; i < blockers.length; i += 1) {
-        if (boxesOverlap(box, blockers[i], 4)) return null;
-      }
-      return { x: x, y: y, box: box };
-    }
-
-    for (var a = 0; a < offsets.length; a += 1) {
-      var angle = baseAngle + offsets[a] * Math.PI / 180;
-      var ux = Math.cos(angle);
-      var uy = Math.sin(angle);
-      var xClear = Math.abs(ux) > .001 ? ((seatWidth + width) / 2 + 7) / Math.abs(ux) : Infinity;
-      var yClear = Math.abs(uy) > .001 ? ((seatHeight + height) / 2 + 7) / Math.abs(uy) : Infinity;
-      var distance = Math.min(xClear, yClear);
-      for (var step = 0; step < steps.length; step += 1) {
-        var found = valid(cx + ux * (distance + steps[step]), cy + uy * (distance + steps[step]));
-        if (found) return found;
-      }
-    }
-
-    var fallback = null;
-    var fallbackScore = Infinity;
-    for (var y = height / 2 + 5; y <= gridRect.height - height / 2 - 5; y += 14) {
-      for (var x = width / 2 + 5; x <= gridRect.width - width / 2 - 5; x += 14) {
-        var candidate = valid(x, y);
-        if (!candidate) continue;
-        var distanceToSeat = Math.hypot(x - cx, y - cy);
-        if (distanceToSeat < fallbackScore) {
-          fallback = candidate;
-          fallbackScore = distanceToSeat;
-        }
-      }
-    }
-    return fallback;
+    return {
+      left: rect.left - gridRect.left,
+      top: rect.top - gridRect.top,
+      right: rect.right - gridRect.left,
+      bottom: rect.bottom - gridRect.top
+    };
   }
 
   function queuedWagerAmounts(fx) {
@@ -1830,42 +1899,25 @@
     var layout = seatLayout(view);
     var max = layout.max;
     var ringOnlySeated = view.status === "playing" || view.status === "completed" || view.status === "ended";
-    var hasInHandFlags = layout.seats.some(function (seat) { return typeof (seat && seat.in_hand) === "boolean"; });
-    var feltSeats = view.status === "ended"
-      ? layout.seats
-      : (view.status === "completed" && hasInHandFlags
-        ? layout.seats.filter(function (seat) { return seat.in_hand === true; })
-      : (ringOnlySeated
-        ? layout.seats.filter(function (seat) { return seatCountsAsTournamentRemaining(view, seat); })
-        : layout.seats));
-    var bySeat = Object.create(null);
-    feltSeats.forEach(function (seat, index) {
-      var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
-      bySeat[Math.floor(number(rawSeatNo, index))] = seat;
-    });
+    var bySeat = layout.bySeat;
     var viewer = view.viewer || {};
     var viewerId = String(viewer.player_id || (state.player && state.player.id) || "");
-    var ownSeat = feltSeats.find(function (seat) {
+    var ownSeat = layout.seats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === viewerId;
     });
-    var viewerHasSeat = layout.seats.some(function (seat) {
-      return String(seat.id || seat.player_id || "") === viewerId;
-    });
+    var viewerHasSeat = Boolean(ownSeat);
     var hostId = String(view.host_id || "");
     var isHost = Boolean(viewerId && viewerId === hostId);
-    var anchorSeat = ownSeat || feltSeats.find(function (seat) {
+    var anchorSeat = ownSeat || layout.seats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === hostId;
-    }) || feltSeats[0] || null;
+    }) || layout.seats[0] || null;
     var anchorRawSeatNo = anchorSeat && anchorSeat.seat_no != null ? anchorSeat.seat_no : layout.seats.indexOf(anchorSeat);
     var anchorSeatNo = anchorSeat ? Math.floor(number(anchorRawSeatNo, 0)) : 0;
-    var clockwiseSeats = feltSeats.map(function (seat, index) {
-      var raw = seat.seat_no != null ? seat.seat_no : index;
-      var seatNo = Math.floor(number(raw, index));
-      return { seatNo: seatNo, offset: (seatNo - anchorSeatNo + max) % max };
-    }).sort(function (a, b) { return a.offset - b.offset; });
     var relativeBySeatNo = Object.create(null);
-    clockwiseSeats.forEach(function (entry, index) { relativeBySeatNo[entry.seatNo] = index; });
-    var positionCount = ringOnlySeated ? Math.max(2, Math.min(max, clockwiseSeats.length)) : max;
+    for (var slot = 0; slot < max; slot += 1) {
+      relativeBySeatNo[slot] = (slot - anchorSeatNo + max) % max;
+    }
+    var positionCount = max;
     var actorId = String(view.actor_id || view.to_act_id || "");
     var buttonId = String(view.button_id || "");
     var currentHand = view.status === "playing";
@@ -1876,15 +1928,24 @@
       var oddsId = String(row && row.player_id || "");
       if (oddsId) oddsByPlayer[oddsId] = row;
     });
+    var showdown = String(view.street || "").toLowerCase() === "showdown";
+    var winnerHand = String(view.hand_id || view.hand_no || (view.hand && view.hand.number) || "");
+    var winnerAnimationKey = String(view.id || state.activeTableId || "") + "|" + winnerHand;
+    var winnerAnimationElapsed = state.winnerAnimationKey === winnerAnimationKey && state.winnerAnimationStartedAt
+      ? Math.max(0, monotonicNow() - state.winnerAnimationStartedAt) : 0;
+    var winnerAnimationDuration = state.winnerAnimationDurationMs || 720;
+    var animateWinners = Boolean(showdown && winnerHand && motionAllowed() && winnerAnimationElapsed < winnerAnimationDuration);
+    var winnerAnimationDelay = animateWinners ? -Math.floor(winnerAnimationElapsed) : 0;
+    var winnerFound = false;
     var html = "";
 
     for (var i = 0; i < max; i += 1) {
       var seat = bySeat[i];
-      var relativeIndex = ringOnlySeated
-        ? number(relativeBySeatNo[i], (i - anchorSeatNo + max) % max)
-        : (i - anchorSeatNo + max) % max;
+      var relativeIndex = relativeBySeatNo[i];
       if (!seat) {
-        if (!ringOnlySeated) {
+        if (ringOnlySeated) {
+          html += '<div class="seat-card seat-reserved" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-reserved="true" aria-label="Seat ' + (i + 1) + ' reserved"><div class="seat-local-markers" aria-hidden="true"></div></div>';
+        } else {
           var emptySeatNo = i + 1;
           var emptyActions = "";
           if (!viewerHasSeat) {
@@ -1905,8 +1966,29 @@
       var sittingOut = Boolean(seat.sitting_out);
       var acting = actorId && id === actorId;
       var dealer = buttonId && id === buttonId;
-      var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") + (folded ? " is-folded" : "") + (bot ? " is-bot" : "");
-      var label = sittingOut ? "Sitting out" : (folded ? "Folded" : (allIn ? "All in" : ""));
+      var statusText = String(seat.status || seat.state || "").toLowerCase();
+      var explicitEliminated = Boolean(seat.eliminated || seat.is_eliminated || seat.eliminated_at ||
+        /^(eliminated|out|busted)$/i.test(statusText));
+      var finalRows = Array.isArray(view.standings) && view.standings.length
+        ? view.standings : (Array.isArray(view.results) ? view.results : []);
+      var finalRow = finalRows.find(function (row) {
+        return String(row && row.player_id || "") === id;
+      });
+      var finalPlace = number(finalRow && (finalRow.place != null ? finalRow.place : finalRow.rank), 0);
+      var finalWinner = (Array.isArray(view.winners) && view.winners.some(function (row) {
+        return String(row && row.player_id || "") === id;
+      })) || finalPlace === 1;
+      var zeroStack = number(seat.stack, 0) <= 0;
+      var terminalBust = zeroStack && seat.in_hand === false &&
+        (view.status === "completed" || view.status === "ended") &&
+        !(view.status === "completed" && finalWinner);
+      var completedBust = view.status === "completed" && zeroStack && finalPlace > 1;
+      var eliminated = explicitEliminated ||
+        (view.status === "playing" && !seatCountsAsTournamentRemaining(view, seat)) ||
+        terminalBust || completedBust;
+      var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") +
+        (folded ? " is-folded" : "") + (bot ? " is-bot" : "") + (eliminated ? " is-eliminated" : "");
+      var label = eliminated ? "Out" : (sittingOut ? "Sitting out" : (folded ? "Folded" : (allIn ? "All in" : "")));
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
       var seatNo = String(Math.floor(number(rawSeatNo, i)));
@@ -1923,22 +2005,27 @@
       }
       var exposed = Boolean(cards.length && !isMe && (fx.revealed[id] || seat.cards || seat.revealed_cards));
       var oddsRow = oddsByPlayer[id];
-      if (oddsRow && cards.length && !folded && stack <= 0) { allIn = true; label = "All in"; }
-      if (allIn && stack <= 0) classes += " is-all-in is-zero-stack-all-in";
-      var activeShowdown = String(view.street || "").toLowerCase() === "showdown";
+      if (oddsRow && cards.length && !folded && stack <= 0) { allIn = true; label = eliminated ? "Out" : "All in"; }
+      if (allIn && stack <= 0 && !eliminated) classes += " is-all-in is-zero-stack-all-in";
       var showdownRow = Array.isArray(view.showdown) ? view.showdown.find(function (row) {
         return String(row && row.player_id || "") === id;
       }) : null;
       var equityHtml = "";
-      if (activeShowdown) {
+      if (showdown) {
         var winner = Array.isArray(view.winners) ? view.winners.find(function (row) {
           return String(row && row.player_id || "") === id;
         }) : null;
         var winnings = number(winner && winner.amount,
           number(view.pot_winnings && view.pot_winnings[id], number(showdownRow && showdownRow.payout, 0)));
         if (winnings > 0) {
-          equityHtml = '<div class="seat-equity is-result" data-player-id="' + esc(id) + '" title="' + esc("Winner · " + tableChips(winnings, view)) + '">' +
-            '<span class="seat-equity-result">Winner</span><strong>+' + esc(tableChips(winnings, view)) + '</strong></div>';
+          winnerFound = true;
+          var exactAmount = tableChips(winnings, view);
+          var winnerName = String(winner && winner.name || seat.name || "Player");
+          var winnerRank = String(winner && (winner.rank || winner.hand_name) || "");
+          equityHtml = '<div class="seat-result is-winner' + (animateWinners ? ' winner-arrive' : '') + '"' +
+            (animateWinners ? ' style="animation-delay:' + winnerAnimationDelay + 'ms"' : '') +
+            ' data-winner-hand="' + esc(winnerHand) + '" data-player-id="' + esc(id) + '" aria-label="' + esc("Winner " + winnerName + ", plus " + exactAmount + (winnerRank ? ", " + winnerRank : "")) + '" title="' + esc("Winner · +" + exactAmount + (winnerRank ? " · " + winnerRank : "")) + '">' +
+            '<span class="seat-result-label">Won</span><strong class="seat-result-amount">+' + esc(winnerChipValue(winnings, view)) + '</strong></div>';
         }
       } else if (oddsRow && cards.length && (isMe || exposed)) {
         var winPct = number(oddsRow.win_pct, 0);
@@ -1972,7 +2059,7 @@
       if (cards.length) {
         cardRowClass += exposed ? " is-exposed" : " is-viewer-cards";
         cardContents = cards.map(function (card) { return playingCardHTML(card, true); }).join("");
-      } else if (currentHand && !folded && (stack > 0 || allIn)) {
+      } else if (currentHand && !folded && !eliminated && (stack > 0 || allIn)) {
         cardContents = hiddenCardHTML(true, false) + hiddenCardHTML(true, false);
       } else {
         cardRowClass += " is-empty";
@@ -1981,30 +2068,34 @@
       var cardHtml = '<div class="' + cardRowClass + '"' + (cardRowClass.indexOf("is-empty") >= 0 ? ' aria-hidden="true"' : '') + '>' + cardContents + '</div>';
 
       var tags = (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '') +
-        (sittingOut ? '<span class="seat-label sit-out-label">SITTING OUT</span>' : '');
+        (sittingOut ? '<span class="seat-label sit-out-label">SITTING OUT</span>' : '') +
+        (eliminated ? '<span class="seat-label eliminated-label">OUT</span>' : '');
       var tagsMarkup = '<div class="seat-tags"' + (tags ? '' : ' aria-hidden="true"') + '>' + tags + '</div>';
       var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
-      html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(i + 1) + ', ' + esc(seatName) + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
-        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' +
-        tagsMarkup +
-        stackHtml +
-        '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        cardHtml + equityHtml +
-      '</div>';
-      if (dealer) html += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
+      var markerHtml = "";
+      if (dealer) markerHtml += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
       if (actionState) {
         var turnClockMarkup = acting && state.seatTurnClockKey
           ? '<span class="seat-turn-clock" data-turn-clock-seat="' + esc(seatNo) + '" aria-label="Time left">' + esc(turnClockLabel()) + '</span>'
           : '';
-        html += '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionState.label) + '"><span class="seat-action-full">' + esc(actionState.label) + '</span><span class="seat-action-short">' + esc(actionState.compactLabel || actionState.label) + '</span>' + turnClockMarkup + '</span>';
+        markerHtml += '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionState.label) + '"><span class="seat-action-full">' + esc(actionState.label) + '</span><span class="seat-action-short">' + esc(actionState.compactLabel || actionState.label) + '</span>' + turnClockMarkup + '</span>';
       }
       var wager = number(fx.displayWagers[seatNo], 0);
       if (!fx.eventAware && !wager) wager = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
       if (wager > 0) {
-        html += '<span class="seat-wager" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + esc(tableChips(wager)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChips(wager)) + '</strong></span>';
+        markerHtml += '<span class="seat-wager" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + esc(tableChips(wager)) + '" title="Street wager ' + esc(tableChips(wager)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChipValue(wager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
       } else if (number(pendingWagers[seatNo], 0) > 0) {
-        html += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-hidden="true"><span class="wager-stack"><i></i><i></i><i></i></span><strong>' + esc(tableChips(pendingWagers[seatNo])) + '</strong></span>';
+        var pendingWager = number(pendingWagers[seatNo], 0);
+        markerHtml += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-label="Pending street wager ' + esc(tableChips(pendingWager, view)) + '" title="Pending street wager ' + esc(tableChips(pendingWager, view)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChipValue(pendingWager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
       }
+      var markerLane = '<div class="seat-local-markers"' + (markerHtml ? '' : ' aria-hidden="true"') + '>' + markerHtml + '</div>';
+      html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
+        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' +
+        tagsMarkup +
+        stackHtml +
+        '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
+        cardHtml + markerLane + equityHtml +
+      '</div>';
     }
 
     var grid = byId("seat-grid");
@@ -2016,12 +2107,25 @@
       var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });
     }
+    if (winnerFound && state.winnerAnimationKey !== winnerAnimationKey) {
+      state.winnerAnimationKey = winnerAnimationKey;
+      state.winnerAnimationStartedAt = monotonicNow();
+      state.winnerAnimationDurationMs = 720;
+      var animatedWinner = grid.querySelector(".seat-result.winner-arrive");
+      if (animatedWinner && window.getComputedStyle) {
+        var durationValue = String(window.getComputedStyle(animatedWinner).animationDuration || "").split(",")[0].trim();
+        var durationNumber = parseFloat(durationValue);
+        if (Number.isFinite(durationNumber) && durationNumber > 0) {
+          state.winnerAnimationDurationMs = durationValue.endsWith("ms") ? durationNumber : durationNumber * 1000;
+        }
+      }
+    }
     var compact = window.innerWidth <= 820 || grid.clientWidth < 500;
-    felt.classList.toggle("exposed-ring", positionCount >= 5 && Boolean((view.runout_odds || []).length));
+    felt.classList.toggle("exposed-ring", max >= 5 && Boolean((view.runout_odds || []).length));
     felt.dataset.compactLayout = compact ? "true" : "false";
-    felt.classList.toggle("is-crowded", positionCount >= 7);
-    felt.classList.toggle("is-playing", currentHand || view.status === "completed");
-    felt.dataset.seatCount = String(positionCount);
+    felt.classList.toggle("is-crowded", max >= 7);
+    felt.classList.toggle("is-playing", currentHand || view.status === "completed" || view.status === "ended");
+    felt.dataset.seatCount = String(max);
     var gridRect = grid.getBoundingClientRect();
     grid.querySelectorAll(".seat-card").forEach(function (node) {
       var relativeIndex = number(node.getAttribute("data-relative-seat"), 0);
@@ -2043,85 +2147,34 @@
       node.style.top = y.toFixed(2) + "%";
     });
     var blockers = [];
-    if ((currentHand || view.status === "completed" || view.status === "lobby") && window.SitNgoLayout && gridRect.width && gridRect.height) {
+    if ((currentHand || view.status === "completed" || view.status === "ended" || view.status === "lobby") &&
+        window.SitNgoLayout && gridRect.width && gridRect.height) {
       var avoid = ["board-cards", "board-caption", "pot-display", "street-label", "blind-strip"].map(function (id) {
         return boxForNode(byId(id), gridRect);
-      }).filter(Boolean).concat(blockers);
+      }).filter(Boolean);
       var nodes = Array.from(grid.querySelectorAll(".seat-card"));
-      var seatsToFit = nodes.map(function (node,i) {
+      var seatsToFit = nodes.map(function (node, i) {
         var b = boxForNode(node, gridRect);
-        var relativeIndex = number(node.getAttribute("data-relative-seat"), i);
-        return {id:i,index:relativeIndex,relativeIndex:relativeIndex,x:(b.left+b.right)/2,y:(b.top+b.bottom)/2,
-          width:b.right-b.left,height:b.bottom-b.top,hero:node.classList.contains("is-me")};
+        var stableIndex = number(node.getAttribute("data-relative-seat"), i);
+        return { id: i, index: stableIndex, relativeIndex: stableIndex, x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2,
+          width: b.right - b.left, height: b.bottom - b.top, hero: node.classList.contains("is-me") };
       });
-      var fitted = window.SitNgoLayout.fit({width:gridRect.width,height:gridRect.height,seats:seatsToFit,blockers:avoid});
-      fitted.forEach(function (p,i) {
+      var fitted = window.SitNgoLayout.fit({ width: gridRect.width, height: gridRect.height, seats: seatsToFit, blockers: avoid });
+      fitted.forEach(function (point, i) {
         if (nodes[i].classList.contains("is-me")) return;
-        nodes[i].style.left = (p.x/gridRect.width*100).toFixed(3) + "%";
-        nodes[i].style.top = (p.y/gridRect.height*100).toFixed(3) + "%";
+        nodes[i].style.left = (point.x / gridRect.width * 100).toFixed(3) + "%";
+        nodes[i].style.top = (point.y / gridRect.height * 100).toFixed(3) + "%";
       });
     }
-    grid.querySelectorAll(".seat-card").forEach(function (node) {
-      var box = boxForNode(node, gridRect);
-      if (box) blockers.push(box);
-    });
-    ["board-caption", "board-cards", "pot-display", "street-label", "blind-strip"].forEach(function (id) {
-      var box = boxForNode(byId(id), gridRect);
-      if (box) blockers.push(box);
-    });
-    grid.querySelectorAll(".seat-equity").forEach(function (node) {
-      if (node.classList.contains("is-empty")) return;
-      var box = boxForNode(node, gridRect);
-      if (box) blockers.push(box);
-    });
-
-    var seatNodeFor = function (seatNo) {
-      return grid.querySelector('.seat-card[data-seat-no="' + seatNo + '"]');
-    };
-    var seatActionNodes = Array.prototype.slice.call(grid.querySelectorAll(".seat-action"));
-    function placeActionBadge(node) {
-      var seatNo = String(node.getAttribute("data-action-seat"));
-      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
-      if (!spot) {
-        node.classList.add("is-unplaced");
-        return false;
-      }
-      addLayerPoint(node, gridRect, spot.x, spot.y);
-      blockers.push(spot.box);
-      return true;
-    }
-    seatActionNodes.filter(function (node) { return node.classList.contains("kind-turn"); }).forEach(placeActionBadge);
-
-    grid.querySelectorAll(".dealer-marker").forEach(function (node) {
-      var seatNo = String(node.getAttribute("data-marker-seat"));
-      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
-      if (!spot) {
-        node.classList.add("is-unplaced");
-        return;
-      }
-      addLayerPoint(node, gridRect, spot.x, spot.y);
-      blockers.push(spot.box);
-    });
 
     fx.wagerPositions = {};
-    Array.prototype.slice.call(grid.querySelectorAll(".seat-wager")).sort(function (a, b) {
-      return number(a.getAttribute("data-seat-no"), 0) - number(b.getAttribute("data-seat-no"), 0);
-    }).forEach(function (node) {
+    grid.querySelectorAll(".seat-wager").forEach(function (node) {
       var seatNo = String(node.getAttribute("data-seat-no"));
-      var spot = findBadgeSpot(node, seatNodeFor(seatNo), gridRect, blockers);
-      if (!spot) {
-        node.classList.add("is-unplaced");
-        return;
+      var rect = node.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        fx.wagerPositions[seatNo] = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
       }
-      addLayerPoint(node, gridRect, spot.x, spot.y);
-      fx.wagerPositions[seatNo] = { x: gridRect.left + spot.x, y: gridRect.top + spot.y };
-      blockers.push(spot.box);
     });
-
-    seatActionNodes.filter(function (node) { return !node.classList.contains("kind-turn"); })
-      .sort(function (a, b) {
-        return Number(b.classList.contains("kind-turn")) - Number(a.classList.contains("kind-turn"));
-      }).forEach(placeActionBadge);
   }
 
   function renderBoard(view) {
@@ -2162,14 +2215,20 @@
       var handBig = number(handBlinds.big, b.big);
       blindsLabel = tableChipValue(handSmall, view) + " / " + tableChipValue(handBig, view) + " " + blindUnit;
     }
-    var levelNote = view.paused ? "Paused" : (b.pending ? "Next hand" : (remaining >= 0 ? "Next in " + formatClock(remaining) : "Countdown unavailable"));
+    var terminal = ["completed", "ended", "cancelled", "expired"].indexOf(String(view.status || "")) >= 0;
+    var levelNote = terminal ? "Final level" : (view.paused ? "Paused" : (b.pending ? "Next hand" : (remaining >= 0 ? "Next level" : "Countdown unavailable")));
     var entries = [
       { label: "Level", value: String(b.level), note: levelNote },
       { label: "Blinds", value: blindsLabel, note: tableUsesBigBlinds(view) ? "Small / big · BB" : "Small / big" }
     ];
     byId("blind-strip").innerHTML = entries.map(function (entry) {
+      if (entry.label === "Level") {
+        return '<div class="blind-tile blind-level-tile"><span>Level</span><strong>' + esc(entry.value) +
+          '</strong><em>' + esc(entry.note) + '</em><span id="blind-level-countdown" class="blind-level-countdown" role="timer" aria-live="off">--:--</span></div>';
+      }
       return '<div class="blind-tile"><span>' + esc(entry.label) + '</span><strong>' + esc(entry.value) + '</strong><em>' + esc(entry.note) + '</em></div>';
     }).join("");
+    syncBlindLevelClock(view, b);
   }
 
   function renderLog(view) {
@@ -2495,14 +2554,290 @@
     }
   }
 
+
+  function adminHistoryDate(value) {
+    if (value == null || value === "") return "Date unavailable";
+    var stamp = typeof value === "number" ? value : Date.parse(value);
+    if (!Number.isFinite(stamp)) return "Date unavailable";
+    if (stamp > 0 && stamp < 100000000000) stamp *= 1000;
+    return new Date(stamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  function renderAdminHistory() {
+    var list = byId("admin-history-list");
+    if (!list) return;
+    var toolbar = '<div class="admin-history-toolbar"><span class="muted">' +
+      esc(state.adminHistory.length + (state.adminHistory.length === 1 ? " archived game" : " archived games")) +
+      '</span><button class="button button-outline button-small" type="button" data-admin-history-refresh>Refresh</button></div>';
+    var entries = state.adminHistory.map(function (game) {
+      var participants = Array.isArray(game.participants) ? game.participants.length :
+        (Array.isArray(game.results) ? game.results.length : (Array.isArray(game.standings) ? game.standings.length : 0));
+      var hands = number(game.hand_count, 0);
+      var date = adminHistoryDate(game.started || game.created);
+      return '<article class="admin-history-entry" data-admin-history-id="' + esc(game.id) + '">' +
+        '<div class="admin-history-entry-copy"><h3>' + esc(game.name || "Past game") + '</h3>' +
+        '<p class="muted">' + esc(statusName(game.status)) + ' · ' + esc(date) + ' · ' +
+        esc(participants) + (participants === 1 ? ' player · ' : ' players · ') + esc(hands) +
+        (hands === 1 ? ' saved hand' : ' saved hands') + '</p></div>' +
+        '<button class="button button-outline button-small" type="button" data-admin-history-view="' +
+        esc(game.id) + '">Inspect</button></article>';
+    }).join("");
+    var empty = state.adminHistory.length ? "" : '<p class="muted">No past games are archived yet.</p>';
+    var error = state.adminHistoryError ? '<p class="muted admin-history-error" role="alert">' + esc(state.adminHistoryError) + '</p>' : "";
+    var more = state.adminHistoryNextOffset == null ? "" :
+      '<button class="button button-quiet button-small" type="button" data-admin-history-more="' +
+      esc(state.adminHistoryNextOffset) + '">Load older games</button>';
+    var loading = state.adminHistoryLoading ? '<p class="muted admin-history-loading" role="status">Loading past games…</p>' : "";
+    list.innerHTML = toolbar + entries + empty + error + more + loading;
+  }
+
+  async function loadAdminHistory(offset, append) {
+    if (!state.isAdmin || state.adminHistoryLoading) return;
+    var pageOffset = Math.max(0, Math.floor(number(offset, 0)));
+    var shouldAppend = Boolean(append && pageOffset > 0);
+    var generation = ++state.adminHistoryListGeneration;
+    state.adminHistoryLoading = true;
+    state.adminHistoryError = "";
+    var list = byId("admin-history-list");
+    list.setAttribute("aria-busy", "true");
+    if (!shouldAppend) {
+      state.adminHistory = [];
+      state.adminHistoryNextOffset = null;
+      state.adminHistoryError = "";
+      renderAdminHistory();
+    } else {
+      renderAdminHistory();
+    }
+    try {
+      var data = await request("/admin/history" + (pageOffset ? "?offset=" + encodeURIComponent(pageOffset) : ""));
+      if (generation !== state.adminHistoryListGeneration || !state.isAdmin) return;
+      var rows = Array.isArray(data.tournaments) ? data.tournaments : [];
+      if (shouldAppend) {
+        var known = Object.create(null);
+        state.adminHistory.forEach(function (game) { known[String(game.id)] = true; });
+        rows.forEach(function (game) {
+          if (!known[String(game.id)]) state.adminHistory.push(game);
+        });
+      } else {
+        state.adminHistory = rows;
+      }
+      state.adminHistoryNextOffset = data.next_offset == null ? null : Math.max(0, Math.floor(number(data.next_offset, 0)));
+      renderAdminHistory();
+    } catch (err) {
+      if (generation === state.adminHistoryListGeneration) {
+        state.adminHistoryError = err.message || (shouldAppend ? "Could not load more past games." : "Could not load past games.");
+      }
+    } finally {
+      if (generation === state.adminHistoryListGeneration) {
+        state.adminHistoryLoading = false;
+        list.removeAttribute("aria-busy");
+        renderAdminHistory();
+      }
+    }
+  }
+
+  function renderAdminHistoryDetail() {
+    var detail = state.adminHistoryDetail;
+    if (!detail) return;
+    var tournament = detail.tournament || {};
+    var content = byId("admin-history-content");
+    var status = statusName(tournament.status);
+    var date = adminHistoryDate(tournament.started || tournament.created);
+    var results = Array.isArray(tournament.results) && tournament.results.length
+      ? tournament.results
+      : (Array.isArray(tournament.standings) ? tournament.standings : []);
+    var participants = Array.isArray(tournament.participants) ? tournament.participants : [];
+    var participantNames = participants.map(function (participant) {
+      return String(participant && (participant.name || participant.player_name) || participant || "");
+    }).filter(Boolean);
+    var hands = Array.isArray(detail.hands) ? detail.hands : [];
+    var tournamentId = String(tournament.id || state.adminHistoryDetailId);
+    byId("admin-history-title").textContent = tournament.name || "Past game";
+    var meta = '<div class="admin-history-game-meta"><p>' + esc(status) + ' · ' + esc(date) + ' · ' +
+      esc(number(tournament.hand_count, hands.length)) + ' saved hands</p>' +
+      (participantNames.length ? '<p>Players: ' + esc(participantNames.join(", ")) + '</p>' : '') +
+      (results.length ? '<section class="admin-history-results"><h3>Final standings</h3><p>' + historyResults(results) + '</p></section>' :
+        '<p class="muted">No final standings were recorded for this game.</p>') +
+      '<button class="button button-danger button-small" type="button" data-admin-history-delete="' +
+      esc(tournamentId) + '">Delete past game</button></div>';
+    var handMarkup = hands.map(historyHand).join("");
+    var noHands = hands.length ? "" : '<p class="muted">No saved hands for this game.</p>';
+    var more = detail.nextOffset == null ? "" :
+      '<button class="button button-outline button-small" type="button" data-admin-history-hand-more="' +
+      esc(detail.nextOffset) + '">Load more hands</button>';
+    var error = state.adminHistoryDetailError ? '<p class="muted admin-history-detail-error" role="alert">' + esc(state.adminHistoryDetailError) + '</p>' : "";
+    var loading = state.adminHistoryDetailLoading ? '<p class="muted" role="status">Loading hands…</p>' : "";
+    content.innerHTML = meta + handMarkup + noHands + error + more + loading;
+  }
+
+  async function loadAdminHistoryDetail(id, offset, append) {
+    if (!state.isAdmin || state.adminHistoryDetailLoading || !id) return;
+    var gameId = String(id);
+    var pageOffset = Math.max(0, Math.floor(number(offset, 0)));
+    var shouldAppend = Boolean(append && pageOffset > 0 && state.adminHistoryDetail);
+    var generation = ++state.adminHistoryDetailGeneration;
+    state.adminHistoryDetailLoading = true;
+    state.adminHistoryDetailError = "";
+    var content = byId("admin-history-content");
+    content.setAttribute("aria-busy", "true");
+    if (!shouldAppend) content.innerHTML = '<p class="muted" role="status">Loading past game…</p>';
+    try {
+      var path = "/admin/history/" + encodeURIComponent(gameId) +
+        (pageOffset ? "?offset=" + encodeURIComponent(pageOffset) : "");
+      var data = await request(path);
+      if (generation !== state.adminHistoryDetailGeneration || !state.isAdmin ||
+          !byId("admin-history-dialog").open || state.adminHistoryDetailId !== gameId) return;
+      var tournament = data.tournament || {};
+      var fetchedHands = Array.isArray(data.hands) ? data.hands : [];
+      var previousHands = shouldAppend && state.adminHistoryDetail ? state.adminHistoryDetail.hands : [];
+      state.adminHistoryDetail = {
+        tournament: tournament,
+        hands: previousHands.concat(fetchedHands),
+        nextOffset: data.next_offset == null ? null : Math.max(0, Math.floor(number(data.next_offset, 0)))
+      };
+      renderAdminHistoryDetail();
+    } catch (err) {
+      if (generation === state.adminHistoryDetailGeneration) {
+        state.adminHistoryDetailError = err.message || "Could not inspect this past game.";
+        if (!state.adminHistoryDetail) content.textContent = state.adminHistoryDetailError;
+      }
+    } finally {
+      if (generation === state.adminHistoryDetailGeneration) {
+        state.adminHistoryDetailLoading = false;
+        content.removeAttribute("aria-busy");
+        if (state.adminHistoryDetail) renderAdminHistoryDetail();
+      }
+    }
+  }
+
+  function inspectAdminHistory(id, trigger) {
+    if (!state.isAdmin || !id) return;
+    state.adminHistoryDetailId = String(id);
+    state.adminHistoryDetail = null;
+    state.adminHistoryTrigger = trigger || null;
+    state.adminHistoryDeleteTarget = null;
+    byId("admin-history-title").textContent = "Loading past game";
+    byId("admin-history-content").hidden = false;
+    byId("admin-history-content").textContent = "Loading past game…";
+    byId("admin-history-delete-step").hidden = true;
+    var dialog = byId("admin-history-dialog");
+    if (!dialog.open) dialog.showModal();
+    byId("admin-history-close").focus();
+    loadAdminHistoryDetail(state.adminHistoryDetailId, 0, false);
+  }
+
+  function closeAdminHistoryDialog(restoreFocus) {
+    var dialog = byId("admin-history-dialog");
+    var trigger = state.adminHistoryTrigger;
+    state.adminHistoryDetailGeneration += 1;
+    state.adminHistoryDetailLoading = false;
+    state.adminHistoryDetail = null;
+    state.adminHistoryDetailError = "";
+    state.adminHistoryDetailId = "";
+    state.adminHistoryDeleteTarget = null;
+    if (dialog && dialog.open) dialog.close();
+    if (byId("admin-history-content")) {
+      byId("admin-history-content").hidden = false;
+      byId("admin-history-content").replaceChildren();
+      byId("admin-history-content").removeAttribute("aria-busy");
+    }
+    if (byId("admin-history-delete-step")) byId("admin-history-delete-step").hidden = true;
+    if (restoreFocus) {
+      var focusTarget = trigger && trigger.isConnected ? trigger : byId("admin-history-details").querySelector("summary");
+      if (focusTarget) focusTarget.focus({ preventScroll: true });
+    }
+    state.adminHistoryTrigger = null;
+  }
+
+  function beginAdminHistoryDelete(id) {
+    if (!state.isAdmin || !state.adminHistoryDetail) return;
+    var tournament = state.adminHistoryDetail.tournament || {};
+    var gameId = String(tournament.id || state.adminHistoryDetailId);
+    if (id && String(id) !== gameId) return;
+    state.adminHistoryDeleteTarget = {
+      id: gameId,
+      name: String(tournament.name || "Past game"),
+      status: String(tournament.status || "")
+    };
+    byId("admin-history-content").hidden = true;
+    byId("admin-history-delete-name").textContent = state.adminHistoryDeleteTarget.name;
+    var error = byId("admin-history-delete-step").querySelector(".admin-history-delete-error");
+    if (error) error.remove();
+    byId("admin-history-delete-step").hidden = false;
+    byId("admin-history-delete-cancel").focus();
+  }
+
+  function cancelAdminHistoryDelete() {
+    if (state.adminHistoryDeleting) return;
+    state.adminHistoryDeleteTarget = null;
+    byId("admin-history-delete-step").hidden = true;
+    byId("admin-history-content").hidden = false;
+    var deleteButton = byId("admin-history-content").querySelector("[data-admin-history-delete]");
+    if (deleteButton) deleteButton.focus();
+  }
+
+  async function confirmAdminHistoryDelete() {
+    var target = state.adminHistoryDeleteTarget;
+    if (!state.isAdmin || !target || state.adminHistoryDeleting) return;
+    var targetId = String(target.id);
+    var detailGeneration = state.adminHistoryDetailGeneration;
+    var adminId = String(state.player && state.player.id || "");
+    var authProof = String(state.sessionProof || "");
+    state.adminHistoryDeleting = true;
+    var button = byId("admin-history-delete-confirm");
+    button.disabled = true;
+    var step = byId("admin-history-delete-step");
+    var error = step.querySelector(".admin-history-delete-error");
+    if (error) error.remove();
+    try {
+      await mutate("/admin/history/" + encodeURIComponent(targetId) + "/delete", { confirm_delete: true });
+      if (!state.isAdmin || String(state.player && state.player.id || "") !== adminId ||
+          String(state.sessionProof || "") !== authProof) return;
+      state.adminHistory = state.adminHistory.filter(function (game) {
+        return String(game.id) !== targetId;
+      });
+      state.adminHistoryNextOffset = null;
+      state.adminTables = state.adminTables.filter(function (table) {
+        return String(table.id) !== targetId;
+      });
+      renderAdminTables();
+      var sameConfirmation = state.adminHistoryDetailId === targetId &&
+        state.adminHistoryDetailGeneration === detailGeneration &&
+        String(state.adminHistoryDeleteTarget && state.adminHistoryDeleteTarget.id || "") === targetId;
+      if (sameConfirmation) {
+        state.adminHistoryTrigger = null;
+        closeAdminHistoryDialog(false);
+      }
+      await loadAdminHistory(0, false);
+      if (sameConfirmation) {
+        var summary = byId("admin-history-details").querySelector("summary");
+        if (summary) summary.focus({ preventScroll: true });
+      }
+    } catch (err) {
+      var sameConfirmation = state.adminHistoryDetailId === targetId &&
+        state.adminHistoryDetailGeneration === detailGeneration &&
+        String(state.adminHistoryDeleteTarget && state.adminHistoryDeleteTarget.id || "") === targetId;
+      if (sameConfirmation) {
+        var message = document.createElement("p");
+        message.className = "muted admin-history-delete-error";
+        message.setAttribute("role", "alert");
+        message.textContent = err.message || "Could not delete this past game.";
+        step.insertBefore(message, step.querySelector(".admin-history-delete-actions"));
+      }
+    } finally {
+      state.adminHistoryDeleting = false;
+      if (button.isConnected) button.disabled = false;
+    }
+  }
+
   function ensureActionControls() {
     var controls = byId("action-controls");
     if (!controls || controls.dataset.initialized === "true") return;
     controls.innerHTML =
       '<div class="action-buttons" role="group" aria-label="Poker actions">' +
-        '<button class="button button-quiet" type="button" data-poker-action="fold">Fold</button>' +
-        '<button class="button button-outline call-button" type="button" data-poker-action="check">Check</button>' +
-        '<button class="button button-primary" type="button" data-poker-action="raise_to">Bet</button>' +
+        '<button class="button button-quiet" type="button" data-action-slot="fold" data-poker-action="fold"><span class="action-button-label">Fold</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
+        '<button class="button button-outline call-button" type="button" data-action-slot="call" data-poker-action="check"><span class="action-button-label">Check</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
+        '<button class="button button-primary" type="button" data-action-slot="raise" data-poker-action="raise_to"><span class="action-button-label">Bet</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
       '</div>' +
       '<div class="raise-control" role="group" aria-labelledby="raise-label">' +
         '<label id="raise-label" for="raise-amount">Bet or raise amount</label>' +
@@ -2515,6 +2850,30 @@
         '<span class="raise-range" id="raise-range"></span>' +
       '</div>';
     controls.dataset.initialized = "true";
+  }
+
+  function setPrimaryActionContent(button, label, amount, view, ariaLabel) {
+    if (!button) return;
+    var labelNode = button.querySelector(".action-button-label");
+    var valueNode = button.querySelector(".action-button-value");
+    var amountNode = button.querySelector(".action-button-amount");
+    var unitNode = button.querySelector(".action-button-unit");
+    if (labelNode) labelNode.textContent = label;
+    if (amount == null || !Number.isFinite(Number(amount))) {
+      if (valueNode) valueNode.hidden = true;
+      if (amountNode) amountNode.textContent = "";
+      if (unitNode) unitNode.textContent = "";
+      button.classList.add("is-no-amount");
+    } else {
+      if (valueNode) valueNode.hidden = false;
+      if (amountNode) amountNode.textContent = tableChipValue(Number(amount), view);
+      if (unitNode) {
+        unitNode.textContent = tableChipUnit(view);
+        unitNode.classList.toggle("is-compact-unit", !tableUsesBigBlinds(view));
+      }
+      button.classList.remove("is-no-amount");
+    }
+    button.setAttribute("aria-label", ariaLabel);
   }
 
   function updateRaisePreview() {
@@ -2533,7 +2892,7 @@
     var rangeAvailable = viewer.raise_rights !== false && stack > 0 &&
       max > currentBet && min <= max;
     var valid = rangeAvailable && Number.isInteger(target) && target >= min && target <= max;
-    var button = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
+    var button = byId("action-controls").querySelector('[data-action-slot="raise"]');
     var actionAllowed = viewerCanAct(view) && rangeAvailable;
     input.setAttribute("aria-valuetext", !rangeAvailable
       ? "No legal bet or raise is available"
@@ -2541,9 +2900,12 @@
         ? actionName + " to " + actionChips(target) + " total; adds " + actionChips(Math.max(0, target - ownBet))
         : "Choose an amount from " + actionChips(min) + " to " + actionChips(max));
     if (button) {
-      var label = rangeAvailable && valid ? actionName + " to " + actionChips(target) : actionName;
-      button.textContent = label;
-      button.setAttribute("aria-label", rangeAvailable ? label : actionName + " unavailable");
+      var allInTarget = rangeAvailable && valid && Math.floor(ownBet + stack) <= target;
+      var visibleLabel = allInTarget ? "All in" : actionName;
+      var exactLabel = rangeAvailable && valid
+        ? actionName + " to " + actionChips(target) + (allInTarget ? ", all in" : "")
+        : actionName + " unavailable";
+      setPrimaryActionContent(button, visibleLabel, rangeAvailable && valid ? target : null, view, exactLabel);
       button.disabled = Boolean(state.actionPending || state.actionSubmittedKey === actionTokenKey(view) ||
         !actionAllowed || !valid);
     }
@@ -2558,6 +2920,12 @@
     var controls = byId("action-controls");
     if (!panel || !controls) return;
     ensureActionControls();
+    var playerPrefs = globalBetPreferences();
+    var presetGroup = controls.querySelector(".raise-presets");
+    var reservedPresetSlots = Math.max(1,
+      Array.isArray(playerPrefs.preflop_bb) ? playerPrefs.preflop_bb.length : 0,
+      Array.isArray(playerPrefs.postflop_percent) ? playerPrefs.postflop_percent.length : 0);
+    if (presetGroup) presetGroup.style.setProperty("--preset-slots", String(reservedPresetSlots));
 
     var viewer = view.viewer || {};
     var seat = viewerSeat(view);
@@ -2575,7 +2943,7 @@
       state.actionPending = null;
     }
     panel.hidden = !panelVisible;
-    controls.hidden = !playing || !panelVisible;
+    controls.hidden = !panelVisible;
     if (finishedStatus) {
       finishedStatus.hidden = !completed || !panelVisible;
       finishedStatus.textContent = completed && panelVisible
@@ -2586,6 +2954,9 @@
     }
     panel.setAttribute("aria-busy", String(Boolean(state.actionPending || state.actionSubmittedKey === currentKey)));
     if (!playing || !panelVisible) {
+      setPrimaryActionContent(controls.querySelector('[data-action-slot="fold"]'), "Fold", null, view, "Fold unavailable");
+      setPrimaryActionContent(controls.querySelector('[data-action-slot="call"]'), "Check", null, view, "Check unavailable");
+      setPrimaryActionContent(controls.querySelector('[data-action-slot="raise"]'), "Bet", null, view, "Bet unavailable");
       controls.querySelectorAll("button, input").forEach(function (control) { control.disabled = true; });
       return;
     }
@@ -2616,7 +2987,6 @@
     var preflop = street ? street === "preflop" : cardArray(view.board).length === 0;
     var bigBlind = Math.max(1, number(blindParts(view).big, number(view.config && view.config.big_blind, 1)));
     var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
-    var playerPrefs = globalBetPreferences();
     var presetSpecs = preflop
       ? playerPrefs.preflop_bb.map(function (bb) {
         return { label: Number.isInteger(bb) ? bb.toFixed(1) + " BB" : String(bb) + " BB", bb: bb };
@@ -2638,7 +3008,6 @@
           (preflop ? "" : " after calling") + (adjusted ? "; adjusted to the legal range" : "")
       };
     });
-    var presetGroup = controls.querySelector(".raise-presets");
     while (presetGroup.children.length < presetSpecs.length) {
       var presetButton = document.createElement("button");
       presetButton.type = "button";
@@ -2654,16 +3023,19 @@
     if (!Number.isInteger(draft) || draft < rangeMin || draft > rangeMax) draft = suggested;
     if (state.raiseDraftValue !== null && String(draft) !== state.raiseDraftValue) state.raiseDraftValue = String(draft);
 
-    var callButton = controls.querySelector('[data-poker-action="check"], [data-poker-action="call"]');
-    var foldButton = controls.querySelector('[data-poker-action="fold"]');
-    var raiseButton = controls.querySelector('[data-poker-action="raise_to"]');
+    var callButton = controls.querySelector('[data-action-slot="call"]');
+    var foldButton = controls.querySelector('[data-action-slot="fold"]');
+    var raiseButton = controls.querySelector('[data-action-slot="raise"]');
     var input = byId("raise-amount");
     var blocked = Boolean(state.actionPending || state.actionSubmittedKey === currentKey);
     if (foldButton) foldButton.disabled = blocked || !canAct || toCall <= 0;
     if (callButton) {
       callButton.setAttribute("data-poker-action", toCall > 0 ? "call" : "check");
-      callButton.textContent = toCall > 0 ? "Call " + actionChips(callAmount) : "Check";
-      callButton.setAttribute("aria-label", toCall > 0 ? "Call " + actionChips(callAmount) : "Check");
+      var callLabel = toCall > 0 ? "Call" : "Check";
+      var callAria = toCall > 0
+        ? "Call " + actionChips(callAmount) + (callAmount >= stack && stack > 0 ? ", all in" : "")
+        : "Check";
+      setPrimaryActionContent(callButton, callLabel, toCall > 0 ? callAmount : null, view, callAria);
       callButton.disabled = blocked || !canAct;
     }
 
@@ -2678,10 +3050,12 @@
       : "No legal bet or raise is available");
     if (raiseButton) {
       var raiseActionName = currentBet > 0 ? "Raise" : "Bet";
-      raiseButton.textContent = rangeAvailable ? raiseActionName + " to " + actionChips(draft) : raiseActionName;
-      raiseButton.setAttribute("aria-label", rangeAvailable
-        ? raiseActionName + " to " + actionChips(draft)
-        : raiseActionName + " unavailable");
+      var raiseAllIn = rangeAvailable && Math.floor(ownBet + stack) <= draft;
+      setPrimaryActionContent(raiseButton, raiseAllIn ? "All in" : raiseActionName,
+        rangeAvailable ? draft : null, view,
+        rangeAvailable
+          ? raiseActionName + " to " + actionChips(draft) + (raiseAllIn ? ", all in" : "")
+          : raiseActionName + " unavailable");
     }
 
     controls.querySelectorAll("[data-raise-preset]").forEach(function (preset, index) {
@@ -3018,6 +3392,7 @@
       byId("results-panel").hidden = true;
       byId("reopen-results-button").hidden = true;
       clearSeatTurnClock();
+      clearBlindLevelClock();
       document.body.classList.remove("gameplay-active");
       clearBlindAnnouncement(true);
       clearEliminationAnnouncement();
@@ -3643,6 +4018,38 @@
     else if (button.hasAttribute("data-admin-add-bot")) mutateAdminBot(button, true);
     else if (button.hasAttribute("data-admin-remove-bot")) mutateAdminBot(button, false);
   });
+  byId("admin-history-details").addEventListener("toggle", function () {
+    if (byId("admin-history-details").open && state.isAdmin) loadAdminHistory(0, false);
+  });
+  byId("admin-history-list").addEventListener("click", function (event) {
+    var button = event.target.closest("button");
+    if (!button) return;
+    if (button.hasAttribute("data-admin-history-refresh")) loadAdminHistory(0, false);
+    else if (button.hasAttribute("data-admin-history-more")) {
+      loadAdminHistory(number(button.getAttribute("data-admin-history-more"), 0), true);
+    } else if (button.hasAttribute("data-admin-history-view")) {
+      inspectAdminHistory(button.getAttribute("data-admin-history-view"), button);
+    }
+  });
+  byId("admin-history-content").addEventListener("click", function (event) {
+    var button = event.target.closest("button");
+    if (!button) return;
+    if (button.hasAttribute("data-admin-history-delete")) {
+      beginAdminHistoryDelete(button.getAttribute("data-admin-history-delete"));
+    } else if (button.hasAttribute("data-admin-history-hand-more")) {
+      loadAdminHistoryDetail(state.adminHistoryDetailId,
+        number(button.getAttribute("data-admin-history-hand-more"), 0), true);
+    }
+  });
+  byId("admin-history-close").addEventListener("click", function () {
+    closeAdminHistoryDialog(true);
+  });
+  byId("admin-history-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeAdminHistoryDialog(true);
+  });
+  byId("admin-history-delete-cancel").addEventListener("click", cancelAdminHistoryDelete);
+  byId("admin-history-delete-confirm").addEventListener("click", confirmAdminHistoryDelete);
 
   function openTableSettingsDialog() {
     var view = state.tableView;
