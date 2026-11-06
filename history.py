@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 
 PAGE_SIZE = 20
@@ -32,7 +33,9 @@ def create_schema(conn):
             started REAL,
             completed REAL,
             results_json TEXT NOT NULL DEFAULT '[]',
-            standings_json TEXT NOT NULL DEFAULT '[]'
+            standings_json TEXT NOT NULL DEFAULT '[]',
+            config_json TEXT NOT NULL DEFAULT '{}',
+            prize_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS tournament_history_created
             ON tournament_history(created DESC);
@@ -47,6 +50,10 @@ def create_schema(conn):
             result_json TEXT NOT NULL DEFAULT '{}',
             events_complete INTEGER NOT NULL DEFAULT 1,
             events_coverage_start_seq INTEGER NOT NULL DEFAULT 1,
+            small_blind INTEGER,
+            big_blind INTEGER,
+            blind_level INTEGER,
+            button_player_id TEXT,
             UNIQUE(table_id, number)
         );
         CREATE INDEX IF NOT EXISTS hand_history_table_number
@@ -91,10 +98,23 @@ def create_schema(conn):
         conn.execute("ALTER TABLE hand_history ADD COLUMN events_complete INTEGER NOT NULL DEFAULT 1")
     if "events_coverage_start_seq" not in columns:
         conn.execute("ALTER TABLE hand_history ADD COLUMN events_coverage_start_seq INTEGER NOT NULL DEFAULT 1")
+    if "small_blind" not in columns:
+        conn.execute("ALTER TABLE hand_history ADD COLUMN small_blind INTEGER")
+    if "big_blind" not in columns:
+        conn.execute("ALTER TABLE hand_history ADD COLUMN big_blind INTEGER")
+    if "blind_level" not in columns:
+        conn.execute("ALTER TABLE hand_history ADD COLUMN blind_level INTEGER")
+    if "button_player_id" not in columns:
+        conn.execute("ALTER TABLE hand_history ADD COLUMN button_player_id TEXT")
+    tournament_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_history)")}
+    if "config_json" not in tournament_columns:
+        conn.execute("ALTER TABLE tournament_history ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'")
+    if "prize_json" not in tournament_columns:
+        conn.execute("ALTER TABLE tournament_history ADD COLUMN prize_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def backfill_tournaments(conn):
-    """Create history envelopes for pre-migration tables without changing them."""
+    """Create or refresh history snapshots from retained table state."""
     rows = conn.execute("SELECT id,owner_id,state,created,updated FROM tables").fetchall()
     for row in rows:
         try:
@@ -113,14 +133,86 @@ def backfill_tournaments(conn):
             ),
         )
         sync_state(conn, state, float(row["updated"]))
+        _backfill_hand_metadata(conn, row["id"], state.get("config") or {})
+
+
+def _backfill_hand_metadata(conn, table_id, config):
+    """Fill additive hand-header columns from saved events for older archives."""
+    small = config.get("small_blind") if type(config.get("small_blind")) is int else None
+    big = config.get("big_blind") if type(config.get("big_blind")) is int else None
+    level = 1
+    rows = conn.execute(
+        "SELECT * FROM hand_history WHERE table_id=? ORDER BY number",
+        (table_id,),
+    ).fetchall()
+    for row in rows:
+        events = conn.execute(
+            "SELECT payload_json FROM hand_history_events WHERE hand_id=? ORDER BY seq",
+            (row["hand_id"],),
+        ).fetchall()
+        parsed = [_loads(item["payload_json"], {}) for item in events]
+        parsed = [event for event in parsed if isinstance(event, dict)]
+        if type(row["small_blind"]) is int:
+            small = row["small_blind"]
+        if type(row["big_blind"]) is int:
+            big = row["big_blind"]
+        if type(row["blind_level"]) is int:
+            level = row["blind_level"]
+
+        button_id = row["button_player_id"]
+        if not button_id:
+            small_blind_id = next((
+                str(event.get("actor_id") or event.get("actor"))
+                for event in parsed
+                if event.get("type") == "action" and event.get("blind") == "small"
+                and (event.get("actor_id") or event.get("actor"))
+            ), None)
+            seated = conn.execute(
+                """SELECT player_id,seat_no FROM hand_history_players
+                   WHERE hand_id=? AND seat_no IS NOT NULL ORDER BY seat_no""",
+                (row["hand_id"],),
+            ).fetchall()
+            if small_blind_id and len(seated) == 2:
+                button_id = small_blind_id
+            elif small_blind_id and len(seated) > 2:
+                small_index = next(
+                    (index for index, item in enumerate(seated)
+                     if item["player_id"] == small_blind_id),
+                    None,
+                )
+                if small_index is not None:
+                    button_id = seated[(small_index - 1) % len(seated)]["player_id"]
+
+        conn.execute(
+            """UPDATE hand_history SET
+                 small_blind=COALESCE(small_blind,?),
+                 big_blind=COALESCE(big_blind,?),
+                 blind_level=COALESCE(blind_level,?),
+                 button_player_id=COALESCE(button_player_id,?)
+               WHERE hand_id=?""",
+            (small, big, level, button_id, row["hand_id"]),
+        )
+        for event in parsed:
+            if event.get("type") != "blind_level_updated":
+                continue
+            if type(event.get("small_blind")) is int:
+                small = event["small_blind"]
+            if type(event.get("big_blind")) is int:
+                big = event["big_blind"]
+            if type(event.get("level")) is int:
+                level = event["level"]
 
 
 def record_table_created(conn, state, owner_id, now):
     conn.execute(
         """INSERT INTO tournament_history
-           (table_id,owner_id,name,status,created,started,completed,results_json,standings_json)
-           VALUES(?,?,?,?,?,?,NULL,'[]','[]')""",
-        (state["id"], owner_id, state["name"], state["status"], now, state.get("started_at")),
+           (table_id,owner_id,name,status,created,started,completed,results_json,standings_json,config_json,prize_json)
+           VALUES(?,?,?,?,?,?,NULL,'[]','[]',?,?)""",
+        (
+            state["id"], owner_id, state["name"], state["status"], now,
+            state.get("started_at"), _dumps(state.get("config") or {}),
+            _dumps(state.get("prize") or {}),
+        ),
     )
 
 
@@ -172,20 +264,23 @@ def sync_state(conn, state, now):
     completed = now if state.get("status") == "completed" else None
     conn.execute(
         """INSERT INTO tournament_history
-           (table_id,owner_id,name,status,created,started,completed,results_json,standings_json)
-           VALUES(?,?,?,?,?,?,?,?,?)
+           (table_id,owner_id,name,status,created,started,completed,results_json,standings_json,config_json,prize_json)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(table_id) DO UPDATE SET
              name=excluded.name,
              status=excluded.status,
              started=COALESCE(tournament_history.started,excluded.started),
              completed=COALESCE(tournament_history.completed,excluded.completed),
              results_json=excluded.results_json,
-             standings_json=excluded.standings_json""",
+             standings_json=excluded.standings_json,
+             config_json=excluded.config_json,
+             prize_json=excluded.prize_json""",
         (
             table_id, state.get("host_id", ""), str(state.get("name") or "Tournament"),
             str(state.get("status") or "lobby"), created, started, completed,
             _dumps(state.get("results") or []),
-            _dumps(_standings(state)),
+            _dumps(_standings(state)), _dumps(state.get("config") or {}),
+            _dumps(state.get("prize") or {}),
         ),
     )
     hand = state.get("hand")
@@ -197,18 +292,26 @@ def sync_state(conn, state, now):
     board = hand.get("board") if isinstance(hand.get("board"), list) else []
     conn.execute(
         """INSERT INTO hand_history
-           (hand_id,table_id,number,started,ended,street,board_json,result_json)
-           VALUES(?,?,?,?,?,?,?,?)
+           (hand_id,table_id,number,started,ended,street,board_json,result_json,
+            small_blind,big_blind,blind_level,button_player_id)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(hand_id) DO UPDATE SET
              ended=COALESCE(hand_history.ended,excluded.ended),
              street=excluded.street,
              board_json=excluded.board_json,
-             result_json=excluded.result_json""",
+             result_json=excluded.result_json,
+             small_blind=COALESCE(hand_history.small_blind,excluded.small_blind),
+             big_blind=COALESCE(hand_history.big_blind,excluded.big_blind),
+             blind_level=COALESCE(hand_history.blind_level,excluded.blind_level),
+             button_player_id=COALESCE(hand_history.button_player_id,excluded.button_player_id)""",
         (
             hand_id, table_id, number,
             float(hand.get("started_at") or now), ended,
             str(hand.get("street") or "preflop"), _dumps(board),
             _dumps(_hand_result(hand, state)),
+            hand.get("small_blind", state.get("blinds", {}).get("small")),
+            hand.get("big_blind", state.get("blinds", {}).get("big")),
+            hand.get("blind_level"), hand.get("button_id"),
         ),
     )
     events = hand.get("events", [])
@@ -349,12 +452,289 @@ def _participants(conn, table_id):
     } for row in rows]
 
 
+def _history_text_atom(value, fallback="Unknown"):
+    text = " ".join(str(value if value is not None else "").replace("\r", " ").replace("\n", " ").split())
+    return text[:180] or fallback
+
+
+def _history_timestamp(value):
+    if type(value) not in (int, float):
+        return "time unavailable"
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (OverflowError, OSError, ValueError):
+        return "time unavailable"
+
+
+def _credit_amount(cents):
+    if type(cents) is not int or cents < 0:
+        return None
+    whole, remainder = divmod(cents, 100)
+    return str(whole) if remainder == 0 else "%d.%02d" % (whole, remainder)
+
+
+def format_tournament_summary(tournament):
+    """Format saved tournament facts as a plain-text Felt Night summary."""
+    tournament = tournament if isinstance(tournament, dict) else {}
+    config = tournament.get("config") if isinstance(tournament.get("config"), dict) else {}
+    prize = tournament.get("prize") if isinstance(tournament.get("prize"), dict) else {}
+    participants = tournament.get("participants") if isinstance(tournament.get("participants"), list) else []
+    status = str(tournament.get("status") or "unknown")
+    statuses = {
+        "completed": "Completed",
+        "ended": "Ended early",
+        "cancelled": "Cancelled",
+        "expired": "Expired",
+        "playing": "In progress",
+        "lobby": "Lobby",
+    }
+    lines = [
+        "Felt Night Tournament Summary",
+        "Tournament: " + _history_text_atom(tournament.get("name"), "Tournament"),
+        "Status: " + statuses.get(status, _history_text_atom(status)),
+    ]
+    started = tournament.get("started")
+    if started is not None:
+        lines.append("Started: " + _history_timestamp(started))
+    elif tournament.get("created") is not None:
+        lines.append("Created: " + _history_timestamp(tournament.get("created")))
+    if isinstance(config.get("buy_in"), int) and type(config.get("buy_in")) is int:
+        lines.append("Buy-in: %s play credits" % config["buy_in"])
+    entrants = prize.get("entrants") if type(prize.get("entrants")) is int else len(participants)
+    if entrants > 0:
+        lines.append("Entrants: %d" % entrants)
+    if type(prize.get("pool_cents")) is int:
+        pool = _credit_amount(prize["pool_cents"])
+        if pool is not None:
+            lines.append("Prize pool: %s play credits" % pool)
+    small = config.get("small_blind")
+    big = config.get("big_blind")
+    if type(small) is int and type(big) is int:
+        lines.append("Starting blinds: %d/%d" % (small, big))
+    if type(config.get("starting_stack")) is int:
+        lines.append("Starting stack: %d chips" % config["starting_stack"])
+    percentages = config.get("payout_percentages")
+    if isinstance(percentages, list) and percentages and all(type(value) is int for value in percentages):
+        lines.append("Payout shares: " + " / ".join("%d%%" % value for value in percentages))
+    hand_count = tournament.get("hand_count")
+    if type(hand_count) is int:
+        lines.append("Saved hands: %d" % hand_count)
+
+    results = tournament.get("results") if isinstance(tournament.get("results"), list) else []
+    standings = tournament.get("standings") if isinstance(tournament.get("standings"), list) else []
+    rows = results or standings
+    if rows:
+        heading = "Final standings" if status == "completed" and results else (
+            "Standings when the game ended" if status in TERMINAL_STATUSES else "Current standings"
+        )
+        lines.extend(["", heading + ":"])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            place = row.get("place")
+            if type(place) is int and place > 0:
+                prefix = ("T-" if row.get("tied") else "") + str(place) + ". "
+            elif row.get("status") == "active":
+                prefix = "Active: "
+            else:
+                prefix = ""
+            item = prefix + _history_text_atom(row.get("name"), "Player")
+            if type(row.get("chips")) is int and row["chips"] >= 0:
+                item += " — %d chips" % row["chips"]
+            award = _credit_amount(row.get("award_cents"))
+            if award is not None:
+                item += " — %s play credits" % award
+            lines.append(item)
+    if status in TERMINAL_STATUSES and status != "completed" and not results:
+        lines.extend(["", "No final result was declared."])
+    return "\n".join(lines)
+
+
+def format_hand_history(tournament, hand, viewer_player_id=None):
+    """Format a sanitized saved hand as readable, plain-text history."""
+    tournament = tournament if isinstance(tournament, dict) else {}
+    hand = hand if isinstance(hand, dict) else {}
+    players = hand.get("players") if isinstance(hand.get("players"), list) else []
+    by_id = {str(player.get("player_id")): player for player in players if isinstance(player, dict)}
+    number = hand.get("number") if type(hand.get("number")) is int else "?"
+    small, big = hand.get("small_blind"), hand.get("big_blind")
+    stake = "%s/%s" % (small, big) if type(small) is int and type(big) is int else "blinds unavailable"
+    lines = [
+        "Felt Night Hand #%s: No-Limit Texas Hold'em (%s play chips) - %s" % (
+            number, stake, _history_timestamp(hand.get("started")),
+        ),
+        "Tournament: " + _history_text_atom(tournament.get("name"), "Tournament"),
+    ]
+    button_id = hand.get("button_player_id")
+    button = by_id.get(str(button_id)) if button_id else None
+    if button is not None and type(button.get("seat_no")) is int:
+        table_line = "Table: %s — Seat #%d is the button" % (
+            _history_text_atom(tournament.get("name"), "Tournament"), button["seat_no"] + 1,
+        )
+    else:
+        table_line = "Table: " + _history_text_atom(tournament.get("name"), "Tournament")
+    lines.append(table_line)
+    if type(hand.get("blind_level")) is int:
+        lines.append("Blind level %d (%s)" % (hand["blind_level"], stake))
+    elif stake != "blinds unavailable":
+        lines.append("Blinds: %s" % stake)
+
+    action_events = [event for event in hand.get("events", []) if isinstance(event, dict)]
+    blind_roles = {}
+    for event in action_events:
+        if event.get("type") == "action" and event.get("blind") in ("small", "big"):
+            actor_id = event.get("actor_id") or event.get("actor")
+            if actor_id:
+                blind_roles[str(actor_id)] = event.get("blind")
+    lines.append("")
+    lines.append("*** TABLE SEATS ***")
+    for player in sorted(
+        players,
+        key=lambda item: (item.get("seat_no") is None, item.get("seat_no") if type(item.get("seat_no")) is int else 0, str(item.get("name") or "").casefold()),
+    ):
+        name = _history_text_atom(player.get("name"), "Player")
+        player_id = str(player.get("player_id") or "")
+        role = []
+        if player_id == str(button_id or ""):
+            role.append("button")
+        if blind_roles.get(player_id) == "small":
+            role.append("small blind")
+        elif blind_roles.get(player_id) == "big":
+            role.append("big blind")
+        seat_no = player.get("seat_no")
+        seat = "Seat %d" % (seat_no + 1) if type(seat_no) is int else "Seat unknown"
+        role_text = " (" + ", ".join(role) + ")" if role else ""
+        stack = player.get("stack_before")
+        stack_text = " (%d chips)" % stack if type(stack) is int and stack >= 0 else ""
+        lines.append("%s: %s%s%s" % (seat, name, role_text, stack_text))
+
+    lines.extend(["", "*** HOLE CARDS ***"])
+    for player in players:
+        player_id = str(player.get("player_id") or "")
+        cards = _safe_card_list(player.get("cards"), (2,))
+        if player_id == str(viewer_player_id or "") and cards:
+            lines.append("Dealt to %s %s" % (_history_text_atom(player.get("name"), "Player"), "[" + " ".join(cards) + "]"))
+
+    street_labels = {
+        "preflop": "PRE-FLOP",
+        "flop": "FLOP",
+        "turn": "TURN",
+        "river": "RIVER",
+        "showdown": "SHOWDOWN",
+    }
+    current_street = "preflop"
+    announced_streets = {"preflop"}
+    lines.extend(["", "*** PRE-FLOP ***"])
+    for event in sorted(action_events, key=lambda item: item.get("seq") if type(item.get("seq")) is int else 0):
+        event_type = event.get("type")
+        street = str(event.get("street") or current_street).lower()
+        if event_type == "street":
+            current_street = street
+            if street not in announced_streets:
+                board = _safe_card_list(event.get("board"), (0, 3, 4, 5))
+                board_text = " [" + " ".join(board) + "]" if board else ""
+                lines.extend(["", "*** %s ***%s" % (street_labels.get(street, "STREET"), board_text)])
+                announced_streets.add(street)
+            continue
+        if event_type != "action":
+            continue
+        current_street = street
+        if street not in announced_streets:
+            lines.extend(["", "*** %s ***" % street_labels.get(street, "STREET")])
+            announced_streets.add(street)
+        actor_id = str(event.get("actor_id") or event.get("actor") or "")
+        player = by_id.get(actor_id, {})
+        name = _history_text_atom(player.get("name") or event.get("actor_label"), "Player")
+        amount = event.get("amount") if type(event.get("amount")) is int and event.get("amount") >= 0 else None
+        target = event.get("target") if type(event.get("target")) is int and event.get("target") >= 0 else None
+        action = str(event.get("action") or "action").lower()
+        if event.get("blind") in ("small", "big"):
+            label = "small blind" if event["blind"] == "small" else "big blind"
+            posted = amount if amount is not None else "amount unavailable"
+            line = "%s: posts %s %s" % (name, label, posted)
+            nominal = small if event["blind"] == "small" else big
+            if type(nominal) is int and type(posted) is int and posted < nominal:
+                line += " (all-in)"
+        elif action == "fold":
+            line = name + ": folds"
+        elif action == "check":
+            line = name + ": checks"
+        elif action == "call":
+            line = "%s: calls %s" % (name, amount if amount is not None else "an unavailable amount")
+        elif action == "bet":
+            line = "%s: bets %s" % (name, target if target is not None else amount if amount is not None else "an unavailable amount")
+        elif action == "raise":
+            line = "%s: raises to %s" % (name, target if target is not None else "an unavailable amount")
+        elif action == "all-in":
+            line = "%s: is all-in for %s" % (name, amount if amount is not None else "an unavailable amount")
+        else:
+            line = name + ": acts"
+        if event.get("timed_out"):
+            line += " (time-out)"
+        elif event.get("sitting_out"):
+            line += " (sitting out)"
+        lines.append(line)
+
+    result = hand.get("result") if isinstance(hand.get("result"), dict) else {}
+    board = _safe_card_list(hand.get("board"), (0, 3, 4, 5))
+    lines.extend(["", "*** SUMMARY ***"])
+    pots = result.get("pots") if isinstance(result.get("pots"), list) else []
+    for index, pot in enumerate(pots):
+        if not isinstance(pot, dict) or type(pot.get("amount")) is not int:
+            continue
+        label = _history_text_atom(pot.get("label"), "Main pot" if index == 0 else "Side pot %d" % index)
+        lines.append("%s: %d chips" % (label, pot["amount"]))
+    if board and not any(event.get("type") == "street" for event in action_events):
+        lines.append("Board: [" + " ".join(board) + "]")
+    for player in players:
+        if not player.get("revealed"):
+            continue
+        cards = _safe_card_list(player.get("cards"), (2,))
+        if cards:
+            lines.append("%s showed [%s]" % (
+                _history_text_atom(player.get("name"), "Player"), " ".join(cards),
+            ))
+    showdown = result.get("showdown") if isinstance(result.get("showdown"), list) else []
+    ranks = {
+        str(item.get("player_id")): _history_text_atom(item.get("hand_name"), "")
+        for item in showdown if isinstance(item, dict) and item.get("player_id") and item.get("hand_name")
+    }
+    winnings = result.get("pot_winnings") if isinstance(result.get("pot_winnings"), dict) else {}
+    winners = [
+        (player_id, amount) for player_id, amount in winnings.items()
+        if isinstance(player_id, str) and type(amount) is int and amount > 0
+    ]
+    for player_id, amount in sorted(winners, key=lambda item: by_id.get(item[0], {}).get("name", "").casefold()):
+        name = _history_text_atom(by_id.get(player_id, {}).get("name"), "Player")
+        line = "%s collected %d chips" % (name, amount)
+        if ranks.get(player_id):
+            line += " with " + ranks[player_id]
+        elif not showdown:
+            line += " without showdown"
+        lines.append(line)
+    returns = result.get("returns") if isinstance(result.get("returns"), list) else []
+    for item in returns:
+        if not isinstance(item, dict) or type(item.get("amount")) is not int or item["amount"] <= 0:
+            continue
+        player = by_id.get(str(item.get("player_id") or ""), {})
+        lines.append("Uncalled bet of %d chips returned to %s" % (
+            item["amount"], _history_text_atom(player.get("name"), "Player"),
+        ))
+    if not hand.get("events_complete", True):
+        lines.append("Some earlier actions were not retained for this hand.")
+    if hand.get("ended") is None:
+        lines.append("No result recorded; this hand was still active when history was saved.")
+    elif not winners and not pots:
+        lines.append("No pot result was recorded.")
+    return "\n".join(lines)
+
+
 def _summary(conn, row):
     table_id = row["table_id"]
     hand_count = conn.execute(
         "SELECT COUNT(*) AS n FROM hand_history WHERE table_id=?", (table_id,),
     ).fetchone()["n"]
-    return {
+    summary = {
         "id": table_id,
         "name": row["name"],
         "status": row["status"],
@@ -365,7 +745,11 @@ def _summary(conn, row):
         "standings": _loads(row["standings_json"], []),
         "participants": _participants(conn, table_id),
         "hand_count": hand_count,
+        "config": _loads(row["config_json"], {}),
+        "prize": _loads(row["prize_json"], {}),
     }
+    summary["summary_text"] = format_tournament_summary(summary)
+    return summary
 
 
 def list_for_player(conn, player_id, offset=0, limit=PAGE_SIZE):
@@ -434,6 +818,62 @@ def get_for_admin(conn, table_id, offset=0, limit=PAGE_SIZE):
     )
 
 
+def _history_hand_record(conn, row, viewer_id):
+    hand_id = row["hand_id"]
+    events = conn.execute(
+        "SELECT payload_json FROM hand_history_events WHERE hand_id=? ORDER BY seq",
+        (hand_id,),
+    ).fetchall()
+    player_rows = conn.execute(
+        """SELECT * FROM hand_history_players WHERE hand_id=?
+           ORDER BY CASE WHEN seat_no IS NULL THEN 1 ELSE 0 END,seat_no,name""",
+        (hand_id,),
+    ).fetchall()
+    players = []
+    for item in player_rows:
+        revealed = item["revealed_cards_json"] is not None
+        raw_cards = (
+            _loads(item["cards_json"], [])
+            if viewer_id is not None and item["player_id"] == viewer_id
+            else _loads(item["revealed_cards_json"], None) if revealed
+            else None
+        )
+        cards = _safe_card_list(raw_cards, (2,)) if raw_cards is not None else None
+        players.append({
+            "player_id": item["player_id"],
+            "name": item["name"],
+            "seat_no": item["seat_no"],
+            "is_bot": bool(item["is_bot"]),
+            "cards": cards,
+            "revealed": revealed,
+            "stack_before": item["stack_before"],
+            "stack_after": item["stack_after"],
+        })
+    parsed_events = [_loads(event["payload_json"], {}) for event in events]
+    return {
+        "hand_id": hand_id,
+        "number": row["number"],
+        "started": row["started"],
+        "ended": row["ended"],
+        "street": row["street"],
+        "board": _safe_card_list(_loads(row["board_json"], []), (0, 3, 4, 5)),
+        "small_blind": row["small_blind"],
+        "big_blind": row["big_blind"],
+        "blind_level": row["blind_level"],
+        "button_player_id": row["button_player_id"],
+        "events": [event for event in parsed_events if isinstance(event, dict)],
+        "events_complete": bool(row["events_complete"]),
+        "events_coverage_start_seq": row["events_coverage_start_seq"],
+        "events_end_seq": max(
+            (event.get("seq", 0) for event in parsed_events if isinstance(event, dict)
+             and type(event.get("seq")) is int),
+            default=0,
+        ),
+        "players": players,
+        "result": _loads(row["result_json"], {}),
+    }
+
+
 def _history_detail(conn, table_id, viewer_id, offset, limit, require_participant):
     limit = min(MAX_PAGE_SIZE, max(1, int(limit)))
     offset = max(0, int(offset))
@@ -458,57 +898,15 @@ def _history_detail(conn, table_id, viewer_id, offset, limit, require_participan
            ORDER BY number ASC LIMIT ? OFFSET ?""",
         (table_id, limit, offset),
     ).fetchall()
+    tournament = _summary(conn, tournament_row)
     hands = []
     for row in rows:
-        hand_id = row["hand_id"]
-        events = conn.execute(
-            "SELECT payload_json FROM hand_history_events WHERE hand_id=? ORDER BY seq",
-            (hand_id,),
-        ).fetchall()
-        player_rows = conn.execute(
-            """SELECT * FROM hand_history_players WHERE hand_id=?
-               ORDER BY CASE WHEN seat_no IS NULL THEN 1 ELSE 0 END,seat_no,name""",
-            (hand_id,),
-        ).fetchall()
-        players = []
-        for item in player_rows:
-            revealed = item["revealed_cards_json"] is not None
-            cards = (
-                _loads(item["cards_json"], [])
-                if viewer_id is not None and item["player_id"] == viewer_id
-                else _loads(item["revealed_cards_json"], None) if revealed
-                else None
-            )
-            players.append({
-                "player_id": item["player_id"],
-                "name": item["name"],
-                "seat_no": item["seat_no"],
-                "is_bot": bool(item["is_bot"]),
-                "cards": cards,
-                "revealed": revealed,
-                "stack_before": item["stack_before"],
-                "stack_after": item["stack_after"],
-            })
-        hands.append({
-            "hand_id": hand_id,
-            "number": row["number"],
-            "started": row["started"],
-            "ended": row["ended"],
-            "street": row["street"],
-            "board": _loads(row["board_json"], []),
-            "events": [_loads(event["payload_json"], {}) for event in events],
-            "events_complete": bool(row["events_complete"]),
-            "events_coverage_start_seq": row["events_coverage_start_seq"],
-            "events_end_seq": max(
-                (_loads(event["payload_json"], {}).get("seq", 0) for event in events),
-                default=0,
-            ),
-            "players": players,
-            "result": _loads(row["result_json"], {}),
-        })
+        hand = _history_hand_record(conn, row, viewer_id)
+        hand["history_text"] = format_hand_history(tournament, hand, viewer_id)
+        hands.append(hand)
     end = offset + len(hands)
     return {
-        "tournament": _summary(conn, tournament_row),
+        "tournament": tournament,
         "hands": hands,
         "next_offset": end if end < total else None,
     }
@@ -543,16 +941,45 @@ def _safe_card_list(value, allowed_lengths):
     return list(value)
 
 
-def last_completed_hand(conn, table_id, viewer_player_id):
-    """Return a sanitized replay snapshot for the latest completed hand."""
-    row = conn.execute(
-        """SELECT * FROM hand_history
-           WHERE table_id=? AND ended IS NOT NULL
-           ORDER BY number DESC LIMIT 1""",
-        (table_id,),
-    ).fetchone()
+def last_completed_hand(conn, table_id, viewer_player_id, hand_number=None):
+    """Return a sanitized replay snapshot for a selected completed hand."""
+    if hand_number is None:
+        row = conn.execute(
+            """SELECT * FROM hand_history
+               WHERE table_id=? AND ended IS NOT NULL
+               ORDER BY number DESC LIMIT 1""",
+            (table_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT * FROM hand_history
+               WHERE table_id=? AND number=? AND ended IS NOT NULL LIMIT 1""",
+            (table_id, hand_number),
+        ).fetchone()
     if row is None:
         return None
+    tournament_row = conn.execute(
+        "SELECT * FROM tournament_history WHERE table_id=?", (table_id,),
+    ).fetchone()
+    tournament = _summary(conn, tournament_row) if tournament_row is not None else {
+        "name": "Tournament", "status": "unknown", "config": {}, "prize": {},
+    }
+    older = conn.execute(
+        """SELECT MAX(number) AS number FROM hand_history
+           WHERE table_id=? AND ended IS NOT NULL AND number<?""",
+        (table_id, row["number"]),
+    ).fetchone()["number"]
+    newer = conn.execute(
+        """SELECT MIN(number) AS number FROM hand_history
+           WHERE table_id=? AND ended IS NOT NULL AND number>?""",
+        (table_id, row["number"]),
+    ).fetchone()["number"]
+    history_count = conn.execute(
+        "SELECT COUNT(*) AS n FROM hand_history WHERE table_id=? AND ended IS NOT NULL",
+        (table_id,),
+    ).fetchone()["n"]
+    history_record = _history_hand_record(conn, row, viewer_player_id)
+    history_text = format_hand_history(tournament, history_record, viewer_player_id)
 
     board = _safe_card_list(_loads(row["board_json"], []), (0, 3, 4, 5))
     result = _loads(row["result_json"], {})
@@ -673,4 +1100,8 @@ def last_completed_hand(conn, table_id, viewer_player_id):
             if isinstance(player_id, str) and type(amount) is int and amount >= 0
         },
         "returns": returns,
+        "history_text": history_text,
+        "previous_hand_number": older,
+        "next_hand_number": newer,
+        "history_count": history_count,
     }

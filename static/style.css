@@ -1278,8 +1278,14 @@ body.gameplay-active .replay-empty {
   line-height: 1.5; text-align: center;
 }
 body.gameplay-active .replay-error { color: #f0b6ae; }
-body.gameplay-active .last-hand-nav { display: flex; flex: 0 0 auto; justify-content: space-between; gap: 8px; }
+body.gameplay-active .last-hand-history-nav,
+body.gameplay-active .last-hand-nav { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; }
+body.gameplay-active .last-hand-history-nav .button,
 body.gameplay-active .last-hand-nav .button { min-height: 36px; padding-inline: 12px; }
+body.gameplay-active .last-hand-history-nav span { color: #b9c7b7; font-size: 10px; font-variant-numeric: tabular-nums; text-align: center; }
+body.gameplay-active .replay-transcript { flex: 0 0 auto; border-top: 1px solid rgba(225,237,227,.12); padding-top: 6px; }
+body.gameplay-active .replay-transcript summary { color: #d5e4cb; font-size: 10px; font-weight: 750; cursor: pointer; }
+body.gameplay-active .replay-transcript pre { max-height: 35dvh; margin: 7px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: #dbe5d8; font: 10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
 
 @media (max-width: 600px) {
   body.gameplay-active .topbar { height: calc(44px + env(safe-area-inset-top)); min-height: calc(44px + env(safe-area-inset-top)); }

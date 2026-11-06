@@ -364,17 +364,30 @@ class Store:
             history_marker = conn.execute(
                 "SELECT value FROM meta WHERE key='history_backfill_v1'"
             ).fetchone()
-            if history_marker is None:
+            history_text_marker = conn.execute(
+                "SELECT value FROM meta WHERE key='history_text_metadata_v1'"
+            ).fetchone()
+            if history_marker is None or history_text_marker is None:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
                     history_marker = conn.execute(
                         "SELECT value FROM meta WHERE key='history_backfill_v1'"
                     ).fetchone()
-                    if history_marker is None:
+                    history_text_marker = conn.execute(
+                        "SELECT value FROM meta WHERE key='history_text_metadata_v1'"
+                    ).fetchone()
+                    if history_marker is None or history_text_marker is None:
+                        # Refresh from retained table snapshots to fill additive history
+                        # metadata even when the original backfill already ran.
                         tournament_history.backfill_tournaments(conn)
-                        conn.execute(
-                            "INSERT INTO meta(key,value) VALUES('history_backfill_v1','1')"
-                        )
+                        if history_marker is None:
+                            conn.execute(
+                                "INSERT INTO meta(key,value) VALUES('history_backfill_v1','1')"
+                            )
+                        if history_text_marker is None:
+                            conn.execute(
+                                "INSERT INTO meta(key,value) VALUES('history_text_metadata_v1','1')"
+                            )
                     conn.commit()
                 except Exception:
                     if conn.in_transaction:
@@ -1142,13 +1155,15 @@ class Store:
         finally:
             conn.close()
 
-    def get_last_hand(self, table_id, player_id):
+    def get_last_hand(self, table_id, player_id, hand_number=None):
         conn = self.connect()
         try:
             exists = conn.execute("SELECT 1 FROM tables WHERE id=?", (table_id,)).fetchone()
             if exists is None:
                 raise AppError(404, "table_not_found", "Table not found.")
-            return tournament_history.last_completed_hand(conn, table_id, player_id)
+            return tournament_history.last_completed_hand(
+                conn, table_id, player_id, hand_number,
+            )
         finally:
             conn.close()
 
@@ -1215,6 +1230,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.fragment:
             raise AppError(400, "invalid_url", "Fragments are not supported.")
         self.request_offset = 0
+        self.request_hand_number = None
         self.reaction_after = None
         if parsed.query:
             history_route = (
@@ -1226,7 +1242,10 @@ class Handler(BaseHTTPRequestHandler):
             reaction_route = re.fullmatch(
                 r"/poker/api/tables/[a-f0-9]{32}/reactions", parsed.path,
             )
-            if self.command != "GET" or not (history_route or reaction_route):
+            last_hand_route = re.fullmatch(
+                r"/poker/api/tables/[a-f0-9]{32}/last-hand", parsed.path,
+            )
+            if self.command != "GET" or not (history_route or reaction_route or last_hand_route):
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
             try:
                 query = parse_qs(parsed.query, strict_parsing=True, keep_blank_values=True)
@@ -1239,6 +1258,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not re.fullmatch(r"[0-9]{1,12}", raw_after):
                     raise AppError(400, "invalid_url", "Invalid reaction cursor.")
                 self.reaction_after = int(raw_after)
+            elif last_hand_route:
+                if set(query) != {"number"} or len(query["number"]) != 1:
+                    raise AppError(400, "invalid_url", "Use one positive hand number.")
+                raw_number = query["number"][0]
+                if not re.fullmatch(r"[1-9][0-9]{0,8}", raw_number):
+                    raise AppError(400, "invalid_url", "Invalid hand number.")
+                self.request_hand_number = int(raw_number)
             else:
                 if set(query) != {"offset"} or len(query["offset"]) != 1:
                     raise AppError(400, "invalid_url", "Use one numeric history offset.")
@@ -1548,7 +1574,9 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/last-hand", path)
             if match:
                 player, _ = self._require_player()
-                hand = self.app.store.get_last_hand(match.group(1), player["id"])
+                hand = self.app.store.get_last_hand(
+                    match.group(1), player["id"], self.request_hand_number,
+                )
                 self._json(200, {"hand": hand})
                 return
             match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})", path)

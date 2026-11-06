@@ -19,6 +19,9 @@
 .history-dialog .history-back{margin:.5rem 0}
 .auth-switch{margin-top:.8rem}
 .history-dialog .section-heading{gap:1rem}
+.history-text-panel{margin:.75rem 0;border:1px solid rgba(225,237,227,.12);border-radius:8px;padding:.15rem .7rem;background:rgba(10,18,15,.22)}
+.history-text-panel summary{font-weight:700}
+.history-text,.history-text-panel pre{max-width:100%;margin:.5rem 0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#dbe5d8;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
 .auth-room label{display:block}
 .auth-room input{width:100%}
 @media(max-width:600px){.topbar{flex-wrap:wrap;gap:.35rem}
