@@ -2379,7 +2379,8 @@
         (view.status === "playing" && !seatCountsAsTournamentRemaining(view, seat)) ||
         terminalBust || completedBust;
       var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") +
-        (folded ? " is-folded" : "") + (bot ? " is-bot" : "") + (eliminated ? " is-eliminated" : "") + (id === lastActorId ? " is-last-actor" : "");
+        (folded ? " is-folded" : "") + (bot ? " is-bot" : "") + (eliminated ? " is-eliminated" : "") +
+        (dealer ? " has-dealer" : "") + (id === lastActorId ? " is-last-actor" : "");
       var label = eliminated ? "Out" : (sittingOut ? "Sitting out" : (folded ? "Folded" : (allIn ? "All in" : "")));
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
@@ -2465,8 +2466,10 @@
         (eliminated ? '<span class="seat-label eliminated-label">OUT</span>' : '');
       var tagsMarkup = '<div class="seat-tags"' + (tags ? '' : ' aria-hidden="true"') + '>' + tags + '</div>';
       var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
+      var dealerChip = dealer
+        ? '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>'
+        : "";
       var markerHtml = "";
-      if (dealer) markerHtml += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
       if (actionState) {
         var turnClockMarkup = acting && state.seatTurnClockKey
           ? '<span class="seat-turn-clock" data-turn-clock-seat="' + esc(seatNo) + '" aria-label="Time left">' + esc(turnClockLabel()) + '</span>'
@@ -2488,19 +2491,12 @@
           '" aria-label="' + esc(seatName + ": " + shownRank) + '"><span>' + esc(shownRank) + '</span></span>';
       }
       var markerLane = '<div class="seat-local-markers"' + (markerHtml ? '' : ' aria-hidden="true"') + '>' + markerHtml + '</div>';
-      var shortcuts = isMe && !state.isAdmin
-        ? '<div class="reaction-shortcuts" role="group" aria-label="Your table reaction shortcuts">' +
-          normalizedReactionFavorites(state.reactionFavorites).map(function (emoji) {
-            var label = REACTION_EMOJI_LABELS[emoji] || "table";
-            return '<button class="reaction-shortcut" type="button" data-send-reaction="' + esc(emoji) + '" aria-label="Send ' + esc(label) + ' reaction" title="Send ' + esc(label) + '">' + esc(emoji) + '</button>';
-          }).join("") + '</div>'
-        : "";
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
-        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' +
+        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' + dealerChip +
         tagsMarkup +
         stackHtml +
         '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        cardHtml + markerLane + equityHtml + shortcuts +
+        cardHtml + markerLane + equityHtml +
       '</div>';
     }
 
@@ -2508,76 +2504,10 @@
     var felt = byId("felt");
     var restoreChipToggleFocus = Boolean(document.activeElement && document.activeElement.matches &&
       document.activeElement.matches("[data-chip-display-toggle]"));
-    var focusedReaction = document.activeElement && document.activeElement.getAttribute
-      ? document.activeElement.getAttribute("data-send-reaction") : null;
-    var gridTemplate = document.createElement("template");
-    gridTemplate.innerHTML = html;
-    var previousHero = grid.querySelector("#hero-seat");
-    var incomingHero = gridTemplate.content.querySelector("#hero-seat");
-    var renderedTableId = String(grid.getAttribute("data-rendered-table-id") || "");
-    var incomingTableId = String(view.id || state.activeTableId || "");
-    var sameHero = previousHero && incomingHero && renderedTableId === incomingTableId &&
-      previousHero.getAttribute("data-player-id") === incomingHero.getAttribute("data-player-id") &&
-      previousHero.getAttribute("data-seat-no") === incomingHero.getAttribute("data-seat-no");
-    if (sameHero) {
-      var previousShortcuts = previousHero.querySelector(".reaction-shortcuts");
-      var incomingShortcuts = incomingHero.querySelector(".reaction-shortcuts");
-      var previousFavorites = previousShortcuts
-        ? Array.from(previousShortcuts.querySelectorAll("[data-send-reaction]")).map(function (node) {
-          return node.getAttribute("data-send-reaction");
-        }) : [];
-      var incomingFavorites = incomingShortcuts
-        ? Array.from(incomingShortcuts.querySelectorAll("[data-send-reaction]")).map(function (node) {
-          return node.getAttribute("data-send-reaction");
-        }) : [];
-      var preserveShortcuts = Boolean(previousShortcuts && incomingShortcuts &&
-        previousFavorites.length === incomingFavorites.length &&
-        previousFavorites.every(function (emoji, index) { return emoji === incomingFavorites[index]; }));
-      Array.from(previousHero.attributes).forEach(function (attribute) {
-        previousHero.removeAttribute(attribute.name);
-      });
-      Array.from(incomingHero.attributes).forEach(function (attribute) {
-        previousHero.setAttribute(attribute.name, attribute.value);
-      });
-      if (preserveShortcuts) {
-        Array.from(previousHero.children).forEach(function (child) {
-          if (child !== previousShortcuts) child.remove();
-        });
-        Array.from(incomingHero.children).forEach(function (child) {
-          if (child !== incomingShortcuts) previousHero.insertBefore(child, previousShortcuts);
-        });
-      } else {
-        previousHero.replaceChildren();
-        Array.from(incomingHero.children).forEach(function (child) {
-          previousHero.appendChild(child);
-        });
-      }
-      var incomingSeats = Array.from(gridTemplate.content.children);
-      Array.from(grid.children).forEach(function (child) {
-        if (child !== previousHero) child.remove();
-      });
-      var anchor = null;
-      for (var seatIndex = incomingSeats.length - 1; seatIndex >= 0; seatIndex -= 1) {
-        var incomingSeat = incomingSeats[seatIndex];
-        if (incomingSeat === incomingHero) {
-          anchor = previousHero;
-          continue;
-        }
-        grid.insertBefore(incomingSeat, anchor);
-        anchor = incomingSeat;
-      }
-    } else {
-      grid.innerHTML = html;
-    }
-    grid.setAttribute("data-rendered-table-id", incomingTableId);
+    grid.innerHTML = html;
     if (restoreChipToggleFocus) {
       var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });
-    } else if (focusedReaction) {
-      var replacementReaction = Array.from(grid.querySelectorAll("[data-send-reaction]")).find(function (node) {
-        return node.getAttribute("data-send-reaction") === focusedReaction;
-      });
-      if (replacementReaction) replacementReaction.focus({ preventScroll: true });
     }
     if (winnerFound && state.winnerAnimationKey !== winnerAnimationKey) {
       state.winnerAnimationKey = winnerAnimationKey;
@@ -3582,7 +3512,25 @@
     var playing = view.status === "playing";
     var completed = view.status === "completed";
     var seated = Boolean(seat);
-    var panelVisible = seated && (playing || completed);
+    var controlsVisible = seated && (playing || completed);
+    var reactionVisible = Boolean(seat && state.player && !state.isAdmin);
+    var panelVisible = controlsVisible || reactionVisible;
+    var shortcuts = byId("reaction-shortcuts");
+    if (shortcuts) {
+      var reactionTableId = String(view.id || state.activeTableId || "");
+      var reactionPlayerId = String(viewer.player_id || (state.player && state.player.id) || "");
+      var reactionSeatNo = String(seat && seat.seat_no != null ? seat.seat_no : "");
+      var shortcutMarkup = reactionVisible ? normalizedReactionFavorites(state.reactionFavorites).map(function (emoji) {
+        var label = REACTION_EMOJI_LABELS[emoji] || "table";
+        return '<button class="reaction-shortcut" type="button" data-send-reaction="' + esc(emoji) +
+          '" data-reaction-table-id="' + esc(reactionTableId) + '" data-reaction-player-id="' + esc(reactionPlayerId) +
+          '" data-reaction-seat-no="' + esc(reactionSeatNo) + '" aria-label="Send ' + esc(label) + ' reaction" title="Send ' + esc(label) + '">' +
+          esc(emoji) + '</button>';
+      }).join("") : "";
+      if (shortcuts.innerHTML !== shortcutMarkup) shortcuts.innerHTML = shortcutMarkup;
+      shortcuts.hidden = !reactionVisible;
+    }
+    panel.dataset.reactionsOnly = String(reactionVisible && !controlsVisible);
     var finishedStatus = byId("action-finished-status");
     var canAct = viewerCanAct(view);
     var currentKey = actionTokenKey(view);
@@ -3593,17 +3541,17 @@
       state.actionPending = null;
     }
     panel.hidden = !panelVisible;
-    controls.hidden = !panelVisible;
+    controls.hidden = !controlsVisible;
     if (finishedStatus) {
-      finishedStatus.hidden = !completed || !panelVisible;
-      finishedStatus.textContent = completed && panelVisible
+      finishedStatus.hidden = !completed || !controlsVisible;
+      finishedStatus.textContent = completed && controlsVisible
         ? (presentationRemainingMs(view) > 0
           ? "Tournament complete. Final standings appear after the hand result presentation."
           : "Tournament complete. Review the final standings and last hand.")
         : "";
     }
     panel.setAttribute("aria-busy", String(Boolean(state.actionPending || state.actionSubmittedKey === currentKey)));
-    if (!playing || !panelVisible) {
+    if (!playing || !controlsVisible) {
       setPrimaryActionContent(controls.querySelector('[data-action-slot="fold"]'), "Fold", null, view, "Fold unavailable");
       setPrimaryActionContent(controls.querySelector('[data-action-slot="call"]'), "Check", null, view, "Check unavailable");
       setPrimaryActionContent(controls.querySelector('[data-action-slot="raise"]'), "Bet", null, view, "Bet unavailable");
@@ -4870,7 +4818,7 @@
     saveReactionFavorites(favorites);
     closeReactionSettingsDialog(false);
     renderTable();
-    var firstShortcut = byId("hero-seat") && byId("hero-seat").querySelector("[data-send-reaction]");
+    var firstShortcut = byId("reaction-shortcuts") && byId("reaction-shortcuts").querySelector("[data-send-reaction]");
     if (firstShortcut) firstShortcut.focus({ preventScroll: true });
   });
   byId("table-menu").addEventListener("click", function (event) {
@@ -5275,12 +5223,21 @@
     }
   });
 
-  byId("seat-grid").addEventListener("click", function (event) {
+  byId("action-panel").addEventListener("click", function (event) {
     var reactionButton = event.target.closest("[data-send-reaction]");
-    if (reactionButton) {
-      sendTableReaction(reactionButton.getAttribute("data-send-reaction"));
-      return;
-    }
+    if (!reactionButton || reactionButton.disabled || state.isAdmin) return;
+    var view = state.tableView;
+    var seat = view && viewerSeat(view);
+    var viewer = view && view.viewer || {};
+    var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
+    var seatNo = String(seat && seat.seat_no != null ? seat.seat_no : "");
+    if (!view || reactionButton.getAttribute("data-reaction-table-id") !== String(state.activeTableId || "") ||
+        reactionButton.getAttribute("data-reaction-player-id") !== playerId ||
+        reactionButton.getAttribute("data-reaction-seat-no") !== seatNo) return;
+    sendTableReaction(reactionButton.getAttribute("data-send-reaction"));
+  });
+
+  byId("seat-grid").addEventListener("click", function (event) {
     var seatAction = event.target.closest("[data-take-seat]");
     if (seatAction) {
       handleSeatControlClick(event);

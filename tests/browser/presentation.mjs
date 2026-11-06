@@ -152,9 +152,11 @@ export default async function presentation([one, two], sleep, roomPassword) {
           if (equity) parts.push(['equity ' + (node.dataset.seatNo || '?'), equity]);
           const result = node.querySelector('.seat-result.is-winner');
           if (result) parts.push(['winner result ' + (node.dataset.seatNo || '?'), result]);
-          for (const marker of node.querySelectorAll('.seat-local-markers .seat-action, .seat-local-markers .seat-turn-clock, .seat-local-markers .seat-wager, .seat-local-markers .dealer-marker')) {
+          for (const marker of node.querySelectorAll('.seat-local-markers .seat-action, .seat-local-markers .seat-turn-clock, .seat-local-markers .seat-wager')) {
             parts.push(['local marker ' + (node.dataset.seatNo || '?'), marker]);
           }
+          const dealer = node.querySelector(':scope > .dealer-marker');
+          if (dealer) parts.push(['dealer chip ' + (node.dataset.seatNo || '?'), dealer]);
         }
         for (const [index, node] of [...document.querySelectorAll(
           '#board-cards .playing-card, #seat-grid .mini-card'
@@ -192,7 +194,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
           seatNo:node.dataset.seatNo || '',playerId:node.dataset.playerId || '',
           relativeIndex:node.dataset.relativeSeat || '',rect:box(node),
         }));
-        const markerRows = [...document.querySelectorAll('#seat-grid .seat-local-markers .seat-action, #seat-grid .seat-local-markers .seat-turn-clock, #seat-grid .seat-local-markers .seat-wager, #seat-grid .seat-local-markers .dealer-marker')].map(node => {
+        const markerRows = [...document.querySelectorAll('#seat-grid .seat-local-markers .seat-action, #seat-grid .seat-local-markers .seat-turn-clock, #seat-grid .seat-local-markers .seat-wager')].map(node => {
           const owner=node.closest('.seat-card[data-seat-no]'), local=node.closest('.seat-local-markers');
           const marker=box(node), ownerBox=box(owner), cards=box(owner?.querySelector('.seat-cards'));
           const markerSeat=node.getAttribute('data-seat-no') || node.getAttribute('data-action-seat') || node.getAttribute('data-marker-seat') || '';

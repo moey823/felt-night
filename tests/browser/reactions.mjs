@@ -61,7 +61,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
   }
   await wait(one,()=>document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length===2);
   await wait(two,()=>document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length===2);
-  const defaults=await evaluate(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent));
+  const defaults=await evaluate(one,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent));
   assert(defaults.length===3,'The seated player did not receive exactly three reaction shortcuts.');
   assert(await evaluate(one,()=>!document.querySelector('.seat-card:not(.is-me) [data-send-reaction]')),
     'A player can see shortcuts on another seat.');
@@ -93,10 +93,10 @@ export default async function reactions([one,two], sleep, roomPassword) {
     document.querySelector('#reaction-settings-form').requestSubmit();
   });
   await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
-  await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
+  await wait(one,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
   const saved=await evaluate(one,id=>JSON.parse(localStorage.getItem('felt-night.reaction-favorites.v1.'+id)||'null'),users[0].player.id);
   assert(JSON.stringify(saved)===JSON.stringify(['🔥','💩','🤦']),'Favorite shortcuts were not saved for this account in the browser.');
-  assert(await evaluate(two,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='👏❤️😂'),
+  assert(await evaluate(two,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='👏❤️😂'),
     'Changing one account’s favorites changed the other account’s shortcuts.');
 
   const admin=await request('/login',null,{username:'admin',password:''});
@@ -113,23 +113,104 @@ export default async function reactions([one,two], sleep, roomPassword) {
   const layout=await evaluate(one,()=>{
     const rect=n=>{const r=n.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
     const overlaps=(a,b)=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
-    const shortcuts=rect(document.querySelector('#hero-seat .reaction-shortcuts'));
-    const hero=rect(document.querySelector('#hero-seat'));
-    const others=[...document.querySelectorAll('#seat-grid .seat-card:not(.is-me)')].filter(n=>overlaps(shortcuts,rect(n))).length;
-    const markers=[...document.querySelectorAll('#hero-seat .seat-action,#hero-seat .seat-wager,#hero-seat .dealer-marker,#hero-seat .seat-turn-clock')].filter(n=>overlaps(shortcuts,rect(n))).length;
-    const action=document.querySelector('#action-panel');
-    return {width:innerWidth,shortcutCount:document.querySelectorAll('#hero-seat [data-send-reaction]').length,
-      intersectsHero:overlaps(shortcuts,hero),intersectsOtherSeat:others>0,intersectsMarker:markers>0,
-      intersectsAction:!action.hidden&&overlaps(shortcuts,rect(action)),shortcuts,hero};
+    const railNode=document.querySelector('#reaction-shortcuts');
+    const controlNode=document.querySelector('#action-controls');
+    const buttons=[...railNode.querySelectorAll('[data-send-reaction]')];
+    const buttonBoxes=buttons.map(rect);
+    const rail=rect(railNode), controls=rect(controlNode), panel=rect(document.querySelector('#action-panel'));
+    const felt=rect(document.querySelector('#felt'));
+    const dealerNodes=[...document.querySelectorAll('#seat-grid .seat-card > .dealer-marker')];
+    const dealer=dealerNodes[0], owner=dealer?.closest('.seat-card');
+    const dealerBox=dealer?rect(dealer):null, ownerBox=owner?rect(owner):null;
+    const name=owner?.querySelector('.seat-name');
+    let nameTextBox=null;
+    if(name && name.firstChild) {
+      const range=document.createRange();
+      range.selectNodeContents(name);
+      const r=range.getBoundingClientRect(),clip=rect(name);
+      nameTextBox={left:Math.max(r.left,clip.left),top:Math.max(r.top,clip.top),
+        right:Math.min(r.right,clip.right),bottom:Math.min(r.bottom,clip.bottom)};
+      nameTextBox.width=Math.max(0,nameTextBox.right-nameTextBox.left);
+      nameTextBox.height=Math.max(0,nameTextBox.bottom-nameTextBox.top);
+    }
+    const otherSeats=owner&&dealerBox?[...document.querySelectorAll('#seat-grid .seat-card')].filter(n=>
+      n!==owner&&overlaps(dealerBox,rect(n))).length:0;
+    const ownContentOverlaps=owner&&dealerBox?[
+      ['name',nameTextBox],
+      ...[['stack',owner.querySelector('.seat-stack')],['cards',owner.querySelector('.seat-cards')],
+        ['action',owner.querySelector('.seat-action')],['wager',owner.querySelector('.seat-wager')],
+        ['clock',owner.querySelector('.seat-turn-clock')]].map(([label,n])=>[label,n?rect(n):null])
+    ].filter(([,box])=>box&&overlaps(dealerBox,box)).map(([label])=>label):[];
+    const ordered=buttonBoxes.length===3&&buttonBoxes[0].top<buttonBoxes[1].top&&buttonBoxes[1].top<buttonBoxes[2].top;
+    const verticalGaps=buttonBoxes.slice(1).map((box,index)=>box.top-buttonBoxes[index].bottom);
+    return {width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,
+      clientWidth:document.documentElement.clientWidth,shortcutCount:buttons.length,buttonBoxes,rail,controls,panel,
+      leftOfActions:controls.left>=rail.right-1&&controls.left-rail.right<=12,
+      verticallyStacked:ordered&&buttonBoxes.every(box=>box.width>=30&&box.height>=30)&&verticalGaps.every(gap=>gap>=0&&gap<=8),
+      dealerCount:dealerNodes.length,dealerOwner:owner?.dataset.seatNo||'',dealerDeclared:dealer?.dataset.markerSeat||'',
+      dealerAccessible:dealer?.getAttribute('aria-label')==='Dealer button',
+      dealerSize:dealerBox?{width:dealerBox.width,height:dealerBox.height}:null,
+      dealerAtCorner:dealerBox&&ownerBox?Math.hypot((dealerBox.left+dealerBox.right)/2-ownerBox.right,
+        (dealerBox.top+dealerBox.bottom)/2-ownerBox.top)<=17:false,
+      dealerContentOverlaps:ownContentOverlaps,dealerOtherSeatOverlap:otherSeats,
+      dealerInFelt:dealerBox&&dealerBox.left>=felt.left-1&&dealerBox.right<=felt.right+1&&
+        dealerBox.top>=felt.top-1&&dealerBox.bottom<=felt.bottom+1,
+      dealerInViewport:dealerBox&&dealerBox.left>=-1&&dealerBox.right<=innerWidth+1&&
+        dealerBox.top>=-1&&dealerBox.bottom<=innerHeight+1,
+      dealerBox,nameTextBox,ownerBox};
   });
   assert(layout.width===390,'Mobile viewport was not applied.');
-  assert(layout.shortcutCount===3,'The three shortcuts disappeared on the crowded mobile table.');
-  assert(!layout.intersectsHero&&!layout.intersectsOtherSeat&&!layout.intersectsMarker&&!layout.intersectsAction,
-    'Reaction shortcuts overlap a seat, marker, or action control at nine seats on mobile: '+JSON.stringify(layout));
+  assert(layout.shortcutCount===3&&layout.verticallyStacked,
+    'The three reaction shortcuts are not a vertical, usable column on the crowded mobile table: '+JSON.stringify(layout));
+  assert(layout.leftOfActions,'The reaction column is not immediately left of the betting controls: '+JSON.stringify(layout));
+  assert(layout.documentWidth<=layout.clientWidth+1,'The reaction column caused horizontal page overflow: '+JSON.stringify(layout));
+  assert(layout.dealerCount===1&&layout.dealerDeclared===layout.dealerOwner&&layout.dealerAccessible&&
+    layout.dealerSize.width>=30&&layout.dealerSize.height>=30&&layout.dealerAtCorner&&
+    !layout.dealerContentOverlaps.length&&!layout.dealerOtherSeatOverlap&&layout.dealerInFelt&&layout.dealerInViewport,
+    'The prominent dealer chip is missing, misplaced, or collides with seat content: '+JSON.stringify(layout));
   await one.screenshot('reactions-mobile-nine-seat');
-  for (const [width,height] of [[1440,900],[1024,768],[390,844],[320,568],[844,390],[667,375]]) {
+  for (const [width,height] of [[1440,900],[1280,800],[1024,768],[390,844],[320,568],[844,390],[667,375]]) {
     await one.resize(width,height);
     await sleep(150);
+    const dock=await evaluate(one,()=>{
+      const rect=n=>{const r=n.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+      const rail=document.querySelector('#reaction-shortcuts'),controls=document.querySelector('#action-controls');
+      const buttons=[...rail.querySelectorAll('[data-send-reaction]')].map(rect);
+      const r=rect(rail),a=rect(controls);
+      const dealer=document.querySelector('#seat-grid .seat-card > .dealer-marker'), owner=dealer?.closest('.seat-card');
+      const d=dealer?rect(dealer):null,s=owner?rect(owner):null,f=rect(document.querySelector('#felt'));
+      const name=owner?.querySelector('.seat-name');
+      let text=null;
+      if(name&&name.firstChild){const range=document.createRange();range.selectNodeContents(name);const b=range.getBoundingClientRect(),clip=rect(name);text={left:Math.max(b.left,clip.left),top:Math.max(b.top,clip.top),right:Math.min(b.right,clip.right),bottom:Math.min(b.bottom,clip.bottom)};}
+      const overlap=(x,y)=>x&&y&&x.left<y.right&&x.right>y.left&&x.top<y.bottom&&x.bottom>y.top;
+      const otherSeatRows=owner&&d?[...document.querySelectorAll('#seat-grid .seat-card')].filter(n=>n!==owner&&overlap(d,rect(n))).map(n=>({seatNo:n.dataset.seatNo,box:rect(n)})):[];
+      const otherSeats=otherSeatRows.length;
+      const ownOverlaps=owner&&d?[['name',text],...[
+        ['stack',owner.querySelector('.seat-stack')],['cards',owner.querySelector('.seat-cards')],
+        ['action',owner.querySelector('.seat-action')],['wager',owner.querySelector('.seat-wager')],
+        ['clock',owner.querySelector('.seat-turn-clock')]].map(([label,n])=>[label,n?rect(n):null])
+      ].filter(([,b])=>b&&overlap(d,b)).map(([label])=>label):[];
+      const gaps=buttons.slice(1).map((b,i)=>b.top-buttons[i].bottom);
+      return {width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,
+        clientWidth:document.documentElement.clientWidth,count:buttons.length,buttons,rail:r,controls:a,
+        leftOfActions:a.left>=r.right-1&&a.left-r.right<=12,
+        vertical:buttons.length===3&&buttons[0].top<buttons[1].top&&buttons[1].top<buttons[2].top&&
+          buttons.every(b=>b.width>=30&&b.height>=30)&&gaps.every(g=>g>=0&&g<=8),
+        dealerCount:document.querySelectorAll('#seat-grid .seat-card > .dealer-marker').length,
+        dealerSeat:owner?.dataset.seatNo||'',dealerDeclared:dealer?.dataset.markerSeat||'',
+        dealerAccessible:dealer?.getAttribute('aria-label')==='Dealer button',
+        dealerSize:d?{width:d.width,height:d.height}:null,
+        dealerCorner:d&&s?Math.hypot((d.left+d.right)/2-s.right,(d.top+d.bottom)/2-s.top)<=17:false,
+        dealerInFelt:d&&d.left>=f.left-1&&d.right<=f.right+1&&d.top>=f.top-1&&d.bottom<=f.bottom+1,
+        dealerInViewport:d&&d.left>=-1&&d.right<=innerWidth+1&&d.top>=-1&&d.bottom<=innerHeight+1,
+        dealerContentOverlaps:ownOverlaps,dealerOtherSeatOverlap:otherSeats,dealerBox:d,ownerBox:s,otherSeatRows};
+    });
+    assert(dock.count===3&&dock.vertical&&dock.leftOfActions&&dock.documentWidth<=dock.clientWidth+1,
+      'Reaction rail geometry failed at '+width+'x'+height+': '+JSON.stringify(dock));
+    assert(dock.dealerCount===1&&dock.dealerSeat===dock.dealerDeclared&&dock.dealerAccessible&&
+      dock.dealerSize.width>=30&&dock.dealerSize.height>=30&&dock.dealerCorner&&
+      !dock.dealerContentOverlaps.length&&!dock.dealerOtherSeatOverlap&&dock.dealerInFelt&&dock.dealerInViewport,
+      'Dealer chip geometry failed at '+width+'x'+height+': '+JSON.stringify(dock));
     const result=await evaluate(one,()=>{
       const summary=document.querySelector('#last-action-summary');
       const hidden=summary.hidden, content=summary.innerHTML;
@@ -152,12 +233,13 @@ export default async function reactions([one,two], sleep, roomPassword) {
   const cursorBefore=Number((await request(path+'/reactions',users[0])).cursor||0);
   const press=await evaluate(one,()=>{
     const grid=document.querySelector('#seat-grid');
-    const button=document.querySelector('#hero-seat [data-send-reaction="🤦"]');
+    const panel=document.querySelector('#action-panel');
+    const button=document.querySelector('#reaction-shortcuts [data-send-reaction="🤦"]');
     const rect=button.getBoundingClientRect();
     window.__heldReactionButton=button;
     window.__reactionPointerDown=false;
     window.__reactionRefreshDuringPress=false;
-    grid.addEventListener('pointerdown',event=>{
+    panel.addEventListener('pointerdown',event=>{
       if(event.target.closest('[data-send-reaction]')) window.__reactionPointerDown=true;
     },true);
     window.__reactionGridObserver=new MutationObserver(records=>{
@@ -165,7 +247,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
         window.__reactionRefreshDuringPress=true;
       }
     });
-    window.__reactionGridObserver.observe(grid,{childList:true,subtree:true});
+    window.__reactionGridObserver.observe(grid,{childList:true});
     return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
   });
   await one.pressAt(press.x,press.y);
@@ -199,10 +281,10 @@ export default async function reactions([one,two], sleep, roomPassword) {
     'Reaction particles were not cleaned up after the burst.');
 
   await one.reload();
-  await wait(one,()=>document.querySelector('#hero-seat [data-send-reaction]')?.offsetWidth);
-  await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
+  await wait(one,()=>document.querySelector('#reaction-shortcuts [data-send-reaction]')?.offsetWidth);
+  await wait(one,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
   await two.reload();
-  await wait(two,()=>document.querySelector('#hero-seat [data-send-reaction]')?.offsetWidth);
+  await wait(two,()=>document.querySelector('#reaction-shortcuts [data-send-reaction]')?.offsetWidth);
   await sleep(1300);
   assert(await evaluate(two,()=>document.querySelectorAll('#reaction-burst-layer .reaction-particle').length===0),
     'A reconnect replayed an earlier reaction burst.');

@@ -159,7 +159,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
       };
       const felt=rect(document.querySelector("#felt"));
       const center={x:(felt.left+felt.right)/2,y:(felt.top+felt.bottom)/2};
-      const selector=".seat-local-markers > .dealer-marker,.seat-local-markers > .seat-action.kind-turn,.seat-local-markers .seat-turn-clock,.seat-local-markers > .seat-wager";
+      const selector=".seat-card > .dealer-marker,.seat-local-markers > .seat-action.kind-turn,.seat-local-markers .seat-turn-clock,.seat-local-markers > .seat-wager";
       const rows=[...document.querySelectorAll(selector)].filter(node=>node.offsetWidth).map(node=>{
         const seat=node.closest(".seat-card"), mr=rect(node), sr=rect(seat);
         const own=node.classList.contains("dealer-marker")?node.dataset.markerSeat:
@@ -168,8 +168,10 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
         const mx=(mr.left+mr.right)/2,my=(mr.top+mr.bottom)/2;
         const sx=(sr.left+sr.right)/2,sy=(sr.top+sr.bottom)/2;
         return {kind:node.className,own,seatNo:seat?.dataset.seatNo||"",
-          lane:Boolean(seat?.querySelector(".seat-local-markers")?.contains(node)),
+          lane:node.classList.contains("dealer-marker")?node.parentElement===seat:
+            Boolean(seat?.querySelector(".seat-local-markers")?.contains(node)),
           mr,sr,seatDistance:Math.hypot(mx-sx,my-sy),
+          cornerDistance:Math.hypot(mx-sr.right,my-sr.top),
           centerDistance:Math.hypot(mx-center.x,my-center.y)};
       });
       return {
@@ -280,7 +282,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
   });
 
   await wait(playerPage,()=>document.querySelectorAll(".seat-card[data-player-id]").length===9&&
-    document.querySelectorAll(".seat-local-markers .dealer-marker").length===1&&
+    document.querySelectorAll(".seat-card > .dealer-marker").length===1&&
     document.querySelectorAll(".seat-local-markers .seat-wager").length>=2&&
     document.querySelector(".seat-local-markers .seat-action.kind-turn"));
   const markerData=await markerSnapshot(playerPage), markerErrors=[];
@@ -289,8 +291,12 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
   if(markerData.turns!==1)markerErrors.push("turn count "+markerData.turns);
   for(const marker of markerData.rows) {
     if(!marker.lane||marker.own!==marker.seatNo)markerErrors.push("wrong marker seat "+JSON.stringify(marker));
-    if(marker.centerDistance<24||marker.seatDistance>=marker.centerDistance)
+    if(marker.kind.includes("dealer-marker")) {
+      if(marker.mr.width<30||marker.mr.height<30||marker.cornerDistance>18)
+        markerErrors.push("dealer chip is not prominent at the seat corner "+JSON.stringify(marker));
+    } else if(marker.centerDistance<24||marker.seatDistance>=marker.centerDistance) {
       markerErrors.push("marker is centered away from its player "+JSON.stringify(marker));
+    }
   }
   assert(!markerErrors.length,"Seat-local marker placement failed: "+markerErrors.join("; "));
 

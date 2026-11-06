@@ -499,9 +499,11 @@ export default async function adjustments([one, two], sleep, roomPassword) {
             ['seat', node],
             ['cards', node.querySelector('.seat-cards')],
             ['equity', node.querySelector('.seat-equity:not(.is-empty)')],
-            ...[...node.querySelectorAll('.seat-local-markers .seat-action, .seat-local-markers .seat-turn-clock, .seat-local-markers .seat-wager, .seat-local-markers .dealer-marker')]
+            ...[...node.querySelectorAll('.seat-local-markers .seat-action, .seat-local-markers .seat-turn-clock, .seat-local-markers .seat-wager')]
               .map((marker,index) => ['marker ' + index, marker]),
           ];
+          const dealerChip = node.querySelector(':scope > .dealer-marker');
+          if (dealerChip) components.push(['dealer chip', dealerChip]);
           for (const [part, element] of components) {
             const box = asBox(element);
             if (!box) continue;
@@ -526,7 +528,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       })(),
       markerAssociationIssues: (() => {
         const issues=[];
-        for (const marker of document.querySelectorAll('#seat-grid .seat-local-markers .seat-action, #seat-grid .seat-local-markers .seat-turn-clock, #seat-grid .seat-local-markers .seat-wager, #seat-grid .seat-local-markers .dealer-marker')) {
+        for (const marker of document.querySelectorAll('#seat-grid .seat-local-markers .seat-action, #seat-grid .seat-local-markers .seat-turn-clock, #seat-grid .seat-local-markers .seat-wager')) {
           const owner=marker.closest('.seat-card[data-seat-no]'), lane=marker.closest('.seat-local-markers');
           if (!owner || !lane?.contains(marker)) issues.push({type:String(marker.className),reason:'outside owner lane'});
           const declared=marker.getAttribute('data-seat-no') || marker.getAttribute('data-action-seat') || marker.getAttribute('data-marker-seat');

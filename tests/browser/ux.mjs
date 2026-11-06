@@ -220,7 +220,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       '#seat-grid .seat-local-markers .seat-action, ' +
       '#seat-grid .seat-local-markers .seat-turn-clock, ' +
       '#seat-grid .seat-local-markers .seat-wager, ' +
-      '#seat-grid .seat-local-markers .dealer-marker'
+      '#seat-grid .seat-card > .dealer-marker'
     )].filter(marker => marker.offsetWidth && marker.offsetHeight);
     const blindNumbers = [...(blindStrip?.querySelectorAll('.blind-tile strong') || [])];
     const turnMarker = document.querySelector('#seat-grid .seat-action.kind-turn');
@@ -398,17 +398,43 @@ export default async function ux([one, two], sleep, roomPassword) {
       const localLane = marker.closest('.seat-local-markers');
       const ownerBox = ownerSeat && rect(ownerSeat);
       const laneBox = localLane && rect(localLane);
-      if (!ownerSeat || !localLane?.contains(marker)) errors.push(markerBox.type + ' marker is not inside its owner seat lane');
+      if (!ownerSeat || (marker.classList.contains('dealer-marker') ? marker.parentElement !== ownerSeat : !localLane?.contains(marker))) errors.push(markerBox.type + ' marker is not attached to its owner seat');
       if (ownerSeat && markerBox.seatNo && markerBox.seatNo !== ownerSeat.dataset.seatNo) {
         errors.push(markerBox.type + ' marker seat id does not match its containing seat');
       }
-      if (ownerBox && (markerBox.left < ownerBox.left - 1 || markerBox.right > ownerBox.right + 1 ||
+      const dealerChip = marker.classList.contains('dealer-marker');
+      if (!dealerChip && ownerBox && (markerBox.left < ownerBox.left - 1 || markerBox.right > ownerBox.right + 1 ||
           markerBox.top < ownerBox.top - 1 || markerBox.bottom > ownerBox.bottom + 1)) {
         errors.push(markerBox.type + ' marker escaped its seat ' + ownerSeat.dataset.seatNo);
       }
-      if (laneBox && (markerBox.left < laneBox.left - 1 || markerBox.right > laneBox.right + 1 ||
+      if (!dealerChip && laneBox && (markerBox.left < laneBox.left - 1 || markerBox.right > laneBox.right + 1 ||
           markerBox.top < laneBox.top - 1 || markerBox.bottom > laneBox.bottom + 1)) {
         errors.push(markerBox.type + ' marker escaped its fixed local lane');
+      }
+      if (dealerChip) {
+        const cornerDistance = ownerBox ? Math.hypot((markerBox.left + markerBox.right) / 2 - ownerBox.right,
+          (markerBox.top + markerBox.bottom) / 2 - ownerBox.top) : Infinity;
+        if (markerBox.width < 30 || markerBox.height < 30 || cornerDistance > 18) {
+          errors.push('dealer chip is not prominent at the seat corner');
+        }
+        if ((marker.getAttribute('aria-label') || '') !== 'Dealer button') {
+          errors.push('dealer chip lacks an accessible label');
+        }
+        const otherSeatOverlap = [...document.querySelectorAll('#seat-grid .seat-card')].some(seat =>
+          seat !== ownerSeat && overlap(markerBox, rect(seat)) > 1);
+        if (otherSeatOverlap) errors.push('dealer chip overlaps another seat');
+        const nameNode = ownerSeat?.querySelector('.seat-name');
+        if (nameNode?.firstChild) {
+          const range = document.createRange();
+          range.selectNodeContents(nameNode);
+          const textRect = range.getBoundingClientRect(), clipRect = rect(nameNode);
+          const visibleText = {left:Math.max(textRect.left,clipRect.left),top:Math.max(textRect.top,clipRect.top),
+            right:Math.min(textRect.right,clipRect.right),bottom:Math.min(textRect.bottom,clipRect.bottom)};
+          if (overlap(markerBox, visibleText) > 1) errors.push('dealer chip overlaps the visible seat name');
+        }
+        if (ownerSeat?.querySelector('.seat-stack') && overlap(markerBox, rect(ownerSeat.querySelector('.seat-stack'))) > 1) {
+          errors.push('dealer chip overlaps the chip stack');
+        }
       }
       if (marker.classList.contains('seat-action')) {
         if (!(marker.getAttribute('aria-label') || '').trim()) errors.push('action marker lacks an accessible label');

@@ -2703,3 +2703,136 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
 @media (max-height: 500px), (max-width: 360px) {
   body.gameplay-active #app-panel #table-view #table-surface #felt .board-center { gap: 0 !important; }
 }
+
+/* Action dock keeps reactions next to betting while remaining available between turns. */
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel:not([hidden]) {
+  grid-template-columns: 38px minmax(0, 1fr) !important;
+  grid-template-rows: minmax(0, 1fr) auto !important;
+  column-gap: 8px !important;
+  row-gap: 4px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel > #reaction-shortcuts {
+  position: static !important;
+  inset: auto !important;
+  display: grid !important;
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: repeat(3, minmax(0, 1fr)) !important;
+  align-self: stretch !important;
+  justify-self: center !important;
+  gap: 3px !important;
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 100% !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel > #reaction-shortcuts[hidden] {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel #reaction-shortcuts > .reaction-shortcut {
+  width: 34px !important;
+  min-width: 34px !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  aspect-ratio: 1 / 1;
+  padding: 0 !important;
+  font-size: 17px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel > #action-controls {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel > #action-controls[hidden] {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel > #action-finished-status {
+  grid-column: 1 / -1 !important;
+  grid-row: 2 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel > #action-finished-status[hidden] {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel[data-reactions-only="true"] {
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+  height: 122px !important;
+  min-height: 122px !important;
+  max-height: 122px !important;
+}
+
+/* The dealer chip belongs to the seat corner and stays clear of the name line. */
+#table-surface #seat-grid .seat-card.has-dealer { overflow: visible !important; }
+#table-surface #seat-grid .seat-card.has-dealer > .seat-top { padding-right: 32px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .seat-top {
+  padding-right: 0 !important;
+  justify-content: flex-start !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .seat-top .seat-name-wrap {
+  width: calc(100% - 34px) !important;
+  max-width: calc(100% - 34px) !important;
+  flex: 0 1 calc(100% - 34px) !important;
+  margin-right: auto !important;
+  justify-content: flex-start !important;
+  overflow: hidden !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .seat-stack {
+  width: calc(100% - 34px) !important;
+  max-width: calc(100% - 34px) !important;
+  min-width: 0 !important;
+  justify-self: start !important;
+}
+#table-surface #seat-grid .seat-card > .dealer-marker {
+  position: absolute !important;
+  z-index: 11 !important;
+  top: -10px !important;
+  right: -4px !important;
+  display: grid !important;
+  place-items: center !important;
+  box-sizing: border-box !important;
+  width: 32px !important;
+  min-width: 32px !important;
+  max-width: 32px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  max-height: 32px !important;
+  border: 2px solid #fff0c4 !important;
+  border-radius: 50% !important;
+  background: radial-gradient(circle at 34% 28%, #fff3cc 0%, #e6c985 66%, #c8a65e 100%) !important;
+  color: #292417 !important;
+  box-shadow: 0 0 0 2px rgba(18, 31, 24, .88), 0 4px 10px rgba(0, 0, 0, .48) !important;
+  font: 900 15px/1 ui-sans-serif, system-ui, sans-serif !important;
+  text-shadow: 0 1px 0 rgba(255,255,255,.42) !important;
+  white-space: nowrap !important;
+  transform: none !important;
+  pointer-events: none !important;
+}
+@media (max-height: 450px) and (min-width: 701px) and (orientation: landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface { grid-template-columns: minmax(0, 1fr) 220px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel[data-reactions-only="true"] {
+    height: 108px !important;
+    min-height: 108px !important;
+    max-height: 108px !important;
+  }
+}
+
+@media (max-height: 450px) and (max-width: 700px) and (orientation: landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface {
+    grid-template-columns: minmax(0, 1fr) 166px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #action-panel .raise-control .raise-presets {
+    gap: 2px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #action-panel .raise-control .raise-presets > .raise-preset {
+    box-sizing: border-box !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    padding-inline: 0 !important;
+    font-size: 9px !important;
+  }
+}
