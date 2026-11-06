@@ -102,6 +102,8 @@ class PrivateAdminTests(unittest.TestCase):
                 ("GET", "/poker/api/admin/history", None),
                 ("POST", "/poker/api/admin/config", {"showdown_seconds": 0}),
                 ("POST", "/poker/api/tables/" + "a" * 32 + "/bots", {"seat_no": 1}),
+                ("POST", "/poker/api/admin/history/delete",
+                 {"ids": ["a" * 32], "confirm_delete": True}),
             ):
                 with self.subTest(cookie=cookie.split("=")[0], path=path):
                     status, _, body = self.request(self.public, method, path, payload, auth)

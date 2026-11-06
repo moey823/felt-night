@@ -71,8 +71,20 @@ export default async function reactions([one,two], sleep, roomPassword) {
   await click(one,'#table-menu > summary');
   await click(one,'#reaction-settings-button');
   await wait(one,()=>document.querySelector('#reaction-settings-dialog')?.open);
+  const settingsBlankClickPreserved=await evaluate(one,()=>{
+    const dialog=document.querySelector('#reaction-settings-dialog'),r=dialog.getBoundingClientRect();
+    dialog.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:r.left+2,clientY:r.top+2}));
+    return dialog.open;
+  });
+  assert(settingsBlankClickPreserved,'Clicking blank space inside reaction settings closed the dialog.');
+  await one.bringToFront();
+  await one.clickAt(1,1);
+  await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
+  await click(one,'#table-menu > summary');
+  await click(one,'#reaction-settings-button');
+  await wait(one,()=>document.querySelector('#reaction-settings-dialog')?.open);
   await evaluate(one,()=>{
-    const values=['🔥','❤️','🦈'];
+    const values=['🔥','💩','🤦'];
     values.forEach((value,index)=>{
       const select=document.querySelector('#reaction-shortcut-'+(index+1));
       select.value=value;
@@ -81,9 +93,9 @@ export default async function reactions([one,two], sleep, roomPassword) {
     document.querySelector('#reaction-settings-form').requestSubmit();
   });
   await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
-  await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥❤️🦈');
+  await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
   const saved=await evaluate(one,id=>JSON.parse(localStorage.getItem('felt-night.reaction-favorites.v1.'+id)||'null'),users[0].player.id);
-  assert(JSON.stringify(saved)===JSON.stringify(['🔥','❤️','🦈']),'Favorite shortcuts were not saved for this account in the browser.');
+  assert(JSON.stringify(saved)===JSON.stringify(['🔥','💩','🤦']),'Favorite shortcuts were not saved for this account in the browser.');
   assert(await evaluate(two,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='👏❤️😂'),
     'Changing one account’s favorites changed the other account’s shortcuts.');
 
@@ -136,11 +148,11 @@ export default async function reactions([one,two], sleep, roomPassword) {
   await one.resize(390,844);
 
 
-  await click(one,'#hero-seat [data-send-reaction="🔥"]');
+  await click(one,'#hero-seat [data-send-reaction="🤦"]');
   await wait(two,()=>document.querySelectorAll('#reaction-burst-layer .reaction-particle').length>=12);
   const burst=await evaluate(two,()=>({count:document.querySelectorAll('#reaction-burst-layer .reaction-particle').length,
     emoji:document.querySelector('#reaction-burst-layer .reaction-particle')?.textContent}));
-  assert(burst.count>=12&&burst.emoji==='🔥','The other client did not render the reaction burst.');
+  assert(burst.count>=12&&burst.emoji==='🤦','The other client did not render the reaction burst.');
   await sleep(1300);
   const held=await evaluate(two,()=>[...document.querySelectorAll('#reaction-burst-layer .reaction-particle')].filter(n=>
     parseFloat(getComputedStyle(n).opacity)>.9 && parseFloat(getComputedStyle(n).fontSize)>=30).length);
@@ -152,7 +164,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
 
   await one.reload();
   await wait(one,()=>document.querySelector('#hero-seat [data-send-reaction]')?.offsetWidth);
-  await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥❤️🦈');
+  await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
   await two.reload();
   await wait(two,()=>document.querySelector('#hero-seat [data-send-reaction]')?.offsetWidth);
   await sleep(1300);

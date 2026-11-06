@@ -54,10 +54,14 @@
   var REACTION_EMOJI_LABELS = {
     "👏": "Clap", "❤️": "Heart", "😂": "Laugh", "🔥": "Fire",
     "😍": "Love", "😮": "Wow", "🎉": "Celebrate", "🙌": "Praise",
-    "♠️": "Spade", "💎": "Diamond", "🦈": "Shark", "🤝": "Handshake"
+    "♠️": "Spade", "💎": "Diamond", "🦈": "Shark", "🤝": "Handshake",
+    "💩": "Poop", "🤦": "Facepalm", "👀": "Eyes", "😬": "Yikes",
+    "🤔": "Thinking", "😎": "Cool", "🙏": "Pray", "💪": "Strong",
+    "🍀": "Lucky"
   };
   var REACTION_EMOJIS = Object.keys(REACTION_EMOJI_LABELS);
   var DEFAULT_REACTION_FAVORITES = ["👏", "❤️", "😂"];
+  var MAX_ADMIN_HISTORY_DELETE_IDS = 400;
   var DEFAULT_GLOBAL_CONFIG = {
     runout_seconds: 2.5,
     blind_announcement_seconds: 5,
@@ -76,6 +80,8 @@
     adminConfigSaving: false,
     adminTablesLoading: false,
     adminHistory: [],
+    adminHistorySelectedIds: [],
+    adminHistorySelectionMessage: "",
     adminHistoryLoading: false,
     adminHistoryNextOffset: null,
     adminHistoryError: "",
@@ -185,6 +191,13 @@
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function isDialogBackdropClick(dialog, event) {
+    if (!dialog || event.target !== dialog) return false;
+    var rect = dialog.getBoundingClientRect();
+    return event.clientX < rect.left || event.clientX > rect.right ||
+      event.clientY < rect.top || event.clientY > rect.bottom;
   }
 
   function loadAuth() {
@@ -913,8 +926,11 @@
     state.adminHistoryLoading = false;
     state.adminHistoryDetailLoading = false;
     state.adminHistory = [];
+    state.adminHistorySelectedIds = [];
+    state.adminHistorySelectionMessage = "";
     state.adminHistoryNextOffset = null;
     state.adminHistoryError = "";
+    renderAdminHistory();
     state.adminHistoryDetail = null;
     state.adminHistoryDetailError = "";
     state.adminHistoryDetailId = "";
@@ -2849,21 +2865,42 @@
   function renderAdminHistory() {
     var list = byId("admin-history-list");
     if (!list) return;
+    var selected = Object.create(null);
+    state.adminHistorySelectedIds.forEach(function (id) { selected[String(id)] = true; });
+    var selectedLoadedCount = state.adminHistory.reduce(function (count, game) {
+      return count + (selected[String(game.id)] ? 1 : 0);
+    }, 0);
+    var allLoadedSelected = state.adminHistory.length > 0 && selectedLoadedCount === state.adminHistory.length;
+    var someLoadedSelected = selectedLoadedCount > 0 && !allLoadedSelected;
+    var selectedCount = state.adminHistorySelectedIds.length;
     var toolbar = '<div class="admin-history-toolbar"><span class="muted">' +
-      esc(state.adminHistory.length + (state.adminHistory.length === 1 ? " archived game" : " archived games")) +
+      esc(state.adminHistory.length + (state.adminHistory.length === 1 ? " archived game loaded" : " archived games loaded")) +
       '</span><button class="button button-outline button-small" type="button" data-admin-history-refresh>Refresh</button></div>';
+    var selectionToolbar = '<div class="admin-history-bulk-toolbar"><label class="admin-history-select-all"><input type="checkbox" data-admin-history-select-all' +
+      (allLoadedSelected ? ' checked' : '') + (state.adminHistory.length ? '' : ' disabled') +
+      ' aria-label="Select loaded games">Select loaded games</label>' +
+      '<span class="muted admin-history-selection-count" aria-live="polite">' + esc(selectedCount) + ' selected</span>' +
+      '<div class="admin-history-bulk-actions"><button class="button button-quiet button-small" type="button" data-admin-history-clear-selection' +
+      (selectedCount ? '' : ' disabled') + '>Clear selection</button><button class="button button-danger button-small" type="button" data-admin-history-delete-selected' +
+      (selectedCount && !state.adminHistoryLoading && !state.adminHistoryDeleting ? '' : ' disabled') + '>Delete selected (' + esc(selectedCount) + ')</button></div>' +
+      (state.adminHistorySelectionMessage ? '<p class="muted admin-history-selection-message" role="status">' + esc(state.adminHistorySelectionMessage) + '</p>' : '') +
+      '</div>';
     var entries = state.adminHistory.map(function (game) {
+      var gameId = String(game.id || "");
+      var gameName = String(game.name || "Past game");
       var participants = Array.isArray(game.participants) ? game.participants.length :
         (Array.isArray(game.results) ? game.results.length : (Array.isArray(game.standings) ? game.standings.length : 0));
       var hands = number(game.hand_count, 0);
       var date = adminHistoryDate(game.started || game.created);
-      return '<article class="admin-history-entry" data-admin-history-id="' + esc(game.id) + '">' +
-        '<div class="admin-history-entry-copy"><h3>' + esc(game.name || "Past game") + '</h3>' +
+      return '<article class="admin-history-entry" data-admin-history-id="' + esc(gameId) + '">' +
+        '<label class="admin-history-entry-select"><input type="checkbox" data-admin-history-select="' + esc(gameId) + '"' +
+        (selected[gameId] ? ' checked' : '') + ' aria-label="Select ' + esc(gameName) + ' for deletion"></label>' +
+        '<div class="admin-history-entry-copy"><h3>' + esc(gameName) + '</h3>' +
         '<p class="muted">' + esc(statusName(game.status)) + ' · ' + esc(date) + ' · ' +
         esc(participants) + (participants === 1 ? ' player · ' : ' players · ') + esc(hands) +
         (hands === 1 ? ' saved hand' : ' saved hands') + '</p></div>' +
         '<button class="button button-outline button-small" type="button" data-admin-history-view="' +
-        esc(game.id) + '">Inspect</button></article>';
+        esc(gameId) + '">Inspect</button></article>';
     }).join("");
     var empty = state.adminHistory.length ? "" : '<p class="muted">No past games are archived yet.</p>';
     var error = state.adminHistoryError ? '<p class="muted admin-history-error" role="alert">' + esc(state.adminHistoryError) + '</p>' : "";
@@ -2871,7 +2908,58 @@
       '<button class="button button-quiet button-small" type="button" data-admin-history-more="' +
       esc(state.adminHistoryNextOffset) + '">Load older games</button>';
     var loading = state.adminHistoryLoading ? '<p class="muted admin-history-loading" role="status">Loading past games…</p>' : "";
-    list.innerHTML = toolbar + entries + empty + error + more + loading;
+    list.innerHTML = toolbar + selectionToolbar + entries + empty + error + more + loading;
+    var selectAll = list.querySelector("[data-admin-history-select-all]");
+    if (selectAll) selectAll.indeterminate = someLoadedSelected;
+  }
+
+  function updateAdminHistorySelection(id, isSelected) {
+    var gameId = String(id || "");
+    var selected = state.adminHistorySelectedIds.slice();
+    var index = selected.indexOf(gameId);
+    if (isSelected && index < 0) {
+      if (selected.length >= MAX_ADMIN_HISTORY_DELETE_IDS) {
+        state.adminHistorySelectionMessage = "Select up to " + MAX_ADMIN_HISTORY_DELETE_IDS + " games at a time. Clear the selection to start another batch.";
+        renderAdminHistory();
+        return false;
+      }
+      selected.push(gameId);
+    } else if (!isSelected && index >= 0) {
+      selected.splice(index, 1);
+    }
+    state.adminHistorySelectedIds = selected;
+    state.adminHistorySelectionMessage = "";
+    renderAdminHistory();
+    return true;
+  }
+
+  function updateAdminHistoryLoadedSelection(isSelected) {
+    var loaded = state.adminHistory.map(function (game) { return String(game.id || ""); });
+    var loadedSet = Object.create(null);
+    loaded.forEach(function (id) { loadedSet[id] = true; });
+    var selected = state.adminHistorySelectedIds.filter(function (id) { return !loadedSet[String(id)]; });
+    var omitted = 0;
+    if (isSelected) {
+      loaded.forEach(function (id) {
+        if (selected.indexOf(id) >= 0) return;
+        if (selected.length >= MAX_ADMIN_HISTORY_DELETE_IDS) {
+          omitted += 1;
+          return;
+        }
+        selected.push(id);
+      });
+    }
+    state.adminHistorySelectedIds = selected;
+    state.adminHistorySelectionMessage = omitted
+      ? "Selected up to " + MAX_ADMIN_HISTORY_DELETE_IDS + " games. Clear the selection to choose another batch."
+      : "";
+    renderAdminHistory();
+  }
+
+  function clearAdminHistorySelection() {
+    state.adminHistorySelectedIds = [];
+    state.adminHistorySelectionMessage = "";
+    renderAdminHistory();
   }
 
   async function loadAdminHistory(offset, append) {
@@ -3042,6 +3130,10 @@
       name: String(tournament.name || "Past game"),
       status: String(tournament.status || "")
     };
+    byId("admin-history-title").textContent = "Confirm past-game deletion";
+    byId("admin-history-delete-title").textContent = "Delete this past game?";
+    byId("admin-history-delete-description").textContent = "This permanently removes the archived game:";
+    byId("admin-history-delete-confirm").textContent = "Delete game";
     byId("admin-history-content").hidden = true;
     byId("admin-history-delete-name").textContent = state.adminHistoryDeleteTarget.name;
     var error = byId("admin-history-delete-step").querySelector(".admin-history-delete-error");
@@ -3050,11 +3142,43 @@
     byId("admin-history-delete-cancel").focus();
   }
 
+  function beginAdminHistoryBulkDelete(trigger) {
+    if (!state.isAdmin || state.adminHistoryDeleting || !state.adminHistorySelectedIds.length) return;
+    var ids = state.adminHistorySelectedIds.slice();
+    var count = ids.length;
+    state.adminHistoryDetailGeneration += 1;
+    state.adminHistoryDetailLoading = false;
+    state.adminHistoryDetail = null;
+    state.adminHistoryDetailId = "";
+    state.adminHistoryTrigger = trigger || null;
+    state.adminHistoryDeleteTarget = { bulk: true, ids: ids, count: count };
+    byId("admin-history-title").textContent = "Confirm past-game deletion";
+    byId("admin-history-content").hidden = true;
+    byId("admin-history-content").replaceChildren();
+    byId("admin-history-delete-title").textContent = "Delete " + count + (count === 1 ? " past game?" : " past games?");
+    byId("admin-history-delete-description").textContent = "This permanently removes the selected games and their saved history.";
+    byId("admin-history-delete-name").textContent = count + (count === 1 ? " game selected" : " games selected");
+    byId("admin-history-delete-confirm").textContent = "Delete " + count + (count === 1 ? " game" : " games");
+    var error = byId("admin-history-delete-step").querySelector(".admin-history-delete-error");
+    if (error) error.remove();
+    byId("admin-history-delete-step").hidden = false;
+    var dialog = byId("admin-history-dialog");
+    if (!dialog.open) dialog.showModal();
+    byId("admin-history-delete-cancel").focus();
+  }
+
   function cancelAdminHistoryDelete() {
     if (state.adminHistoryDeleting) return;
+    if (state.adminHistoryDeleteTarget && state.adminHistoryDeleteTarget.bulk) {
+      closeAdminHistoryDialog(true);
+      return;
+    }
     state.adminHistoryDeleteTarget = null;
     byId("admin-history-delete-step").hidden = true;
     byId("admin-history-content").hidden = false;
+    byId("admin-history-delete-title").textContent = "Delete this past game?";
+    byId("admin-history-delete-description").textContent = "This permanently removes the archived game:";
+    byId("admin-history-delete-confirm").textContent = "Delete game";
     var deleteButton = byId("admin-history-content").querySelector("[data-admin-history-delete]");
     if (deleteButton) deleteButton.focus();
   }
@@ -3062,6 +3186,10 @@
   async function confirmAdminHistoryDelete() {
     var target = state.adminHistoryDeleteTarget;
     if (!state.isAdmin || !target || state.adminHistoryDeleting) return;
+    if (target.bulk) {
+      confirmAdminHistoryBulkDelete(target);
+      return;
+    }
     var targetId = String(target.id);
     var detailGeneration = state.adminHistoryDetailGeneration;
     var adminId = String(state.player && state.player.id || "");
@@ -3069,6 +3197,8 @@
     state.adminHistoryDeleting = true;
     var button = byId("admin-history-delete-confirm");
     button.disabled = true;
+    byId("admin-history-close").disabled = true;
+    byId("admin-history-delete-cancel").disabled = true;
     var step = byId("admin-history-delete-step");
     var error = step.querySelector(".admin-history-delete-error");
     if (error) error.remove();
@@ -3078,6 +3208,9 @@
           String(state.sessionProof || "") !== authProof) return;
       state.adminHistory = state.adminHistory.filter(function (game) {
         return String(game.id) !== targetId;
+      });
+      state.adminHistorySelectedIds = state.adminHistorySelectedIds.filter(function (id) {
+        return String(id) !== targetId;
       });
       state.adminHistoryNextOffset = null;
       state.adminTables = state.adminTables.filter(function (table) {
@@ -3110,6 +3243,61 @@
     } finally {
       state.adminHistoryDeleting = false;
       if (button.isConnected) button.disabled = false;
+      byId("admin-history-close").disabled = false;
+      byId("admin-history-delete-cancel").disabled = false;
+      renderAdminHistory();
+    }
+  }
+
+  async function confirmAdminHistoryBulkDelete(target) {
+    if (!state.isAdmin || !target || !Array.isArray(target.ids) || state.adminHistoryDeleting) return;
+    var ids = target.ids.slice();
+    var adminId = String(state.player && state.player.id || "");
+    var authProof = String(state.sessionProof || "");
+    state.adminHistoryDeleting = true;
+    var button = byId("admin-history-delete-confirm");
+    button.disabled = true;
+    byId("admin-history-close").disabled = true;
+    byId("admin-history-delete-cancel").disabled = true;
+    var step = byId("admin-history-delete-step");
+    var error = step.querySelector(".admin-history-delete-error");
+    if (error) error.remove();
+    try {
+      var result = await mutate("/admin/history/delete", { ids: ids, confirm_delete: true });
+      var deletedIds = Array.isArray(result.ids) ? result.ids.map(String) : [];
+      if (result.deleted_count !== ids.length || deletedIds.length !== ids.length ||
+          ids.some(function (id) { return deletedIds.indexOf(String(id)) < 0; })) {
+        throw Error("The room returned an unexpected deletion result. Refresh past games and review the selection.");
+      }
+      if (!state.isAdmin || String(state.player && state.player.id || "") !== adminId ||
+          String(state.sessionProof || "") !== authProof || state.adminHistoryDeleteTarget !== target) return;
+      var deleted = Object.create(null);
+      deletedIds.forEach(function (id) { deleted[id] = true; });
+      state.adminHistory = state.adminHistory.filter(function (game) { return !deleted[String(game.id)]; });
+      state.adminHistorySelectedIds = state.adminHistorySelectedIds.filter(function (id) { return !deleted[String(id)]; });
+      state.adminHistorySelectionMessage = "";
+      state.adminHistoryNextOffset = null;
+      state.adminTables = state.adminTables.filter(function (table) { return !deleted[String(table.id)]; });
+      renderAdminTables();
+      state.adminHistoryTrigger = null;
+      closeAdminHistoryDialog(false);
+      await loadAdminHistory(0, false);
+      var summary = byId("admin-history-details").querySelector("summary");
+      if (summary) summary.focus({ preventScroll: true });
+    } catch (err) {
+      if (state.adminHistoryDeleteTarget === target) {
+        var message = document.createElement("p");
+        message.className = "muted admin-history-delete-error";
+        message.setAttribute("role", "alert");
+        message.textContent = (err.message || "Could not delete the selected past games.") +
+          " Refresh the list to check which games remain and review the selection.";
+        step.insertBefore(message, step.querySelector(".admin-history-delete-actions"));
+      }
+    } finally {
+      state.adminHistoryDeleting = false;
+      if (button.isConnected) button.disabled = false;
+      byId("admin-history-close").disabled = false;
+      byId("admin-history-delete-cancel").disabled = false;
     }
   }
 
@@ -3795,6 +3983,7 @@
       renderTable();
       loadAdminConfig();
       if (byId("admin-tables-details").open) loadAdminTables();
+      if (byId("admin-history-details").open) loadAdminHistory(0, false);
     } else {
       document.body.classList.remove("admin-active");
       renderTables();
@@ -4289,6 +4478,9 @@
     event.preventDefault();
     closeLastHandDialog(true);
   });
+  byId("last-hand-dialog").addEventListener("click", function (event) {
+    if (isDialogBackdropClick(byId("last-hand-dialog"), event)) closeLastHandDialog(true);
+  });
   byId("last-hand-prev").addEventListener("click", function () {
     moveLastHandStreet(-1);
   });
@@ -4309,6 +4501,9 @@
   byId("recent-action-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();
     closeRecentActionDialog(true);
+  });
+  byId("recent-action-dialog").addEventListener("click", function (event) {
+    if (isDialogBackdropClick(byId("recent-action-dialog"), event)) closeRecentActionDialog(true);
   });
   byId("recent-action-dialog").addEventListener("close", function () {
     byId("recent-action-button").setAttribute("aria-expanded", "false");
@@ -4334,6 +4529,9 @@
   byId("history-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();
     closeHistoryDialog(true);
+  });
+  byId("history-dialog").addEventListener("click", function (event) {
+    if (isDialogBackdropClick(byId("history-dialog"), event)) closeHistoryDialog(true);
   });
   byId("history-dialog").addEventListener("close", function () {
     if (byId("history-dialog").open) return;
@@ -4377,6 +4575,28 @@
       loadAdminHistory(number(button.getAttribute("data-admin-history-more"), 0), true);
     } else if (button.hasAttribute("data-admin-history-view")) {
       inspectAdminHistory(button.getAttribute("data-admin-history-view"), button);
+    } else if (button.hasAttribute("data-admin-history-clear-selection")) {
+      clearAdminHistorySelection();
+      var selectAll = byId("admin-history-list").querySelector("[data-admin-history-select-all]");
+      if (selectAll) selectAll.focus({ preventScroll: true });
+    } else if (button.hasAttribute("data-admin-history-delete-selected")) {
+      beginAdminHistoryBulkDelete(button);
+    }
+  });
+  byId("admin-history-list").addEventListener("change", function (event) {
+    var input = event.target.closest("input[type=checkbox]");
+    if (!input) return;
+    if (input.hasAttribute("data-admin-history-select-all")) {
+      updateAdminHistoryLoadedSelection(input.checked);
+      var updatedSelectAll = byId("admin-history-list").querySelector("[data-admin-history-select-all]");
+      if (updatedSelectAll) updatedSelectAll.focus({ preventScroll: true });
+    } else if (input.hasAttribute("data-admin-history-select")) {
+      var gameId = input.getAttribute("data-admin-history-select");
+      updateAdminHistorySelection(gameId, input.checked);
+      var updatedSelection = byId("admin-history-list").querySelector(
+        '[data-admin-history-select="' + CSS.escape(gameId) + '"]',
+      );
+      if (updatedSelection) updatedSelection.focus({ preventScroll: true });
     }
   });
   byId("admin-history-content").addEventListener("click", function (event) {
@@ -4394,7 +4614,12 @@
   });
   byId("admin-history-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();
-    closeAdminHistoryDialog(true);
+    if (!state.adminHistoryDeleting) closeAdminHistoryDialog(true);
+  });
+  byId("admin-history-dialog").addEventListener("click", function (event) {
+    if (isDialogBackdropClick(byId("admin-history-dialog"), event) && !state.adminHistoryDeleting) {
+      closeAdminHistoryDialog(true);
+    }
   });
   byId("admin-history-delete-cancel").addEventListener("click", cancelAdminHistoryDelete);
   byId("admin-history-delete-confirm").addEventListener("click", confirmAdminHistoryDelete);
@@ -4437,7 +4662,7 @@
     byId("reaction-settings-button").setAttribute("aria-expanded", "false");
   });
   byId("reaction-settings-dialog").addEventListener("click", function (event) {
-    if (event.target === byId("reaction-settings-dialog")) closeReactionSettingsDialog(true);
+    if (isDialogBackdropClick(byId("reaction-settings-dialog"), event)) closeReactionSettingsDialog(true);
   });
   document.querySelectorAll("[data-reaction-select]").forEach(function (select) {
     select.addEventListener("change", syncReactionSelectOptions);
@@ -4484,7 +4709,7 @@
     byId("runtime-settings-button").setAttribute("aria-expanded", "false");
   });
   byId("table-settings-dialog").addEventListener("click", function (event) {
-    if (event.target === byId("table-settings-dialog") && !state.settingsSaving) closeTableSettingsDialog(true);
+    if (isDialogBackdropClick(byId("table-settings-dialog"), event) && !state.settingsSaving) closeTableSettingsDialog(true);
   });
   byId("payout-place-count").addEventListener("change", function (event) {
     if (event.target.disabled) return;
@@ -4606,7 +4831,7 @@
     state.endConfirmation = { tableId: "", token: "", step: 0, busy: false };
   });
   byId("end-game-dialog").addEventListener("click", function (event) {
-    if (event.target === byId("end-game-dialog") && !state.endConfirmation.busy) closeEndGameDialog(true);
+    if (isDialogBackdropClick(byId("end-game-dialog"), event) && !state.endConfirmation.busy) closeEndGameDialog(true);
   });
 
   async function logoutFromRoom() {
@@ -5087,7 +5312,7 @@
     if (dialog.open) dialog.close();
   });
   byId("install-dialog").addEventListener("click", function (event) {
-    if (event.target === byId("install-dialog")) byId("install-dialog").close();
+    if (isDialogBackdropClick(byId("install-dialog"), event)) byId("install-dialog").close();
   });
   byId("install-confirm").addEventListener("click", promptInstallApp);
   window.addEventListener("beforeinstallprompt", function (event) {

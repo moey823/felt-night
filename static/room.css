@@ -2339,8 +2339,27 @@ body.gameplay-active #chat-panel .chat-messages { min-height: 0 !important; heig
 #admin-history-details > summary > span:first-child { display: grid; gap: 4px; }
 #admin-history-details > summary strong { color: var(--text); font-size: 14px; font-weight: 650; }
 #admin-history-list { display: grid; gap: 8px; max-height: min(44dvh, 380px); padding-top: 10px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
-#admin-history-list [data-admin-history-view] { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid rgba(225, 237, 227, .1); border-radius: 8px; background: rgba(10, 18, 15, .28); color: var(--text); text-align: left; }
+.admin-history-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.admin-history-bulk-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 10px; border: 1px solid rgba(225, 237, 227, .12); border-radius: 10px; background: rgba(10, 18, 15, .24); }
+.admin-history-select-all, .admin-history-entry-select { display: flex; align-items: center; gap: 9px; min-height: 38px; color: var(--text); font-size: 12px; font-weight: 650; cursor: pointer; }
+.admin-history-select-all input, .admin-history-entry-select input { width: 18px; height: 18px; margin: 0; accent-color: #d7ad61; }
+.admin-history-selection-count { grid-column: 2; grid-row: 1; text-align: right; font-size: 11px; }
+.admin-history-bulk-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.admin-history-bulk-actions .button { min-height: 40px; }
+.admin-history-selection-message { grid-column: 1 / -1; margin: 0; font-size: 11px; }
+.admin-history-entry { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px 12px; padding: 8px 10px; border: 1px solid rgba(225, 237, 227, .1); border-radius: 8px; background: rgba(10, 18, 15, .28); }
+.admin-history-entry-copy { min-width: 0; }
+.admin-history-entry-copy h3 { margin: 0 0 4px; overflow-wrap: anywhere; color: var(--text); font-size: 13px; }
+.admin-history-entry-copy p { margin: 0; font-size: 11px; }
+#admin-history-list [data-admin-history-view] { min-height: 40px; padding: 7px 10px; color: var(--text); }
 #admin-history-list [data-admin-history-more] { min-height: 40px; }
+@media (max-width: 520px) {
+  .admin-history-bulk-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .admin-history-bulk-actions { justify-content: stretch; }
+  .admin-history-bulk-actions .button { flex: 1 1 auto; padding-inline: 8px; }
+  .admin-history-entry { grid-template-columns: auto minmax(0, 1fr); }
+  #admin-history-list [data-admin-history-view] { grid-column: 2; justify-self: start; }
+}
 .admin-history-dialog { box-sizing: border-box; width: min(720px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(90dvh, 760px); padding: 0; overflow: hidden; color: var(--text, #ede9d9); border: 1px solid rgba(225, 237, 227, .18); border-radius: 16px; background: #15251e; box-shadow: 0 24px 72px rgba(0, 0, 0, .55); }
 .admin-history-dialog::backdrop { background: rgba(3, 9, 6, .76); backdrop-filter: blur(5px); }
 .admin-history-shell { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: min(90dvh, 760px); overflow: hidden; }

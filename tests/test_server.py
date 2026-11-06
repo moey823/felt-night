@@ -2025,6 +2025,125 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(repeat["error"]["code"], "history_not_found")
 
+    def test_admin_history_bulk_delete_is_atomic_admin_only_and_preserves_accounts_and_live_games(self):
+        admin_cookie, admin_proof, admin_csrf, _ = self.enable_admin()
+        admin_auth = dict(cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf)
+        host_cookie, host_proof, host_csrf, host = self.login("Bulk Delete Host")
+        host_auth = dict(cookie=host_cookie, proof=host_proof, csrf=host_csrf)
+
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Bulk cancelled game",
+        )
+        self.assertEqual(status, 201, created)
+        cancelled_id = created["table"]["id"]
+        cancelled_path = "/poker/api/tables/" + cancelled_id
+        status, _, prompt = self.request(
+            "POST", cancelled_path + "/end", {"confirm": True}, **host_auth,
+        )
+        self.assertEqual(status, 200, prompt)
+        status, _, cancelled = self.request(
+            "POST", cancelled_path + "/end",
+            {"confirmation_token": prompt["confirmation_token"]}, **host_auth,
+        )
+        self.assertEqual(status, 200, cancelled)
+        self.assertEqual(cancelled["table"]["status"], "cancelled")
+
+        status, _, live = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Still live during bulk delete",
+        )
+        self.assertEqual(status, 201, live)
+        live_id = live["table"]["id"]
+        archive_id = server.uuid.uuid4().hex
+        stale_id = server.uuid.uuid4().hex
+        conn = self.app.store.connect()
+        try:
+            conn.execute(
+                """INSERT INTO tournament_history
+                   (table_id,owner_id,name,status,created,results_json,standings_json)
+                   VALUES(?,?,?,?,?,'[]','[]')""",
+                (archive_id, host["id"], "History-only archived game", "ended", time.time()),
+            )
+        finally:
+            conn.close()
+
+        path = "/poker/api/admin/history/delete"
+        payload = {"ids": [cancelled_id, archive_id], "confirm_delete": True}
+        status, _, denied = self.request("POST", path, payload)
+        self.assertEqual(status, 401)
+        status, _, denied = self.request("POST", path, payload, **host_auth)
+        self.assertEqual(status, 403)
+        self.assertEqual(denied["error"]["code"], "admin_required")
+        status, _, no_confirmation = self.request(
+            "POST", path, {"ids": [cancelled_id, archive_id]}, **admin_auth,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(no_confirmation["error"]["code"], "confirmation_required")
+        status, _, duplicate = self.request(
+            "POST", path,
+            {"ids": [cancelled_id, cancelled_id], "confirm_delete": True}, **admin_auth,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(duplicate["error"]["code"], "invalid_history_ids")
+
+        status, _, stale = self.request(
+            "POST", path,
+            {"ids": [cancelled_id, stale_id], "confirm_delete": True}, **admin_auth,
+        )
+        self.assertEqual(status, 404)
+        status, _, still_cancelled = self.request(
+            "GET", "/poker/api/admin/history/" + cancelled_id, **admin_auth,
+        )
+        self.assertEqual(status, 200, still_cancelled)
+
+        status, _, active = self.request(
+            "POST", path,
+            {"ids": [archive_id, live_id], "confirm_delete": True}, **admin_auth,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(active["error"]["code"], "game_active")
+        status, _, still_archived = self.request(
+            "GET", "/poker/api/admin/history/" + archive_id, **admin_auth,
+        )
+        self.assertEqual(status, 200, still_archived)
+        status, _, still_live = self.request(
+            "GET", "/poker/api/tables/" + live_id, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, still_live)
+        self.assertEqual(still_live["table"]["status"], "lobby")
+
+        status, _, deleted = self.request("POST", path, payload, **admin_auth)
+        self.assertEqual(status, 200, deleted)
+        self.assertEqual(deleted, {
+            "deleted": True,
+            "deleted_count": 2,
+            "ids": [cancelled_id, archive_id],
+        })
+        status, _, deleted_history = self.request(
+            "GET", "/poker/api/admin/history/" + cancelled_id, **admin_auth,
+        )
+        self.assertEqual(status, 404)
+        status, _, missing_archive = self.request(
+            "GET", "/poker/api/admin/history/" + archive_id, **admin_auth,
+        )
+        self.assertEqual(status, 404)
+        status, _, live_after = self.request(
+            "GET", "/poker/api/tables/" + live_id, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, live_after)
+        conn = self.app.store.connect()
+        try:
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) AS n FROM accounts WHERE player_id=?", (host["id"],),
+            ).fetchone()["n"], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) AS n FROM sessions WHERE player_id=?", (host["id"],),
+            ).fetchone()["n"], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) AS n FROM tables WHERE id=?", (live_id,),
+            ).fetchone()["n"], 1)
+        finally:
+            conn.close()
+
     def test_last_hand_replay_is_authenticated_sanitized_and_selects_latest_completed(self):
         host_cookie, host_proof, host_csrf, host = self.login("Replay Host")
         guest_cookie, guest_proof, guest_csrf, guest = self.login("Replay Guest")

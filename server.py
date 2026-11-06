@@ -37,7 +37,11 @@ CHAT_MAX_LENGTH = 500
 CHAT_READ_LIMIT = 50
 CHAT_TABLE_LIMIT = 100
 CHAT_RATE_SECONDS = 1.0
-REACTION_EMOJI_ALLOWLIST = ("👏", "❤️", "😂", "🔥", "😍", "😮", "🎉", "🙌", "♠️", "💎", "🦈", "🤝")
+REACTION_EMOJI_ALLOWLIST = (
+    "👏", "❤️", "😂", "🔥", "😍", "😮", "🎉", "🙌", "♠️", "💎", "🦈", "🤝",
+    "💩", "🤦", "👀", "😬", "🤔", "😎", "🙏", "💪", "🍀",
+)
+MAX_ADMIN_HISTORY_DELETE_IDS = 400
 REACTION_RATE_SECONDS = 0.8
 REACTION_LIFETIME_SECONDS = 8.0
 REACTION_TABLE_LIMIT = 32
@@ -1142,6 +1146,66 @@ class Store:
         finally:
             conn.close()
 
+    def delete_admin_history_bulk(self, table_ids):
+        if (
+            not isinstance(table_ids, list)
+            or not table_ids
+            or len(table_ids) > MAX_ADMIN_HISTORY_DELETE_IDS
+            or any(not isinstance(table_id, str) or not re.fullmatch(r"[a-f0-9]{32}", table_id)
+                   for table_id in table_ids)
+            or len(set(table_ids)) != len(table_ids)
+        ):
+            raise AppError(
+                400, "invalid_history_ids",
+                "Choose between 1 and %d unique past games." % MAX_ADMIN_HISTORY_DELETE_IDS,
+            )
+
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            targets = []
+            for table_id in table_ids:
+                table_row = conn.execute(
+                    "SELECT state FROM tables WHERE id=?", (table_id,),
+                ).fetchone()
+                history_row = conn.execute(
+                    "SELECT name,status FROM tournament_history WHERE table_id=?",
+                    (table_id,),
+                ).fetchone()
+                if table_row is None and history_row is None:
+                    raise AppError(404, "history_not_found", "One or more selected past games were not found.")
+                if table_row is not None:
+                    state = json.loads(table_row["state"])
+                    status = state.get("status")
+                    name = str(state.get("name") or (
+                        history_row["name"] if history_row is not None else "Tournament"
+                    ))
+                else:
+                    status = history_row["status"]
+                    name = history_row["name"]
+                if status not in tournament_history.TERMINAL_STATUSES:
+                    raise AppError(
+                        409, "game_active",
+                        "Only completed, ended, cancelled, or expired games can be deleted.",
+                    )
+                targets.append((table_id, name, status))
+
+            for table_id, _name, _status in targets:
+                conn.execute("DELETE FROM chat_messages WHERE table_id=?", (table_id,))
+                conn.execute("DELETE FROM table_reactions WHERE table_id=?", (table_id,))
+                conn.execute("DELETE FROM end_confirmations WHERE table_id=?", (table_id,))
+                tournament_history.delete_tournament_history(conn, table_id)
+                conn.execute("DELETE FROM tables WHERE id=?", (table_id,))
+            conn.commit()
+            ids = [item[0] for item in targets]
+            return {"deleted": True, "deleted_count": len(ids), "ids": ids}
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def get_last_hand(self, table_id, player_id):
         conn = self.connect()
         try:
@@ -1681,6 +1745,18 @@ class Handler(BaseHTTPRequestHandler):
                     raise AppError(403, "admin_required", "Room admin access is required.")
                 config = self.app.store.update_global_config(body, now)
                 self._json(200, {"config": config})
+                return
+
+            if path == "/poker/api/admin/history/delete":
+                if not player.get("is_admin"):
+                    raise AppError(403, "admin_required", "Room admin access is required.")
+                if body.get("confirm_delete") is not True:
+                    raise AppError(
+                        400, "confirmation_required",
+                        "Confirm permanent deletion of the selected past games.",
+                    )
+                result = self.app.store.delete_admin_history_bulk(body.get("ids"))
+                self._json(200, result)
                 return
 
             admin_history_delete = re.fullmatch(
