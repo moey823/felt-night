@@ -18,7 +18,7 @@
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <a class="brand" href="/poker/" aria-label="Felt Night home">
+      <a class="brand" href="/poker/lobby" aria-label="Felt Night lobby">
         <img class="ace-brand" src="/poker/ace.svg" alt="" width="42" height="42">
         <span class="brand-copy">
           <strong>Felt Night</strong>
@@ -125,16 +125,18 @@
 
       <section id="app-panel" class="app-panel" hidden>
         <div class="dashboard-heading">
-          <div>
-            <div class="eyebrow"><span class="eyebrow-line"></span> Private poker room</div>
-            <h1>Your next table.</h1>
-            <p>Choose an open lobby or start a new game.</p>
-          </div>
+          <div><h1>Lobby</h1></div>
           <div class="dashboard-actions">
             <button id="install-app-button" class="button button-outline button-small" type="button" hidden>Install Felt Night</button>
             <button id="create-game-tab" class="button button-primary new-game-button" type="button"><span>New game</span><span aria-hidden="true">↗</span></button>
           </div>
         </div>
+
+        <section id="popup-fallback" class="popup-fallback panel" role="status" aria-live="polite" hidden>
+          <div><strong>Your browser blocked the table window.</strong><p>Use the dedicated table view to continue.</p></div>
+          <button id="popup-fallback-open" class="button button-primary button-small" type="button">Open table here</button>
+          <button id="popup-fallback-dismiss" class="button button-quiet button-small" type="button" aria-label="Dismiss">×</button>
+        </section>
 
         <div class="dashboard-grid">
           <aside class="sidebar">
@@ -157,16 +159,10 @@
             </div>
           </aside>
 
-          <section class="workspace" aria-label="Selected poker table">
-            <div id="empty-state" class="empty-state panel">
-              <div class="empty-art" aria-hidden="true">
-                <div class="empty-chip">♠</div><div class="empty-card card-red"><b>Q</b><span>♥</span></div><div class="empty-card"><b>A</b><span>♣</span></div>
-              </div>
-              <div class="panel-kicker">READY WHEN YOU ARE</div>
-              <h2>Pick a table or<br>deal a new one.</h2>
-              <p>Open a lobby to take a seat. The host starts the game when everyone’s ready.</p>
+          <section class="workspace" aria-label="Poker table">
+            <div id="table-loading" class="table-loading panel" role="status" hidden>
+              <span class="loading-dot" aria-hidden="true"></span> Opening table…
             </div>
-
             <div id="table-view" class="table-view" hidden>
               <div class="table-heading table-shell-header">
                 <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to lobby"><span aria-hidden="true">←</span> Lobby</button>
@@ -185,9 +181,7 @@
                     <button id="chat-button" class="button button-quiet button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
                     <button id="reaction-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="reaction-settings-dialog" aria-expanded="false">Reaction shortcuts</button>
                     <button id="sit-out-button" class="button button-quiet button-small" type="button" aria-pressed="false" hidden>Sit out</button>
-                    <button id="copy-invite-button" class="button button-quiet button-small" type="button">Copy invite link</button>
                     <button id="fullscreen-button" class="button button-quiet button-small" type="button">Full screen</button>
-                    <button id="open-table-window-button" class="button button-quiet button-small" type="button">Open table window</button>
                     <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
                     <button id="table-logout-button" class="button button-quiet button-small" type="button">Log out</button>
                     <button id="cancel-button" class="button button-quiet button-small" type="button" hidden>Cancel lobby</button>

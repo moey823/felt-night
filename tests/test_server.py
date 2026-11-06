@@ -240,6 +240,27 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("Content-Security-Policy", headers)
 
+    def test_lobby_and_standalone_table_routes_serve_the_shared_app_shell(self):
+        table_id = "a" * 32
+        for path in (
+            "/poker/",
+            "/poker/lobby",
+            "/poker/lobby?table=%s&setup=1" % table_id,
+            "/lobby",
+            "/table?table=%s" % table_id,
+        ):
+            with self.subTest(path=path):
+                status, headers, body = self.request("GET", path)
+                self.assertEqual(status, 200)
+                self.assertIn("text/html", headers["Content-Type"])
+                self.assertIn(b"id=\"table-view\"", body)
+                self.assertNotIn(b"id=\"empty-state\"", body)
+                self.assertNotIn(b"copy-invite-button", body)
+                self.assertNotIn(b"open-table-window-button", body)
+        status, _, body = self.request("GET", "/poker/api/me?table=%s" % table_id)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"]["code"], "invalid_url")
+
     def test_registration_is_gated_and_account_login_keeps_stable_identity(self):
         wrong_status, _, wrong = self.request(
             "POST", "/poker/api/register",

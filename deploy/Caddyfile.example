@@ -1,4 +1,4 @@
 poker.example.com {
-    @poker path /poker /poker/*
+    @poker path /poker /poker/* /lobby /lobby/* /table /table/*
     reverse_proxy @poker 127.0.0.1:18943
 }

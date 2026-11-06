@@ -329,18 +329,12 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
     'End game did not leave a terminal public table without fabricated standings: ' + JSON.stringify(ended));
 
   await evaluate(hostPage, () => {
-    window.flowOpenArgs = null;
+    sessionStorage.removeItem('flowOpenArgs');
     window.open = function(url, target, features) {
-      window.flowOpenArgs = {url, target, features};
-      return {};
+      sessionStorage.setItem('flowOpenArgs', JSON.stringify({url, target, features}));
+      return window.__FELT_NIGHT_TEST_OPEN__(url, target, features);
     };
   });
-  await click(hostPage, '#table-menu > summary');
-  await click(hostPage, '#open-table-window-button');
-  const popupRequest = await evaluate(hostPage, () => window.flowOpenArgs);
-  assert(popupRequest && popupRequest.target === '_blank' && popupRequest.url.includes('#table=') &&
-    popupRequest.features.includes('popup=yes') && popupRequest.features.includes('resizable=yes'),
-    'Open table window did not request the compact popup after an explicit click: ' + JSON.stringify(popupRequest));
 
   // A legacy zero-share tail is removed without changing the positive percentages on the next save.
   const zeroName = 'Zero ' + Date.now().toString(36);
@@ -350,6 +344,10 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   });
   const zeroId = String((zeroTable.table || zeroTable).id);
   await openTable(hostPage, zeroName);
+  const popupRequest = await evaluate(hostPage, () => JSON.parse(sessionStorage.getItem('flowOpenArgs') || 'null'));
+  assert(popupRequest && popupRequest.target === '_blank' && popupRequest.url.includes('/poker/table?table=') &&
+    popupRequest.url.includes(zeroId) && popupRequest.features.includes('popup=yes') && popupRequest.features.includes('resizable=yes'),
+    'Opening a lobby card did not request the dedicated table window: ' + JSON.stringify(popupRequest));
   await openSettingsFromMenu(hostPage);
   const zeroUi = await evaluate(hostPage, () => ({
     count: document.querySelector('#payout-place-count').value,
