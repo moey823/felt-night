@@ -128,8 +128,10 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
 
   await clickTrusted(hostPage, '[data-open-table="' + routeTableId + '"]');
   const cardPage = await hostPage.waitForPopup();
-  await wait(cardPage, () => location.pathname === '/poker/table' &&
-    !document.querySelector('#table-view').hidden);
+  await wait(cardPage, () => {
+    const tableView = document.querySelector('#table-view');
+    return location.pathname === '/poker/table' && Boolean(tableView && !tableView.hidden);
+  });
   const sourceAfterCard = await evaluate(hostPage, () => ({
     path:location.pathname, lobby:document.body.classList.contains('lobby-route'),
     tableHidden:document.querySelector('#table-view').hidden,
@@ -157,8 +159,10 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
     blockedOpen.workspace === 'none' && blockedOpen.button.includes('Open table here'),
     'A blocked popup embedded gameplay instead of offering an explicit route button: ' + JSON.stringify(blockedOpen));
   await clickTrusted(hostPage, '#popup-fallback-open');
-  await wait(hostPage, () => location.pathname === '/poker/table' &&
-    !document.querySelector('#table-view').hidden);
+  await wait(hostPage, () => {
+    const tableView = document.querySelector('#table-view');
+    return location.pathname === '/poker/table' && Boolean(tableView && !tableView.hidden);
+  });
   await click(hostPage, '#close-table-button');
   await wait(hostPage, () => location.pathname === '/poker/lobby');
 
@@ -172,9 +176,12 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
   await input(loginPage, '#login-name', username);
   await input(loginPage, '#login-password', password);
   await evaluate(loginPage, () => document.querySelector('#login-form').requestSubmit());
-  await wait(loginPage, () => location.pathname === '/table' &&
-    document.querySelector('#app-panel')?.hidden === false &&
-    !document.querySelector('#table-view')?.hidden);
+  await wait(loginPage, () => {
+    const appPanel = document.querySelector('#app-panel');
+    const tableView = document.querySelector('#table-view');
+    return location.pathname === '/table' && appPanel?.hidden === false &&
+      Boolean(tableView && !tableView.hidden);
+  });
   const authenticatedDirectTable = await evaluate(loginPage, () => ({
     table:document.querySelector('#view-table-name')?.textContent || '',
     routeId:new URLSearchParams(location.search).get('table'),
