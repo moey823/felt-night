@@ -659,7 +659,9 @@ def update_runtime_settings(
 
         _refresh_presentation_deadline(state, hand)
 
-    if "level_minutes" in settings or "blind_announcement_seconds" in settings or announcements_rescheduled:
+    if (
+        "level_minutes" in settings or "blind_announcement_seconds" in settings or announcements_rescheduled
+    ) and state["blinds"].get("started_at") is not None:
         blinds = state["blinds"]
         announcement = state.get("blind_announcement")
         announcement_until = (
@@ -905,8 +907,6 @@ def start(
     state["status"] = "playing"
     state["started_at"] = timestamp
     state["last_activity_at"] = timestamp
-    state["blinds"]["started_at"] = timestamp
-    state["blinds"]["next_level_at"] = timestamp + state["config"]["level_minutes"] * 60
     _randomize_starting_seats(state)
     _log(state, "Tournament started at level 1.", timestamp)
     _start_hand(state, timestamp, first=True)
@@ -955,6 +955,12 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
     if len(alive) <= 1:
         _complete_tournament(state, now)
         return
+
+    # A new level gets its full duration from its first actual deal.
+    blinds = state["blinds"]
+    if blinds.get("next_level_at") is None:
+        blinds["started_at"] = now
+        blinds["next_level_at"] = now + state["config"]["level_minutes"] * 60
 
     previous_hand = state.get("hand")
     alive_ids = {seat["player_id"] for seat in alive}
@@ -1693,7 +1699,7 @@ def _apply_due_blinds(
     timestamp: float,
     not_before: Optional[float] = None,
 ) -> bool:
-    """Apply overdue blind levels once and schedule one non-overlapping notice."""
+    """Advance one level at a hand boundary; its clock waits for the deal."""
     if state.get("status") != "playing":
         return False
     blinds = state["blinds"]
@@ -1701,12 +1707,9 @@ def _apply_due_blinds(
     if deadline is None or timestamp < deadline:
         return False
 
-    level_seconds = state["config"]["level_minutes"] * 60
-    passed = 1 + int((timestamp - deadline) // level_seconds)
-    blinds["level"] += passed
-    growth = 1 << min(passed, MAX_CHIPS.bit_length())
-    blinds["small"] = min(MAX_CHIPS, blinds["small"] * growth)
-    blinds["big"] = min(MAX_CHIPS, blinds["big"] * growth)
+    blinds["level"] += 1
+    blinds["small"] = min(MAX_CHIPS, blinds["small"] * 2)
+    blinds["big"] = min(MAX_CHIPS, blinds["big"] * 2)
     announcement_seconds = state["config"].get(
         "blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS,
     )
@@ -1730,13 +1733,8 @@ def _apply_due_blinds(
             starts_at = max(starts_at, value)
 
     announcement_until = starts_at + announcement_seconds
-    hand_level_started_at = deadline + (passed - 1) * level_seconds
-    scheduled_next_level = deadline + passed * level_seconds
-    blinds["started_at"] = announcement_until if announcement_seconds > 0 else hand_level_started_at
-    blinds["next_level_at"] = (
-        max(scheduled_next_level + announcement_seconds, announcement_until + level_seconds)
-        if announcement_seconds > 0 else scheduled_next_level
-    )
+    blinds["started_at"] = None
+    blinds["next_level_at"] = None
     state["blind_announcement"] = (
         {
             "level": blinds["level"],
@@ -2948,6 +2946,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "big": blinds["big"],
             "next_level_at": next_level_view,
             "seconds_to_next": seconds_to_next,
+            "waiting_for_hand": state.get("status") == "playing" and next_level is None,
             "pending": bool(
                 state.get("status") == "playing"
                 and hand is not None

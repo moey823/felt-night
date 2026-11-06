@@ -164,7 +164,9 @@ class EngineTests(unittest.TestCase):
             "level": 2, "small": 10, "big": 20, "starts_at": 103, "until": 108,
         })
         self.assertEqual(hand["next_hand_at"], 108)
-        self.assertEqual(state["blinds"]["next_level_at"], 108.6)
+        self.assertIsNone(state["blinds"]["started_at"])
+        self.assertIsNone(state["blinds"]["next_level_at"])
+        self.assertTrue(engine.public_view(state, None)["blinds"]["waiting_for_hand"])
 
         # A delayed poll after both deadlines still deals once; it does not
         # replace the announcement and postpone this same hand boundary again.
@@ -172,6 +174,8 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(state["hand_no"], announced_hand_no + 1)
         self.assertEqual(state["blinds"]["level"], 2)
         self.assertIsNone(state["blind_announcement"])
+        self.assertEqual(state["blinds"]["started_at"], 109)
+        self.assertEqual(state["blinds"]["next_level_at"], 109.6)
 
     def test_bust_and_blind_announcements_hold_together_and_survive_final_completion(self):
         state = engine.create_lobby(
@@ -924,7 +928,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(state["hand_no"], 2)
         self.assertEqual(state["hand"]["big_blind"], 20)
 
-    def test_multiple_expired_levels_catch_up_after_a_runout(self):
+    def test_long_runout_advances_only_one_level_and_waits_for_the_deal(self):
         state = engine.create_lobby(
             "blind-runout", "p1", "Ada",
             config(max_seats=3, starting_stack=100), now=100,
@@ -967,10 +971,61 @@ class EngineTests(unittest.TestCase):
                 self.assertEqual(state["blinds"]["level"], 1)
 
         self.assertEqual(state["status"], "playing")
-        self.assertEqual(state["blinds"]["level"], 5)
-        self.assertEqual((state["blinds"]["small"], state["blinds"]["big"]), (80, 160))
-        self.assertEqual(state["blinds"]["next_level_at"], deadline + 240)
+        self.assertEqual(state["blinds"]["level"], 2)
+        self.assertEqual((state["blinds"]["small"], state["blinds"]["big"]), (10, 20))
+        self.assertIsNone(state["blinds"]["next_level_at"])
         self.assertEqual(hand["big_blind"], 10)
+
+    def test_each_level_waits_for_a_deal_even_after_delayed_polls_without_announcements(self):
+        state = heads_up()
+        for level in (2, 3):
+            hand = state["hand"]
+            expired_at = state["blinds"]["next_level_at"] + 300
+            hand["turn_deadline"] = expired_at + 1000
+            engine.apply_action(
+                state, hand["to_act"], "fold", None,
+                state["hand_no"], state["turn_version"], now=expired_at,
+            )
+            self.assertEqual(state["blinds"]["level"], level)
+            self.assertIsNone(state["blinds"]["started_at"])
+            self.assertIsNone(state["blinds"]["next_level_at"])
+            deal_at = hand["next_hand_at"] + 300
+            engine.advance(state, now=deal_at)
+            self.assertEqual(state["blinds"]["level"], level)
+            self.assertEqual(state["hand"]["big_blind"], 10 * 2 ** (level - 1))
+            self.assertEqual(state["blinds"]["started_at"], deal_at)
+            self.assertEqual(state["blinds"]["next_level_at"], deal_at + 60)
+            self.assertFalse(engine.public_view(state, None)["blinds"]["waiting_for_hand"])
+
+            # Further hands at the same level must not restart its timer.
+            next_hand = state["hand"]
+            engine.apply_action(
+                state, next_hand["to_act"], "fold", None,
+                state["hand_no"], state["turn_version"], now=deal_at + 1,
+            )
+            engine.advance(state, now=next_hand["next_hand_at"])
+            self.assertEqual(state["blinds"]["next_level_at"], deal_at + 60)
+
+    def test_pausing_and_editing_pending_level_keeps_clock_waiting_for_deal(self):
+        state = heads_up()
+        deadline = state["blinds"]["next_level_at"]
+        hand = state["hand"]
+        hand["turn_deadline"] = deadline + 1000
+        engine.apply_action(
+            state, hand["to_act"], "fold", None,
+            state["hand_no"], state["turn_version"], now=deadline + 1,
+        )
+        engine.pause_table(state, "p1", True, now=deadline + 1.1)
+        engine.update_runtime_settings(state, "p1", {"level_minutes": 2}, now=deadline + 10)
+        engine.advance(state, now=deadline + 300)
+        self.assertIsNone(state["blinds"]["started_at"])
+        self.assertIsNone(state["blinds"]["next_level_at"])
+        engine.pause_table(state, "p1", False, now=deadline + 300)
+        deal_at = hand["next_hand_at"] + 100
+        engine.advance(state, now=deal_at)
+        self.assertEqual(state["blinds"]["level"], 2)
+        self.assertEqual(state["blinds"]["started_at"], deal_at)
+        self.assertEqual(state["blinds"]["next_level_at"], deal_at + 120)
 
     def test_final_tournament_hand_does_not_apply_pending_blind_level(self):
         state = heads_up(now=100, starting_stack=100)

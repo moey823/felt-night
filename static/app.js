@@ -1425,6 +1425,12 @@
       node.setAttribute("aria-label", "Next blind level starts after this hand");
       return;
     }
+    if (view.blinds && view.blinds.waiting_for_hand) {
+      clearBlindLevelClock();
+      node.textContent = "Next hand";
+      node.setAttribute("aria-label", "Blind level countdown starts when the next hand begins");
+      return;
+    }
     var deadline = epochMilliseconds(blinds.nextAt);
     var serverNow = epochMilliseconds(view.server_now) || Date.now();
     var paused = Boolean(view.paused);
