@@ -23,6 +23,17 @@ export default async function history([one, two], sleep, roomPassword) {
       return true;
     }, selector);
   }
+  async function clickTrusted(page, selector) {
+    await page.bringToFront();
+    const point = await evaluate(page, query => {
+      const node = document.querySelector(query);
+      if (!node || !node.offsetWidth || node.hidden || node.disabled) return null;
+      const rect = node.getBoundingClientRect();
+      return {x:Math.round(rect.left + rect.width / 2), y:Math.round(rect.top + rect.height / 2)};
+    }, selector);
+    if (!point) throw Error('Cannot click visible control: ' + selector);
+    await page.clickAt(point.x, point.y);
+  }
 
   const origin = await one.evaluate('location.origin');
   async function request(path, account, payload) {
@@ -109,7 +120,7 @@ export default async function history([one, two], sleep, roomPassword) {
   }
   assert(showdown, 'The disposable hand did not complete for history review.');
 
-  await click(one, '#history-button');
+  await click(one, '#lobby-history-button');
   await wait(one, id => Boolean(document.querySelector('#history-dialog')?.open &&
     document.querySelector('[data-history-table="' + id + '"]')), tableId);
   await click(one, '[data-history-table="' + tableId + '"]');
@@ -126,6 +137,17 @@ export default async function history([one, two], sleep, roomPassword) {
   'Player history omitted saved tournament facts or hand transcript: ' + savedText);
   await evaluate(one, () => document.querySelector('#history-close').click());
   await wait(one, () => !document.querySelector('#history-dialog')?.open);
+
+  await wait(one, id => {
+    const button = document.querySelector('[data-open-table="' + id + '"]');
+    return Boolean(button && button.offsetWidth && !button.hidden);
+  }, tableId);
+  await clickTrusted(one, '[data-open-table="' + tableId + '"]');
+  await wait(one, id => location.pathname === '/poker/table' &&
+    new URLSearchParams(location.search).get('table') === id, tableId);
+  await click(one, '#table-menu > summary');
+  await wait(one, () => Boolean(document.querySelector('#last-hand-button')?.offsetWidth &&
+    !document.querySelector('#last-hand-button').hidden));
 
   await evaluate(one, () => {
     window.historyTestOriginalFetch = window.fetch;
