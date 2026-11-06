@@ -2605,3 +2605,23 @@ body .mini-card .mini-rank { font-size: min(17px, 36cqh) !important; line-height
   .reaction-settings-selects { grid-template-columns: minmax(0, 1fr); }
   .reaction-settings-dialog { position: fixed; inset: auto 8px max(8px, env(safe-area-inset-bottom)); width: auto; max-width: none; margin: 0; }
 }
+
+/* The completed hand uses the existing marker lane for every exposed strength. */
+#table-surface #seat-grid .seat-local-markers > .seat-hand-strength {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  display: grid;
+  place-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 1px;
+  color: #edf4d5;
+  font: 800 9px/10px ui-sans-serif, system-ui, sans-serif;
+  text-align: center;
+}
+.seat-hand-strength > span { display: block; text-wrap: balance; }
+@media (min-width: 1024px) and (min-height: 650px) {
+  #table-surface #seat-grid .seat-local-markers > .seat-hand-strength { font-size: 11px; line-height: 12px; }
+}
