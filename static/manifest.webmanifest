@@ -2,7 +2,7 @@
   "name": "Felt Night \u2014 Private Play-Money Poker",
   "short_name": "Felt Night",
   "id": "/poker/",
-  "start_url": "/poker/",
+  "start_url": "/poker/lobby",
   "scope": "/poker/",
   "display": "standalone",
   "orientation": "any",

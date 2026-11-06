@@ -105,8 +105,8 @@
     refreshBusy: false,
     refreshTimer: 0,
     refreshPending: false,
-    inviteCopiedFor: "",
-    inviteResetTimer: 0,
+    pendingTableUrl: "",
+    openTableSetupOnLoad: false,
     noticeTimer: 0,
     actionFeedbackTimer: 0,
     settingsTableId: "",
@@ -224,9 +224,83 @@
     }
   }
 
-  function setHashTable(id) {
-    var hash = id ? "#table=" + encodeURIComponent(id) : "";
-    window.history.replaceState(null, "", window.location.pathname + hash);
+  function requestedTableId() {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var id = params.get("table") || hashTableId();
+      return id.length <= 100 ? id : "";
+    } catch (err) {
+      return "";
+    }
+  }
+
+  var routeRootFamily = /^\/(?:lobby|table)\/?$/.test(window.location.pathname);
+  var routePrefix = routeRootFamily ? "" : "/poker";
+  var initialRouteTableId = requestedTableId();
+  var initialRouteParams = new URLSearchParams(window.location.search);
+  var initialRouteSetup = Boolean(initialRouteTableId && initialRouteParams.get("setup") === "1");
+  var pageMode = (/^\/(?:poker\/)?table\/?$/.test(window.location.pathname) || Boolean(initialRouteTableId))
+    ? "table" : "lobby";
+
+  function routePath(mode) {
+    return routePrefix + "/" + (mode === "table" ? "table" : "lobby");
+  }
+
+  function tableWindowUrl(id, setup) {
+    var params = new URLSearchParams();
+    params.set("table", String(id || ""));
+    if (setup) params.set("setup", "1");
+    return window.location.origin + routePath("table") + "?" + params.toString();
+  }
+
+  function syncPageModeClasses() {
+    document.body.classList.toggle("lobby-route", pageMode === "lobby");
+    document.body.classList.toggle("table-route", pageMode === "table");
+  }
+
+  function setHashTable(id, setup) {
+    var tableId = String(id || "");
+    pageMode = tableId ? "table" : "lobby";
+    var url = tableId ? tableWindowUrl(tableId, setup) : window.location.origin + routePath("lobby");
+    window.history.replaceState(null, "", url);
+    syncPageModeClasses();
+  }
+
+  function tableWindowFeatures() {
+    var screenWidth = Number(window.screen && window.screen.availWidth) || 1180;
+    var screenHeight = Number(window.screen && window.screen.availHeight) || 880;
+    var width = Math.min(1400, Math.max(320, screenWidth - 80));
+    var height = Math.min(1050, Math.max(320, screenHeight - 100));
+    var left = Math.max(0, Math.round((screenWidth - width) / 2));
+    var top = Math.max(0, Math.round((screenHeight - height) / 2));
+    return "popup=yes,width=" + width + ",height=" + height + ",left=" + left + ",top=" + top + ",resizable=yes,scrollbars=yes";
+  }
+
+  function reserveTableWindow() {
+    try { return window.open("about:blank", "_blank", tableWindowFeatures()); }
+    catch (err) { return null; }
+  }
+
+  function openTableWindow(tableId, setup, reservedWindow) {
+    if (!tableId) return false;
+    var url = tableWindowUrl(tableId, setup);
+    var popup = reservedWindow;
+    var opened = false;
+    try {
+      if (reservedWindow === undefined) popup = window.open(url, "_blank", tableWindowFeatures());
+      else if (popup && !popup.closed) popup.location = url;
+      opened = Boolean(popup && !popup.closed);
+    } catch (err) {
+      opened = false;
+    }
+    if (opened) {
+      state.pendingTableUrl = "";
+      byId("popup-fallback").hidden = true;
+      return true;
+    }
+    state.pendingTableUrl = url;
+    byId("popup-fallback").hidden = false;
+    return false;
   }
 
   function scheduleRefresh(delay) {
@@ -1568,15 +1642,16 @@
 
   function renderTables() {
     var list = byId("table-list");
-    var tables = state.tables || [];
+    var tables = (state.tables || []).filter(function (table) {
+      return table && (table.status === "lobby" || table.status === "playing");
+    });
     byId("table-count").textContent = String(tables.length);
     if (!tables.length) {
-      list.innerHTML = '<div class="list-empty">No open tables yet.<br>Start one for your group.</div>';
+      list.innerHTML = '<div class="list-empty">No waiting or in-progress games.</div>';
       return;
     }
 
     list.innerHTML = tables.map(function (table) {
-      var active = String(table.id) === String(state.activeTableId);
       var b = blindParts(table);
       var count = number(table.seated_count != null ? table.seated_count : table.players, 0);
       var max = number(table.max_seats, 0);
@@ -1584,7 +1659,7 @@
       var dot = status === "playing" ? "playing" : (status === "completed" ? "completed" : "");
       var label = statusName(status);
       var host = table.host_name ? "Host " + esc(table.host_name) : "Private table";
-      return '<button type="button" class="table-card" data-open-table="' + esc(table.id) + '" aria-current="' + (active ? "true" : "false") + '">' +
+      return '<button type="button" class="table-card" data-open-table="' + esc(table.id) + '" data-table-status="' + esc(status) + '" aria-current="false">' +
         '<span class="table-card-top"><span class="table-card-name">' + esc(table.name || "Sit-and-go") + '</span>' +
         '<span class="table-card-status"><i class="status-dot ' + dot + '"></i>' + label + '</span></span>' +
         '<span class="table-card-bottom"><span>' + host + '</span><span>' + count + (max ? " / " + max : "") + ' seats</span></span>' +
@@ -3659,9 +3734,9 @@
   }
 
   function renderTable() {
-    var view = state.tableView;
+    var view = pageMode === "table" ? state.tableView : null;
     var hasTable = Boolean(view);
-    byId("empty-state").hidden = hasTable;
+    byId("table-loading").hidden = hasTable || pageMode !== "table";
     byId("table-view").hidden = !hasTable;
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
@@ -3679,7 +3754,7 @@
       byId("reopen-results-button").hidden = true;
       clearSeatTurnClock();
       clearBlindLevelClock();
-      document.body.classList.remove("gameplay-active");
+      document.body.classList.toggle("gameplay-active", pageMode === "table");
       clearBlindAnnouncement(true);
       clearEliminationAnnouncement();
       byId("pause-button").hidden = true;
@@ -3705,7 +3780,7 @@
     consumeTableEvents(view);
     syncSeatTurnClock(view);
     var status = view.status || "lobby";
-    document.body.classList.toggle("gameplay-active", status === "playing" || status === "completed" || status === "ended");
+    document.body.classList.toggle("gameplay-active", pageMode === "table" || status === "playing" || status === "completed" || status === "ended");
     var statusNode = byId("view-status");
     statusNode.textContent = view.paused ? "Paused" : statusName(status);
     statusNode.className = "status-pill" + (view.paused ? " paused" : (status === "playing" ? " playing" : (status === "completed" ? " completed" : (status === "ended" ? " ended" : ""))));
@@ -3752,6 +3827,11 @@
     renderSeats(view);
     renderReactionBursts();
     playTableEffects();
+    if (state.openTableSetupOnLoad) {
+      state.openTableSetupOnLoad = false;
+      setHashTable(state.activeTableId);
+      if (host && status === "lobby") window.setTimeout(openTableSettingsDialog, 0);
+    }
   }
 
   function enterApp(player, csrf, sessionProof) {
@@ -3770,7 +3850,7 @@
     if (typeof csrf === "string" && csrf) state.csrf = csrf;
     persistAuth();
     state.isAdmin = Boolean(player && player.is_admin);
-    if (!state.activeTableId) setActiveTableId(hashTableId());
+    if (!state.activeTableId) setActiveTableId(requestedTableId());
     state.restoreTableId = state.activeTableId ? String(state.activeTableId) : "";
     state.polling = !state.isAdmin;
     byId("login-panel").hidden = true;
@@ -3811,7 +3891,7 @@
         byId("login-panel").hidden = false;
         setAuthMode("claim");
       } else if (data.authenticated && state.sessionProof && data.csrf) {
-        setActiveTableId(hashTableId());
+        setActiveTableId(requestedTableId());
         enterApp(data.player, data.csrf, state.sessionProof);
       } else if (data.authenticated || state.sessionProof) {
         setLoggedOut("Your session could not be restored. Sign in again.");
@@ -3914,18 +3994,6 @@
       if (!state.activeTableId) {
         var result = await request("/tables");
         state.tables = Array.isArray(result.tables) ? result.tables : [];
-        if (!state.activeTableId && !state.skipAutoResume) {
-          var resume = state.tables.find(function (table) {
-            return table.viewer_seated && table.status === "playing";
-          }) || state.tables.find(function (table) {
-            return table.viewer_seated && table.status !== "ended" && table.status !== "cancelled";
-          });
-          if (resume) {
-            closeLastHandDialog(false);
-            setActiveTableId(String(resume.id || ""));
-            if (state.activeTableId) setHashTable(state.activeTableId);
-          }
-        }
         renderTables();
       }
 
@@ -4205,7 +4273,7 @@
       var data = await request("/" + authMode, {method:"POST", body:body, mutate:authMode === "claim"});
       byId("room-password").value = "";
       byId("login-password").value = "";
-      setActiveTableId(hashTableId());
+      setActiveTableId(requestedTableId());
       if (!data.session_proof || !data.csrf) throw new apiError("The room did not issue complete session credentials. Try signing in again.", 500, "missing_session_proof");
       enterApp(data.player, data.csrf, data.session_proof);
     } catch (err) {
@@ -4624,6 +4692,7 @@
   async function createNewGame() {
     var button = byId("create-game-tab");
     if (!state.player || state.isAdmin || button.disabled) return;
+    var tableWindow = reserveTableWindow();
     button.disabled = true;
     try {
       var tableName = String(state.player.name || "Friends") + "’s table";
@@ -4638,20 +4707,16 @@
         turn_seconds: 30
       });
       var table = data.table || data;
+      if (!table.id) throw new Error("The room did not return the new table.");
       closeLastHandDialog(false);
-      setActiveTableId(String(table.id || ""));
-      state.tableView = table.id ? table : null;
       state.settingsTableId = "";
       state.settingsDirty = false;
       state.skipAutoResume = false;
-      state.restoreTableId = "";
-      if (state.activeTableId) setHashTable(state.activeTableId);
       clearNotice();
+      openTableWindow(String(table.id), true, tableWindow);
       await refreshAll(true);
-      if (state.tableView && String(state.tableView.host_id || "") === String(state.player.id || "")) {
-        openTableSettingsDialog();
-      }
     } catch (err) {
+      try { if (tableWindow && !tableWindow.closed) tableWindow.close(); } catch (closeError) {}
       showNotice(err.message, "error", false);
     } finally {
       button.disabled = false;
@@ -4826,58 +4891,22 @@
     refreshAll(true);
   });
 
-  byId("copy-invite-button").addEventListener("click", async function () {
-    if (!state.activeTableId) return;
-    var link = window.location.origin + window.location.pathname + "#table=" + encodeURIComponent(state.activeTableId);
-    var copied = false;
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(link);
-        copied = true;
-      }
-    } catch (err) {}
-    if (!copied) {
-      var field = document.createElement("textarea");
-      field.value = link;
-      field.setAttribute("readonly", "");
-      field.style.position = "fixed";
-      field.style.opacity = "0";
-      document.body.appendChild(field);
-      field.select();
-      try { copied = document.execCommand("copy"); } catch (err) {}
-      field.remove();
-    }
-    if (copied) {
-      var button = byId("copy-invite-button");
-      button.textContent = "Copied!";
-      if (state.inviteResetTimer) window.clearTimeout(state.inviteResetTimer);
-      state.inviteCopiedFor = state.activeTableId;
-      state.inviteResetTimer = window.setTimeout(function () {
-        if (state.inviteCopiedFor === state.activeTableId) button.textContent = "Copy invite link";
-      }, 2200);
-      showNotice("Invite link copied. Guests will still need the room password.", "success", false);
-    } else {
-      window.prompt("Copy this table invite link:", link);
-    }
+  byId("popup-fallback-open").addEventListener("click", function () {
+    var url = state.pendingTableUrl;
+    if (!url) return;
+    state.pendingTableUrl = "";
+    byId("popup-fallback").hidden = true;
+    window.location.assign(url);
+  });
+  byId("popup-fallback-dismiss").addEventListener("click", function () {
+    state.pendingTableUrl = "";
+    byId("popup-fallback").hidden = true;
   });
 
-  byId("table-list").addEventListener("click", async function (event) {
+  byId("table-list").addEventListener("click", function (event) {
     var button = event.target.closest("[data-open-table]");
     if (!button) return;
-    clearBlindAnnouncement(true);
-    closeRecentActionDialog();
-    closeLastHandDialog(false);
-    setActiveTableId(button.getAttribute("data-open-table") || "");
-    state.skipAutoResume = false;
-    state.tableView = null;
-    setHashTable(state.activeTableId);
-    renderTables();
-    renderTable();
-    try {
-      await refreshSelected();
-    } catch (err) {
-      if (err.status !== 401) showNotice(err.message, "error", false);
-    }
+    openTableWindow(button.getAttribute("data-open-table"), false);
   });
 
   byId("reopen-results-button").addEventListener("click", function () {
@@ -5124,19 +5153,8 @@
   document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
   syncFullscreenButton();
 
-  byId("open-table-window-button").addEventListener("click", function () {
-    if (!state.activeTableId) return;
-    var url = window.location.origin + window.location.pathname + "#table=" + encodeURIComponent(state.activeTableId);
-    var screenWidth = Number(window.screen && window.screen.availWidth) || 1180;
-    var screenHeight = Number(window.screen && window.screen.availHeight) || 880;
-    var width = Math.min(1400, Math.max(320, screenWidth - 80));
-    var height = Math.min(1050, Math.max(320, screenHeight - 100));
-    var left = Math.max(0, Math.round((screenWidth - width) / 2));
-    var top = Math.max(0, Math.round((screenHeight - height) / 2));
-    var features = "popup=yes,width=" + width + ",height=" + height + ",left=" + left + ",top=" + top + ",resizable=yes,scrollbars=yes";
-    var opened = window.open(url, "_blank", features);
-    if (!opened) showNotice("Your browser blocked the new window. The table remains open here; allow popups and try again if you want a separate window.", "info", false);
-  });
+  state.openTableSetupOnLoad = initialRouteSetup;
+  setHashTable(initialRouteTableId, initialRouteSetup);
 
   loadAuth();
   boot();

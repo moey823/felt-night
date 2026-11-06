@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const modes = new Set(['adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'flow', 'layout', 'stability', 'compact', 'action-pacing', 'reactions']);
+const modes = new Set(['adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'flow', 'layout', 'stability', 'compact', 'action-pacing', 'reactions', 'lobby']);
 const suite = modes.has(mode) ? mode : 'tournament';
 const game = (await import('./' + suite + '.mjs')).default;
 const testRoomPassword = 'test-room-invite';
@@ -32,6 +32,7 @@ const backend = spawn(process.env.PYTHON || 'python3', ['-B','server.py','--port
 let browser;
 let pages = [];
 const pending = new Map(), errors = [];
+const targetInfos = new Map();
 let serial = 0;
 async function command(method, params = {}, sessionId) {
   const id = ++serial;
@@ -46,9 +47,70 @@ async function makePage() {
   const {sessionId} = await command('Target.attachToTarget',{targetId,flatten:true});
   const send = (method, params) => command(method, params, sessionId);
   await send('Runtime.enable');
+  await send('Page.enable');
+  await send('Network.enable');
   await send('Emulation.setFocusEmulationEnabled',{enabled:true});
+  if (suite !== 'lobby') await send('Page.addScriptToEvaluateOnNewDocument',{source:`(() => {
+    window.__FELT_NIGHT_TEST_WINDOW_CALLS__ = location.protocol === "about:" ? [] : JSON.parse(sessionStorage.getItem("feltNightTestWindows") || "[]");
+    window.__FELT_NIGHT_TEST_OPEN__ = function(url, target, features) {
+      const call = {url:String(url || ""),target:String(target || ""),features:String(features || "")};
+      window.__FELT_NIGHT_TEST_WINDOW_CALLS__.push(call);
+      sessionStorage.setItem("feltNightTestWindows", JSON.stringify(window.__FELT_NIGHT_TEST_WINDOW_CALLS__));
+      if (String(url || "") === "about:blank") {
+        const placeholder = {closed:false};
+        let destination = "about:blank";
+        Object.defineProperty(placeholder, "location", {
+          get() { return destination; },
+          set(next) {
+            destination = String(next);
+            if (destination !== "about:blank") window.setTimeout(() => window.location.assign(destination), 0);
+          }
+        });
+        return placeholder;
+      }
+      if (url) { window.setTimeout(() => window.location.assign(String(url)), 0); return window; }
+      return null;
+    };
+    window.open = window.__FELT_NIGHT_TEST_OPEN__;
+  })();`});
   await send('Page.navigate', {url:origin+'/poker/'});
   return {
+    targetId,
+    browserContextId,
+    async waitForPopup(timeoutMs = 10000) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        const popupInfo = [...targetInfos.values()].find(info => info.type === 'page' && info.targetId !== targetId && info.browserContextId === browserContextId && (info.url.startsWith(origin + '/poker/table') || info.url.startsWith(origin + '/table')));
+        if (popupInfo) {
+          const popupTargetId = popupInfo.targetId;
+          const {sessionId:popupSessionId} = await command('Target.attachToTarget',{targetId:popupTargetId,flatten:true});
+          const popupSend = (method, params) => command(method, params, popupSessionId);
+          await popupSend('Runtime.enable');
+          await popupSend('Page.enable');
+          await popupSend('Network.enable');
+          return {
+            targetId:popupTargetId,
+            browserContextId,
+            async evaluate(expression) {
+              const reply = await popupSend('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});
+              if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description || reply.exceptionDetails.text);
+              return reply.result.value;
+            },
+            async cookies(url) {
+              const result = await popupSend('Network.getCookies',{urls:[url]});
+              return result.cookies || [];
+            },
+            async close() { await command('Target.closeTarget',{targetId:popupTargetId}); }
+          };
+        }
+        await sleep(50);
+      }
+      throw Error('No popup target appeared for ' + targetId);
+    },
+    async cookies(url) {
+      const result = await send('Network.getCookies',{urls:[url]});
+      return result.cookies || [];
+    },
     async evaluate(expression) {
       const reply = await send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});
       if (reply.exceptionDetails) throw Error(reply.exceptionDetails.exception?.description || reply.exceptionDetails.text);
@@ -124,6 +186,10 @@ try {
     buffer+=data;
     for(let end;(end=buffer.indexOf('\0'))!==-1;) {
       const message=JSON.parse(buffer.slice(0,end)); buffer=buffer.slice(end+1);
+      if(message.method==='Target.targetCreated' || message.method==='Target.targetInfoChanged') {
+        targetInfos.set(message.params.targetInfo.targetId, message.params.targetInfo);
+      }
+      if(message.method==='Target.targetDestroyed') targetInfos.delete(message.params.targetId);
       if(message.method==='Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description || message.params.exceptionDetails.text);
       if(!pending.has(message.id)) continue;
       const [resolve,reject]=pending.get(message.id);
@@ -131,6 +197,7 @@ try {
       if(message.error) reject(Error(message.error.message)); else resolve(message.result);
     }
   });
+  await command('Target.setDiscoverTargets',{discover:true});
   await Promise.race([
     Promise.all([makePage(),makePage()]).then(createdPages=>{ pages=createdPages; return game(createdPages,sleep,testRoomPassword); }),
     once(browser,'exit').then(()=>{throw Error('Browser closed before the game finished');}),

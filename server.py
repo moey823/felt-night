@@ -28,6 +28,11 @@ import history as tournament_history
 
 
 BASE_PATH = "/poker/"
+PAGE_ROUTES = frozenset({
+    "/poker/", "/poker/lobby", "/poker/lobby/", "/poker/table", "/poker/table/",
+    "/lobby", "/lobby/", "/table", "/table/",
+})
+ROOT_PAGE_ROUTES = frozenset({"/lobby", "/lobby/", "/table", "/table/"})
 COOKIE_NAME = "sitngo_session"
 SESSION_TTL = 30 * 24 * 60 * 60
 LOGIN_WINDOW = 15 * 60
@@ -1210,13 +1215,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _headers(self):
         parsed = urlsplit(self.path)
-        if not parsed.path.startswith(BASE_PATH):
+        if not parsed.path.startswith(BASE_PATH) and parsed.path not in ROOT_PAGE_ROUTES:
             raise AppError(404, "not_found", "Not found.")
         if parsed.fragment:
             raise AppError(400, "invalid_url", "Fragments are not supported.")
         self.request_offset = 0
         self.reaction_after = None
         if parsed.query:
+            page_route = self.command == "GET" and parsed.path in PAGE_ROUTES
             history_route = (
                 parsed.path == "/poker/api/history"
                 or re.fullmatch(r"/poker/api/history/[a-f0-9]{32}", parsed.path)
@@ -1226,26 +1232,27 @@ class Handler(BaseHTTPRequestHandler):
             reaction_route = re.fullmatch(
                 r"/poker/api/tables/[a-f0-9]{32}/reactions", parsed.path,
             )
-            if self.command != "GET" or not (history_route or reaction_route):
+            if self.command != "GET" or not (page_route or history_route or reaction_route):
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
-            try:
-                query = parse_qs(parsed.query, strict_parsing=True, keep_blank_values=True)
-            except ValueError as exc:
-                raise AppError(400, "invalid_url", "Invalid request cursor.") from exc
-            if reaction_route:
-                if set(query) != {"after"} or len(query["after"]) != 1:
-                    raise AppError(400, "invalid_url", "Use one numeric reaction cursor.")
-                raw_after = query["after"][0]
-                if not re.fullmatch(r"[0-9]{1,12}", raw_after):
-                    raise AppError(400, "invalid_url", "Invalid reaction cursor.")
-                self.reaction_after = int(raw_after)
-            else:
-                if set(query) != {"offset"} or len(query["offset"]) != 1:
-                    raise AppError(400, "invalid_url", "Use one numeric history offset.")
-                raw_offset = query["offset"][0]
-                if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
-                    raise AppError(400, "invalid_url", "Invalid history offset.")
-                self.request_offset = int(raw_offset)
+            if not page_route:
+                try:
+                    query = parse_qs(parsed.query, strict_parsing=True, keep_blank_values=True)
+                except ValueError as exc:
+                    raise AppError(400, "invalid_url", "Invalid request cursor.") from exc
+                if reaction_route:
+                    if set(query) != {"after"} or len(query["after"]) != 1:
+                        raise AppError(400, "invalid_url", "Use one numeric reaction cursor.")
+                    raw_after = query["after"][0]
+                    if not re.fullmatch(r"[0-9]{1,12}", raw_after):
+                        raise AppError(400, "invalid_url", "Invalid reaction cursor.")
+                    self.reaction_after = int(raw_after)
+                else:
+                    if set(query) != {"offset"} or len(query["offset"]) != 1:
+                        raise AppError(400, "invalid_url", "Use one numeric history offset.")
+                    raw_offset = query["offset"][0]
+                    if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
+                        raise AppError(400, "invalid_url", "Invalid history offset.")
+                    self.request_offset = int(raw_offset)
         host = self.headers.get("Host", "").strip().lower()
         if host != self.app.public_netloc:
             raise AppError(421, "misdirected_request", "Request host is not configured.")
@@ -1438,7 +1445,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/poker/healthz":
                 self._json(200, {"status": "ok"})
                 return
-            if path == "/poker/":
+            if path in PAGE_ROUTES:
                 file_path = Path(__file__).parent / "static" / "index.html"
                 body = file_path.read_bytes()
                 csp = ("default-src 'self'; script-src 'self'; style-src 'self'; "
