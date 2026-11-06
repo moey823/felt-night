@@ -250,6 +250,8 @@ class Store:
         conn = sqlite3.connect(self.db_path, timeout=4.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=4000")
+        # The service sandbox only permits writes inside data_dir; keep SQLite temp spills in memory.
+        conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 

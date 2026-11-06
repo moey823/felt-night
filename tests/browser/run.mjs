@@ -120,6 +120,13 @@ async function makePage() {
       await send('Input.dispatchMouseEvent', {type:'mousePressed', x, y, button:'left', clickCount});
       await send('Input.dispatchMouseEvent', {type:'mouseReleased', x, y, button:'left', clickCount});
     },
+    async pressAt(x, y) {
+      await send('Input.dispatchMouseEvent', {type:'mouseMoved', x, y});
+      await send('Input.dispatchMouseEvent', {type:'mousePressed', x, y, button:'left', buttons:1, clickCount:1});
+    },
+    async releaseAt(x, y) {
+      await send('Input.dispatchMouseEvent', {type:'mouseReleased', x, y, button:'left', buttons:0, clickCount:1});
+    },
     async dragAt(startX, startY, endX, endY) {
       await send('Input.dispatchMouseEvent', {type:'mouseMoved',x:startX,y:startY});
       await send('Input.dispatchMouseEvent', {type:'mousePressed',x:startX,y:startY,button:'left',buttons:1,clickCount:1});

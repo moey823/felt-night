@@ -2510,7 +2510,66 @@
       document.activeElement.matches("[data-chip-display-toggle]"));
     var focusedReaction = document.activeElement && document.activeElement.getAttribute
       ? document.activeElement.getAttribute("data-send-reaction") : null;
-    grid.innerHTML = html;
+    var gridTemplate = document.createElement("template");
+    gridTemplate.innerHTML = html;
+    var previousHero = grid.querySelector("#hero-seat");
+    var incomingHero = gridTemplate.content.querySelector("#hero-seat");
+    var renderedTableId = String(grid.getAttribute("data-rendered-table-id") || "");
+    var incomingTableId = String(view.id || state.activeTableId || "");
+    var sameHero = previousHero && incomingHero && renderedTableId === incomingTableId &&
+      previousHero.getAttribute("data-player-id") === incomingHero.getAttribute("data-player-id") &&
+      previousHero.getAttribute("data-seat-no") === incomingHero.getAttribute("data-seat-no");
+    if (sameHero) {
+      var previousShortcuts = previousHero.querySelector(".reaction-shortcuts");
+      var incomingShortcuts = incomingHero.querySelector(".reaction-shortcuts");
+      var previousFavorites = previousShortcuts
+        ? Array.from(previousShortcuts.querySelectorAll("[data-send-reaction]")).map(function (node) {
+          return node.getAttribute("data-send-reaction");
+        }) : [];
+      var incomingFavorites = incomingShortcuts
+        ? Array.from(incomingShortcuts.querySelectorAll("[data-send-reaction]")).map(function (node) {
+          return node.getAttribute("data-send-reaction");
+        }) : [];
+      var preserveShortcuts = Boolean(previousShortcuts && incomingShortcuts &&
+        previousFavorites.length === incomingFavorites.length &&
+        previousFavorites.every(function (emoji, index) { return emoji === incomingFavorites[index]; }));
+      Array.from(previousHero.attributes).forEach(function (attribute) {
+        previousHero.removeAttribute(attribute.name);
+      });
+      Array.from(incomingHero.attributes).forEach(function (attribute) {
+        previousHero.setAttribute(attribute.name, attribute.value);
+      });
+      if (preserveShortcuts) {
+        Array.from(previousHero.children).forEach(function (child) {
+          if (child !== previousShortcuts) child.remove();
+        });
+        Array.from(incomingHero.children).forEach(function (child) {
+          if (child !== incomingShortcuts) previousHero.insertBefore(child, previousShortcuts);
+        });
+      } else {
+        previousHero.replaceChildren();
+        Array.from(incomingHero.children).forEach(function (child) {
+          previousHero.appendChild(child);
+        });
+      }
+      var incomingSeats = Array.from(gridTemplate.content.children);
+      Array.from(grid.children).forEach(function (child) {
+        if (child !== previousHero) child.remove();
+      });
+      var anchor = null;
+      for (var seatIndex = incomingSeats.length - 1; seatIndex >= 0; seatIndex -= 1) {
+        var incomingSeat = incomingSeats[seatIndex];
+        if (incomingSeat === incomingHero) {
+          anchor = previousHero;
+          continue;
+        }
+        grid.insertBefore(incomingSeat, anchor);
+        anchor = incomingSeat;
+      }
+    } else {
+      grid.innerHTML = html;
+    }
+    grid.setAttribute("data-rendered-table-id", incomingTableId);
     if (restoreChipToggleFocus) {
       var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });

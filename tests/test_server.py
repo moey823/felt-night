@@ -4,6 +4,8 @@ import io
 import os
 import json
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -87,6 +89,127 @@ class RoomPasswordConfigTests(unittest.TestCase):
                 app = server.App(args)
             self.assertTrue(app.store.verify_room_password(TEST_ROOM_PASSWORD))
             self.assertFalse(app.store.verify_room_password("different-room-invite"))
+
+
+@unittest.skipUnless(
+    sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file(),
+    "requires the macOS sandbox-exec facility",
+)
+class SQLiteTempStoreSandboxTests(unittest.TestCase):
+    def test_bulk_delete_keeps_large_hand_history_temporary_work_in_memory(self):
+        with tempfile.TemporaryDirectory(prefix="felt-night-temp-store-", dir="/private/tmp") as scratch:
+            scratch_path = Path(scratch)
+            data_dir = scratch_path / "data"
+            store = server.Store(str(data_dir), TEST_ROOM_PASSWORD, admin_username="sandbox-admin")
+            owner_id = "f" * 32
+            table_ids = [f"{index + 1:032x}" for index in range(20)]
+            now = time.time()
+            conn = store.connect()
+            try:
+                conn.execute(
+                    "INSERT INTO players(id,name,created) VALUES(?,?,?)",
+                    (owner_id, "Synthetic sandbox owner", now),
+                )
+                for index, table_id in enumerate(table_ids):
+                    name = "Synthetic archived game %d" % (index + 1)
+                    state = json.dumps({"status": "cancelled", "name": name})
+                    conn.execute(
+                        "INSERT INTO tables(id,owner_id,state,created,updated) VALUES(?,?,?,?,?)",
+                        (table_id, owner_id, state, now, now),
+                    )
+                    conn.execute(
+                        "INSERT INTO tournament_history(table_id,owner_id,name,status,created) VALUES(?,?,?,?,?)",
+                        (table_id, owner_id, name, "cancelled", now),
+                    )
+
+                hand_rows = []
+                event_rows = []
+                payload = '{"synthetic":"' + ("x" * 120) + '"}'
+                for number in range(1, 80001):
+                    hand_id = table_ids[0] + ("%08x" % number)
+                    hand_rows.append((hand_id, table_ids[0], number, now, now, "showdown"))
+                    event_rows.append((hand_id, 1, payload, now))
+                    if len(hand_rows) >= 5000:
+                        conn.executemany(
+                            "INSERT INTO hand_history(hand_id,table_id,number,started,ended,street) VALUES(?,?,?,?,?,?)",
+                            hand_rows,
+                        )
+                        conn.executemany(
+                            "INSERT INTO hand_history_events(hand_id,seq,payload_json,recorded_at) VALUES(?,?,?,?)",
+                            event_rows,
+                        )
+                        hand_rows.clear()
+                        event_rows.clear()
+                if hand_rows:
+                    conn.executemany(
+                        "INSERT INTO hand_history(hand_id,table_id,number,started,ended,street) VALUES(?,?,?,?,?,?)",
+                        hand_rows,
+                    )
+                    conn.executemany(
+                        "INSERT INTO hand_history_events(hand_id,seq,payload_json,recorded_at) VALUES(?,?,?,?)",
+                        event_rows,
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            profile_path = scratch_path / "test.sb"
+            profile = "\n".join((
+                "(version 1)",
+                "(deny default)",
+                "(allow file-read*)",
+                '(allow file-write* (subpath "%s") (literal "/dev/null"))' % scratch,
+                "(allow process-exec)",
+                "(allow sysctl-read)",
+                "(allow signal (target self))",
+                "",
+            ))
+            profile_path.write_text(profile, encoding="utf-8")
+            repository = Path(__file__).resolve().parents[1]
+            child = r"""import json, sqlite3, sys
+sys.path.insert(0, %r)
+import server
+store = server.Store.__new__(server.Store)
+store.db_path = sys.argv[1]
+ids = sys.argv[2:]
+original_connect = store.connect
+def file_temp_connect():
+    conn = original_connect()
+    conn.execute("PRAGMA temp_store=FILE")
+    conn.execute("PRAGMA temp.cache_size=8")
+    return conn
+store.connect = file_temp_connect
+try:
+    store.delete_admin_history_bulk(ids)
+except sqlite3.OperationalError as exc:
+    if "disk I/O error" not in str(exc):
+        raise
+    print("FILE_TEMP_SPILL_DENIED:" + str(exc))
+else:
+    raise SystemExit("The synthetic archive did not force a denied SQLite temp-file spill.")
+store.connect = original_connect
+conn = store.connect()
+try:
+    if conn.execute("PRAGMA temp_store").fetchone()[0] != 2:
+        raise SystemExit("Store.connect did not select SQLite in-memory temporary storage.")
+finally:
+    conn.close()
+result = store.delete_admin_history_bulk(ids)
+if result.get("deleted_count") != len(ids):
+    raise SystemExit("The in-memory bulk delete returned an unexpected result.")
+print("MEMORY_TEMP_DELETE_OK:" + json.dumps(result, sort_keys=True))
+""" % str(repository)
+            command = [
+                "/usr/bin/sandbox-exec", "-f", str(profile_path), sys.executable, "-B", "-c",
+                child, str(data_dir / "sitngo.sqlite3"), *table_ids,
+            ]
+            environment = os.environ.copy()
+            environment.update({"PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"})
+            result = subprocess.run(command, cwd=repository, env=environment, text=True,
+                                    capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("FILE_TEMP_SPILL_DENIED:disk I/O error", result.stdout)
+            self.assertIn("MEMORY_TEMP_DELETE_OK:", result.stdout)
 
 
 class ServerAuthTests(unittest.TestCase):

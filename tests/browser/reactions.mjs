@@ -148,11 +148,47 @@ export default async function reactions([one,two], sleep, roomPassword) {
   await one.resize(390,844);
 
 
-  await click(one,'#hero-seat [data-send-reaction="🤦"]');
-  await wait(two,()=>document.querySelectorAll('#reaction-burst-layer .reaction-particle').length>=12);
+  await one.bringToFront();
+  const cursorBefore=Number((await request(path+'/reactions',users[0])).cursor||0);
+  const press=await evaluate(one,()=>{
+    const grid=document.querySelector('#seat-grid');
+    const button=document.querySelector('#hero-seat [data-send-reaction="🤦"]');
+    const rect=button.getBoundingClientRect();
+    window.__heldReactionButton=button;
+    window.__reactionPointerDown=false;
+    window.__reactionRefreshDuringPress=false;
+    grid.addEventListener('pointerdown',event=>{
+      if(event.target.closest('[data-send-reaction]')) window.__reactionPointerDown=true;
+    },true);
+    window.__reactionGridObserver=new MutationObserver(records=>{
+      if(window.__reactionPointerDown && records.some(record=>record.type==='childList' && record.target===grid)) {
+        window.__reactionRefreshDuringPress=true;
+      }
+    });
+    window.__reactionGridObserver.observe(grid,{childList:true,subtree:true});
+    return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+  });
+  await one.pressAt(press.x,press.y);
+  await wait(one,()=>window.__reactionRefreshDuringPress);
+  const preservedTarget=await evaluate(one,(x,y)=>{
+    const hit=document.elementFromPoint(x,y)?.closest('[data-send-reaction]');
+    return Boolean(window.__reactionPointerDown && window.__heldReactionButton.isConnected &&
+      hit===window.__heldReactionButton && hit.getAttribute('data-send-reaction')==='🤦');
+  },press.x,press.y);
+  assert(preservedTarget,'A live table refresh replaced the pressed reaction target before pointer release.');
+  await one.releaseAt(press.x,press.y);
+  await evaluate(one,()=>window.__reactionGridObserver.disconnect());
+  for(let n=0;n<40;n++) {
+    if(await evaluate(two,()=>document.querySelectorAll('#reaction-burst-layer .reaction-particle').length)) break;
+    await sleep(100);
+  }
   const burst=await evaluate(two,()=>({count:document.querySelectorAll('#reaction-burst-layer .reaction-particle').length,
     emoji:document.querySelector('#reaction-burst-layer .reaction-particle')?.textContent}));
-  assert(burst.count>=12&&burst.emoji==='🤦','The other client did not render the reaction burst.');
+  assert(burst.count>=12&&burst.emoji==='🤦',
+    'The other client did not render the reaction after a real press/release across a live table refresh: '+JSON.stringify(burst));
+  const delivered=await request(path+'/reactions?after='+cursorBefore,users[0]);
+  assert(Number(delivered.cursor)===cursorBefore+1 && Array.isArray(delivered.reactions) && delivered.reactions.length===1,
+    'A real reaction press/release must advance the server stream exactly once: '+JSON.stringify(delivered));
   await sleep(1300);
   const held=await evaluate(two,()=>[...document.querySelectorAll('#reaction-burst-layer .reaction-particle')].filter(n=>
     parseFloat(getComputedStyle(n).opacity)>.9 && parseFloat(getComputedStyle(n).fontSize)>=30).length);

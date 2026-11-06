@@ -18,6 +18,22 @@ export default async function adminBulk([playerPage, adminPage], sleep, roomPass
       return true;
     }, selector);
   }
+  async function clickPointer(page, selector) {
+    const point = await evaluate(page, query => {
+      const node = document.querySelector(query);
+      if (!node || node.disabled) return null;
+      const rect = node.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      return {x, y, visible: rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 &&
+        rect.right <= innerWidth && rect.bottom <= innerHeight, hit: Boolean(hit && (hit === node || node.contains(hit)))};
+    }, selector);
+    assert(point && point.visible && point.hit,
+      'Real pointer could not hit ' + selector + ' in the current viewport: ' + JSON.stringify(point));
+    await page.bringToFront();
+    await page.clickAt(point.x, point.y);
+  }
   async function api(page, path, session, payload, method) {
     return evaluate(page, async (route, auth, data, verb) => {
       const headers = {};
@@ -144,10 +160,12 @@ export default async function adminBulk([playerPage, adminPage], sleep, roomPass
   await click(adminPage, "[data-admin-history-delete-selected]");
   await wait(adminPage, () => document.querySelector("#admin-history-dialog")?.open &&
     document.querySelector("#admin-history-delete-title")?.textContent === "Delete 21 past games?");
-  await click(adminPage, "#admin-history-delete-confirm");
+  await adminPage.resize(1280, 800);
+  await clickPointer(adminPage, "#admin-history-delete-confirm");
   await wait(adminPage, () => !document.querySelector("#admin-history-dialog")?.open &&
     document.querySelectorAll("#admin-history-list [data-admin-history-id]").length === 0);
   assert(await evaluate(adminPage, () => document.querySelector(".admin-history-selection-count")?.textContent) === "0 selected",
     "Successful deletion did not clear the selected count.");
-  console.log("Paginated admin selection, count confirmation, safe backdrop dismissal, and bulk deletion passed.");
+
+  console.log("Paginated admin selection, desktop real-pointer confirmation, safe dismissal, and bulk deletion passed.");
 }
