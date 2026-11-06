@@ -34,6 +34,22 @@ def heads_up(now=100.0, starting_stack=1000):
 
 
 class EngineTests(unittest.TestCase):
+    def test_rank_descriptions_name_the_made_hand(self):
+        cases = (
+            ((0, 14, 12, 9, 5, 3), "Ace high"),
+            ((1, 11, 14, 9, 8), "Pair of jacks"),
+            ((2, 14, 13, 9), "Two pair, aces and kings"),
+            ((3, 12, 14, 9), "Three queens"),
+            ((4, 5), "Five-high straight"),
+            ((5, 14, 12, 9, 5, 3), "Ace-high flush"),
+            ((6, 14, 13), "Aces full of kings"),
+            ((7, 6, 14), "Four sixes"),
+            ((8, 14), "Ace-high straight flush"),
+        )
+        for rank, expected in cases:
+            with self.subTest(rank=rank):
+                self.assertEqual(engine._rank_description(rank), expected)
+
     def test_announcement_defaults_are_backward_compatible_and_require_finite_bounded_numbers(self):
         legacy_config = config()
         legacy_config.pop("blind_announcement_seconds")
@@ -1150,7 +1166,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(seats["p3"]["stack"], 800)
         self.assertEqual(
             {item["player_id"]: item["rank"] for item in state["hand"]["showdown"]},
-            {"p1": "Straight flush, A high", "p2": "Two pair"},
+            {"p1": "Ace-high straight flush", "p2": "Two pair, aces and twos"},
         )
         result = next(
             event for event in state["hand"]["events"]

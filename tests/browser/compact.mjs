@@ -225,7 +225,7 @@ export default async function compact([tablePage], sleep, roomPassword) {
         window.scrollTo(0, 0);
       });
       await sleep(180);
-      const metrics = await ev(tablePage, expectedSeats => {
+      const metrics = await ev(tablePage, (expectedSeats, expectedRanks) => {
         const rect = node => {
           if (!node) return null;
           const r = node.getBoundingClientRect();
@@ -330,6 +330,26 @@ export default async function compact([tablePage], sleep, roomPassword) {
               overlap, seatRect, potRect, potVisible,
             });
           }
+          const strength = seat.querySelector(".seat-hand-strength");
+          const expectedRank = expectedRanks[seat.dataset.playerId];
+          if (expectedRank && (!visible(strength) || strength.textContent.trim() !== expectedRank ||
+              strength.scrollHeight > strength.clientHeight + 1 || !inside(rect(strength), seatRect))) {
+            errors.push("seat " + seat.dataset.seatNo + " shown hand strength is not readable: " +
+              JSON.stringify({expectedRank, actual:strength?.textContent, rect:rect(strength)}));
+          }
+          if (strength) {
+            const text = strength.querySelector("span");
+            const actualRank = text.textContent;
+            for (const longestRank of ["Pair of jacks", "Two pair, aces and kings",
+              "Aces full of kings", "Ace-high straight flush"]) {
+              text.textContent = longestRank;
+              if (strength.scrollHeight > strength.clientHeight + 1 ||
+                  strength.scrollWidth > strength.clientWidth + 1) {
+                errors.push("seat " + seat.dataset.seatNo + " rank text clips: " + longestRank);
+              }
+            }
+            text.textContent = actualRank;
+          }
           const row = seat.querySelector(".seat-cards");
           const miniCards = [...(row?.querySelectorAll(".mini-card") || [])];
           if (!row || getComputedStyle(row).display === "none") {
@@ -378,7 +398,7 @@ export default async function compact([tablePage], sleep, roomPassword) {
             rect: rect(seat),
           })),
         };
-      }, playerCount);
+      }, playerCount, Object.fromEntries(finalView.showdown.map(row => [row.player_id,row.rank])));
       const label = playerCount + "p " + viewport.width + "x" + viewport.height;
       console.log("Compact showdown", label, JSON.stringify(metrics));
       if (metrics.errors.length) failures.push(label + ": " + metrics.errors.join("; "));

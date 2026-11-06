@@ -2185,13 +2185,29 @@ def _hand_name(rank: Tuple[int, ...]) -> str:
 
 
 def _rank_description(rank: Tuple[int, ...]) -> str:
-    category = _hand_name(rank)
-    high = rank[1] if len(rank) > 1 else 0
-    if rank[0] == 8:
-        return "%s, %s high" % (category, RANK_CHARS[high - 2])
-    if rank[0] == 4:
-        return "%s, %s high" % (category, RANK_CHARS[high - 2])
-    return category
+    singles = ("two", "three", "four", "five", "six", "seven", "eight",
+               "nine", "ten", "jack", "queen", "king", "ace")
+    plurals = ("twos", "threes", "fours", "fives", "sixes", "sevens", "eights",
+               "nines", "tens", "jacks", "queens", "kings", "aces")
+    category, high = rank[0], rank[1]
+    name, plural = singles[high - 2], plurals[high - 2]
+    if category == 0:
+        return "%s high" % name.capitalize()
+    if category == 1:
+        return "Pair of %s" % plural
+    if category == 2:
+        return "Two pair, %s and %s" % (plural, plurals[rank[2] - 2])
+    if category == 3:
+        return "Three %s" % plural
+    if category == 4:
+        return "%s-high straight" % name.capitalize()
+    if category == 5:
+        return "%s-high flush" % name.capitalize()
+    if category == 6:
+        return "%s full of %s" % (plural.capitalize(), plurals[rank[2] - 2])
+    if category == 7:
+        return "Four %s" % plural
+    return "%s-high straight flush" % name.capitalize()
 
 
 def _allocate_pots(

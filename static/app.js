@@ -2298,6 +2298,12 @@
         var pendingWager = number(pendingWagers[seatNo], 0);
         markerHtml += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-label="Pending street wager ' + esc(tableChips(pendingWager, view)) + '" title="Pending street wager ' + esc(tableChips(pendingWager, view)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChipValue(pendingWager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
       }
+      var shownRank = showdown && showdownRow && cards.length
+        ? handRankName(showdownRow, view.hand_ranks || {}) : "";
+      if (shownRank) {
+        markerHtml = '<span class="seat-hand-strength" data-hand-strength="' + esc(id) +
+          '" aria-label="' + esc(seatName + ": " + shownRank) + '"><span>' + esc(shownRank) + '</span></span>';
+      }
       var markerLane = '<div class="seat-local-markers"' + (markerHtml ? '' : ' aria-hidden="true"') + '>' + markerHtml + '</div>';
       var shortcuts = isMe && !state.isAdmin
         ? '<div class="reaction-shortcuts" role="group" aria-label="Your table reaction shortcuts">' +
