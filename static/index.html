@@ -182,6 +182,7 @@
                     <button id="runtime-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="table-settings-dialog" aria-expanded="false" hidden>Game setup</button>
                     <button id="reopen-results-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
                     <button id="chat-button" class="button button-quiet button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
+                    <button id="reaction-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="reaction-settings-dialog" aria-expanded="false">Reaction shortcuts</button>
                     <button id="sit-out-button" class="button button-quiet button-small" type="button" aria-pressed="false" hidden>Sit out</button>
                     <button id="copy-invite-button" class="button button-quiet button-small" type="button">Copy invite link</button>
                     <button id="fullscreen-button" class="button button-quiet button-small" type="button">Full screen</button>
@@ -223,6 +224,7 @@
                 <div id="felt" class="felt">
                   <div id="blind-strip" class="blind-strip"></div>
                   <div id="seat-grid" class="seat-grid"></div>
+                  <div id="reaction-burst-layer" class="reaction-burst-layer" aria-hidden="true"></div>
                   <div class="board-center">
                     <div class="board-caption" id="board-caption">COMMUNITY CARDS</div>
                     <div id="board-cards" class="board-cards"></div>
@@ -328,6 +330,26 @@
                   <p id="settings-lock-note" class="muted">Save changes before starting the freezeout.</p>
                   <button id="save-settings-button" class="button button-outline button-small" type="submit">Save settings</button>
                 </div>
+                </form>
+              </dialog>
+
+              <dialog id="reaction-settings-dialog" class="end-game-dialog reaction-settings-dialog" aria-labelledby="reaction-settings-title" aria-describedby="reaction-settings-description">
+                <div class="section-heading">
+                  <div><div class="panel-kicker">YOUR SHORTCUTS</div><h2 id="reaction-settings-title">Choose three reactions</h2></div>
+                  <button id="reaction-settings-close" class="button button-quiet button-small" type="button">Close</button>
+                </div>
+                <p id="reaction-settings-description" class="muted">These shortcuts are saved in this browser for your account. Other players only see a reaction after you send it.</p>
+                <form id="reaction-settings-form" class="reaction-settings-form">
+                  <div class="reaction-settings-selects">
+                    <label for="reaction-shortcut-1">Shortcut one<select id="reaction-shortcut-1" data-reaction-select></select></label>
+                    <label for="reaction-shortcut-2">Shortcut two<select id="reaction-shortcut-2" data-reaction-select></select></label>
+                    <label for="reaction-shortcut-3">Shortcut three<select id="reaction-shortcut-3" data-reaction-select></select></label>
+                  </div>
+                  <p id="reaction-settings-error" class="chat-error" role="alert" hidden></p>
+                  <div class="end-game-actions">
+                    <button id="reaction-settings-cancel" class="button button-quiet button-small" type="button">Cancel</button>
+                    <button id="reaction-settings-save" class="button button-primary button-small" type="submit">Save shortcuts</button>
+                  </div>
                 </form>
               </dialog>
 

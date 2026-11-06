@@ -798,6 +798,157 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 404)
         self.assertEqual(body["error"]["code"], "table_not_found")
 
+    def test_reactions_are_private_to_the_sender_and_delivered_to_table_viewers(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Reaction Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Reaction Guest")
+        spectator_cookie, spectator_proof, spectator_csrf, spectator = self.login("Reaction Watcher")
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Reaction table",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        path = "/poker/api/tables/" + table_id
+
+        for cookie, proof, csrf, seat_no in (
+            (host_cookie, host_proof, host_csrf, 4),
+            (guest_cookie, guest_proof, guest_csrf, 2),
+        ):
+            status, _, seated = self.request(
+                "POST", path + "/seat", {"seat_no": seat_no},
+                cookie=cookie, proof=proof, csrf=csrf,
+            )
+            self.assertEqual(status, 200, seated)
+        status, _, started = self.request(
+            "POST", path + "/start", {},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, started)
+        host_seat_no = next(
+            seat["seat_no"] for seat in started["table"]["seats"] if seat["id"] == host["id"]
+        )
+        spoofed_seat_no = (host_seat_no + 1) % 9
+
+        status, _, unauthenticated = self.request("GET", path + "/reactions")
+        self.assertEqual(status, 401)
+        self.assertEqual(unauthenticated["error"]["code"], "authentication_required")
+        status, _, initial = self.request(
+            "GET", path + "/reactions", cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, initial)
+        self.assertEqual(initial["reactions"], [])
+        initial_cursor = initial["cursor"]
+
+        status, _, not_seated = self.request(
+            "POST", path + "/reactions", {"emoji": "👏"},
+            cookie=spectator_cookie, proof=spectator_proof, csrf=spectator_csrf,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(not_seated["error"]["code"], "not_seated")
+        status, _, invalid = self.request(
+            "POST", path + "/reactions", {"emoji": "<script>"},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid["error"]["code"], "invalid_reaction")
+
+        conn = self.app.store.connect()
+        try:
+            table_state_before = conn.execute(
+                "SELECT state FROM tables WHERE id=?", (table_id,),
+            ).fetchone()["state"]
+        finally:
+            conn.close()
+        status, _, sent = self.request(
+            "POST", path + "/reactions",
+            {"emoji": "👏", "seat_no": spoofed_seat_no, "player_id": spectator["id"]},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 201, sent)
+        reaction = sent["reaction"]
+        self.assertEqual(reaction["player_id"], host["id"])
+        self.assertEqual(reaction["seat_no"], host_seat_no)
+        self.assertEqual(reaction["emoji"], "👏")
+        self.assertNotEqual(reaction["seat_no"], spoofed_seat_no)
+        status, _, limited = self.request(
+            "POST", path + "/reactions", {"emoji": "❤️"},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(limited["error"]["code"], "reaction_rate_limited")
+
+        status, _, delivered = self.request(
+            "GET", path + "/reactions?after=" + str(initial_cursor),
+            cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, delivered)
+        self.assertEqual([item["id"] for item in delivered["reactions"]], [reaction["id"]])
+        self.assertEqual(delivered["reactions"][0]["player_id"], host["id"])
+        status, _, already_seen = self.request(
+            "GET", path + "/reactions?after=" + str(reaction["id"]),
+            cookie=guest_cookie, proof=guest_proof,
+        )
+        self.assertEqual(status, 200, already_seen)
+        self.assertEqual(already_seen["reactions"], [])
+        status, _, reconnect = self.request(
+            "GET", path + "/reactions", cookie=spectator_cookie, proof=spectator_proof,
+        )
+        self.assertEqual(status, 200, reconnect)
+        self.assertEqual(reconnect["reactions"], [], "initial connection must not replay old bursts")
+
+        conn = self.app.store.connect()
+        try:
+            table_state_after = conn.execute(
+                "SELECT state FROM tables WHERE id=?", (table_id,),
+            ).fetchone()["state"]
+        finally:
+            conn.close()
+        self.assertEqual(table_state_after, table_state_before,
+                         "a reaction must not change poker state, revisions, or deadlines")
+
+    def test_reaction_events_are_capped_and_expired(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Reaction Storage")
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Reaction storage",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        status, _, seated = self.request(
+            "POST", "/poker/api/tables/" + table_id + "/seat", {"seat_no": 0},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, seated)
+
+        lifetime = server.REACTION_LIFETIME_SECONDS
+        server.REACTION_LIFETIME_SECONDS = 1000.0
+        try:
+            base = time.time() - 100
+            for index in range(40):
+                self.app.store.add_table_reaction(
+                    table_id, host["id"], "👏", base + index,
+                )
+            conn = self.app.store.connect()
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM table_reactions WHERE table_id=?",
+                    (table_id,),
+                ).fetchone()["n"]
+            finally:
+                conn.close()
+            self.assertEqual(count, server.REACTION_TABLE_LIMIT)
+        finally:
+            server.REACTION_LIFETIME_SECONDS = lifetime
+
+        self.app.store.prune_expired_table_reactions(time.time() + lifetime + 1000)
+        conn = self.app.store.connect()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM table_reactions WHERE table_id=?",
+                (table_id,),
+            ).fetchone()["n"]
+        finally:
+            conn.close()
+        self.assertEqual(count, 0)
+
     def test_chat_storage_is_bounded_and_rate_limit_insert_is_atomic(self):
         host_cookie, host_proof, host_csrf, host = self.login("Chat Storage")
         status, _, created = self.create_table(

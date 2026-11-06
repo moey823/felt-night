@@ -37,6 +37,11 @@ CHAT_MAX_LENGTH = 500
 CHAT_READ_LIMIT = 50
 CHAT_TABLE_LIMIT = 100
 CHAT_RATE_SECONDS = 1.0
+REACTION_EMOJI_ALLOWLIST = ("👏", "❤️", "😂", "🔥", "😍", "😮", "🎉", "🙌", "♠️", "💎", "🦈", "🤝")
+REACTION_RATE_SECONDS = 0.8
+REACTION_LIFETIME_SECONDS = 8.0
+REACTION_TABLE_LIMIT = 32
+REACTION_READ_LIMIT = 32
 MAX_ACTIVE_TABLES = 32
 MAX_SESSIONS = 256
 GLOBAL_LOGIN_LIMIT = 50
@@ -226,6 +231,8 @@ class Store:
             raise RuntimeError("data directory is not a directory")
         os.chmod(self.data_dir, 0o700)
         self.db_path = os.path.join(self.data_dir, "sitngo.sqlite3")
+        self._reaction_prune_lock = threading.Lock()
+        self._last_reaction_prune = 0.0
         self._initialize(room_password)
 
     def connect(self):
@@ -296,6 +303,18 @@ class Store:
                     ON chat_messages(table_id, id DESC);
                 CREATE INDEX IF NOT EXISTS chat_messages_player_order
                     ON chat_messages(player_id, id DESC);
+                CREATE TABLE IF NOT EXISTS table_reactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_id TEXT NOT NULL REFERENCES tables(id) ON DELETE CASCADE,
+                    player_id TEXT NOT NULL REFERENCES players(id),
+                    seat_no INTEGER NOT NULL CHECK (seat_no BETWEEN 0 AND 8),
+                    emoji TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS table_reactions_table_order
+                    ON table_reactions(table_id, id DESC);
+                CREATE INDEX IF NOT EXISTS table_reactions_player_order
+                    ON table_reactions(player_id, id DESC);
                 CREATE TABLE IF NOT EXISTS login_attempts (
                     client_key TEXT NOT NULL,
                     attempted REAL NOT NULL
@@ -896,6 +915,115 @@ class Store:
         finally:
             conn.close()
 
+    def add_table_reaction(self, table_id, player_id, emoji, now):
+        if emoji not in REACTION_EMOJI_ALLOWLIST:
+            raise AppError(400, "invalid_reaction", "Choose a table reaction.")
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT state FROM tables WHERE id=?", (table_id,)).fetchone()
+            if row is None:
+                conn.rollback()
+                raise AppError(404, "table_not_found", "Table not found.")
+            state = json.loads(row["state"])
+            seat = next(
+                (item for item in state.get("seats", [])
+                 if item.get("player_id") == player_id),
+                None,
+            )
+            if seat is None:
+                conn.rollback()
+                raise AppError(403, "not_seated", "Take a seat before sending a reaction.")
+
+            previous = conn.execute(
+                "SELECT created_at FROM table_reactions WHERE player_id=? ORDER BY id DESC LIMIT 1",
+                (player_id,),
+            ).fetchone()
+            if previous is not None and now - previous["created_at"] < REACTION_RATE_SECONDS:
+                conn.rollback()
+                raise AppError(429, "reaction_rate_limited", "Please wait before sending another reaction.")
+
+            seat_no = seat.get("seat_no")
+            if type(seat_no) is not int or not 0 <= seat_no < 9:
+                conn.rollback()
+                raise AppError(409, "seat_unavailable", "Your table seat is no longer available.")
+            cursor = conn.execute(
+                "INSERT INTO table_reactions(table_id,player_id,seat_no,emoji,created_at) VALUES(?,?,?,?,?)",
+                (table_id, player_id, seat_no, emoji, now),
+            )
+            reaction_id = cursor.lastrowid
+            conn.execute(
+                "DELETE FROM table_reactions WHERE created_at < ?",
+                (now - REACTION_LIFETIME_SECONDS,),
+            )
+            conn.execute(
+                """DELETE FROM table_reactions
+                   WHERE table_id=? AND id NOT IN (
+                       SELECT id FROM table_reactions
+                       WHERE table_id=? ORDER BY id DESC LIMIT ?
+                   )""",
+                (table_id, table_id, REACTION_TABLE_LIMIT),
+            )
+            conn.commit()
+            return {
+                "id": reaction_id,
+                "player_id": player_id,
+                "seat_no": seat_no,
+                "emoji": emoji,
+                "created_at": now,
+            }
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_table_reactions(self, table_id, after, now):
+        conn = self.connect()
+        try:
+            exists = conn.execute("SELECT 1 FROM tables WHERE id=?", (table_id,)).fetchone()
+            if exists is None:
+                raise AppError(404, "table_not_found", "Table not found.")
+            current = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) AS cursor FROM table_reactions WHERE table_id=?",
+                (table_id,),
+            ).fetchone()["cursor"]
+            if after is None:
+                rows = []
+            else:
+                rows = conn.execute(
+                    """SELECT id, player_id, seat_no, emoji, created_at FROM table_reactions
+                       WHERE table_id=? AND id>? AND created_at>=?
+                       ORDER BY id ASC LIMIT ?""",
+                    (table_id, after, now - REACTION_LIFETIME_SECONDS, REACTION_READ_LIMIT),
+                ).fetchall()
+            return {
+                "reactions": [
+                    {"id": row["id"], "player_id": row["player_id"],
+                     "seat_no": row["seat_no"], "emoji": row["emoji"],
+                     "created_at": row["created_at"]}
+                    for row in rows
+                ],
+                "cursor": current,
+            }
+        finally:
+            conn.close()
+
+    def prune_expired_table_reactions(self, now):
+        with self._reaction_prune_lock:
+            if now - self._last_reaction_prune < REACTION_LIFETIME_SECONDS:
+                return
+            conn = self.connect()
+            try:
+                conn.execute(
+                    "DELETE FROM table_reactions WHERE created_at < ?",
+                    (now - REACTION_LIFETIME_SECONDS,),
+                )
+                self._last_reaction_prune = now
+            finally:
+                conn.close()
+
     def mutate_table(self, table_id, mutate, now):
         conn = self.connect()
         try:
@@ -999,6 +1127,7 @@ class Store:
                     "Only completed, ended, cancelled, or expired games can be deleted.",
                 )
             conn.execute("DELETE FROM chat_messages WHERE table_id=?", (table_id,))
+            conn.execute("DELETE FROM table_reactions WHERE table_id=?", (table_id,))
             conn.execute("DELETE FROM end_confirmations WHERE table_id=?", (table_id,))
             tournament_history.delete_tournament_history(conn, table_id)
             conn.execute("DELETE FROM tables WHERE id=?", (table_id,))
@@ -1084,6 +1213,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.fragment:
             raise AppError(400, "invalid_url", "Fragments are not supported.")
         self.request_offset = 0
+        self.reaction_after = None
         if parsed.query:
             history_route = (
                 parsed.path == "/poker/api/history"
@@ -1091,18 +1221,29 @@ class Handler(BaseHTTPRequestHandler):
                 or parsed.path == "/poker/api/admin/history"
                 or re.fullmatch(r"/poker/api/admin/history/[a-f0-9]{32}", parsed.path)
             )
-            if self.command != "GET" or not history_route:
+            reaction_route = re.fullmatch(
+                r"/poker/api/tables/[a-f0-9]{32}/reactions", parsed.path,
+            )
+            if self.command != "GET" or not (history_route or reaction_route):
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
             try:
                 query = parse_qs(parsed.query, strict_parsing=True, keep_blank_values=True)
             except ValueError as exc:
-                raise AppError(400, "invalid_url", "Invalid history pagination.") from exc
-            if set(query) != {"offset"} or len(query["offset"]) != 1:
-                raise AppError(400, "invalid_url", "Use one numeric history offset.")
-            raw_offset = query["offset"][0]
-            if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
-                raise AppError(400, "invalid_url", "Invalid history offset.")
-            self.request_offset = int(raw_offset)
+                raise AppError(400, "invalid_url", "Invalid request cursor.") from exc
+            if reaction_route:
+                if set(query) != {"after"} or len(query["after"]) != 1:
+                    raise AppError(400, "invalid_url", "Use one numeric reaction cursor.")
+                raw_after = query["after"][0]
+                if not re.fullmatch(r"[0-9]{1,12}", raw_after):
+                    raise AppError(400, "invalid_url", "Invalid reaction cursor.")
+                self.reaction_after = int(raw_after)
+            else:
+                if set(query) != {"offset"} or len(query["offset"]) != 1:
+                    raise AppError(400, "invalid_url", "Use one numeric history offset.")
+                raw_offset = query["offset"][0]
+                if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
+                    raise AppError(400, "invalid_url", "Invalid history offset.")
+                self.request_offset = int(raw_offset)
         host = self.headers.get("Host", "").strip().lower()
         if host != self.app.public_netloc:
             raise AppError(421, "misdirected_request", "Request host is not configured.")
@@ -1394,6 +1535,14 @@ class Handler(BaseHTTPRequestHandler):
                 messages = self.app.store.list_chat_messages(match.group(1))
                 self._json(200, {"messages": messages, "server_now": time.time()})
                 return
+            match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/reactions", path)
+            if match:
+                self._require_player()
+                reactions = self.app.store.list_table_reactions(
+                    match.group(1), self.reaction_after, time.time(),
+                )
+                self._json(200, reactions)
+                return
             match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/last-hand", path)
             if match:
                 player, _ = self._require_player()
@@ -1405,7 +1554,11 @@ class Handler(BaseHTTPRequestHandler):
                 player, _ = self._require_player()
                 table_id = match.group(1)
                 state = self.app.store.mutate_table(table_id, lambda value: value, time.time())
-                self._json(200, {"table": engine.public_view(state, player["id"])})
+                view = engine.public_view(state, player["id"])
+                view["reaction_cursor"] = self.app.store.list_table_reactions(
+                    table_id, None, time.time(),
+                )["cursor"]
+                self._json(200, {"table": view})
                 return
             self._error(404, "not_found", "Not found.")
         except AppError as exc:
@@ -1565,6 +1718,19 @@ class Handler(BaseHTTPRequestHandler):
             if player.get("is_admin"):
                 raise AppError(403, "admin_read_only",
                                "Room admins can only change global settings or lobby bots.")
+
+            reaction_match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/reactions", path,
+            )
+            if reaction_match:
+                emoji = body.get("emoji")
+                if not isinstance(emoji, str) or emoji not in REACTION_EMOJI_ALLOWLIST:
+                    raise AppError(400, "invalid_reaction", "Choose a table reaction.")
+                reaction = self.app.store.add_table_reaction(
+                    reaction_match.group(1), player["id"], emoji, now,
+                )
+                self._json(201, {"reaction": reaction})
+                return
 
             chat_match = re.fullmatch(
                 r"/poker/api/tables/([a-f0-9]{32})/chat", path,
@@ -1866,7 +2032,9 @@ class App:
 def _background_ticks(store, stop_event):
     while not stop_event.wait(1.0):
         try:
-            store.tick_all(time.time())
+            now = time.time()
+            store.tick_all(now)
+            store.prune_expired_table_reactions(now)
         except Exception:
             continue
 
