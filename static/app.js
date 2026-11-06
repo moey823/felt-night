@@ -50,6 +50,14 @@
 
   var API_ROOT = "/poker/api";
   var AUTH_STORAGE_KEY = "sitngo.poker.session-proof.v1";
+  var REACTION_FAVORITES_STORAGE_PREFIX = "felt-night.reaction-favorites.v1.";
+  var REACTION_EMOJI_LABELS = {
+    "👏": "Clap", "❤️": "Heart", "😂": "Laugh", "🔥": "Fire",
+    "😍": "Love", "😮": "Wow", "🎉": "Celebrate", "🙌": "Praise",
+    "♠️": "Spade", "💎": "Diamond", "🦈": "Shark", "🤝": "Handshake"
+  };
+  var REACTION_EMOJIS = Object.keys(REACTION_EMOJI_LABELS);
+  var DEFAULT_REACTION_FAVORITES = ["👏", "❤️", "😂"];
   var DEFAULT_GLOBAL_CONFIG = {
     runout_seconds: 2.5,
     blind_announcement_seconds: 5,
@@ -88,6 +96,10 @@
     activeTableId: "",
     skipAutoResume: false,
     tableView: null,
+    reactionFavorites: DEFAULT_REACTION_FAVORITES.slice(),
+    reactionSending: false,
+    reactionLastSentAt: 0,
+    reactions: { tableId: "", cursor: null, pending: [], loading: false, requestId: 0 },
     standingsDismissedFor: "",
     polling: false,
     refreshBusy: false,
@@ -233,6 +245,60 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function reactionFavoritesKey(player) {
+    var id = String(player && player.id || "");
+    return id ? REACTION_FAVORITES_STORAGE_PREFIX + id : "";
+  }
+
+  function normalizedReactionFavorites(value) {
+    var selected = [];
+    (Array.isArray(value) ? value : []).forEach(function (emoji) {
+      if (REACTION_EMOJIS.indexOf(emoji) >= 0 && selected.indexOf(emoji) < 0 && selected.length < 3) {
+        selected.push(emoji);
+      }
+    });
+    DEFAULT_REACTION_FAVORITES.concat(REACTION_EMOJIS).forEach(function (emoji) {
+      if (selected.length < 3 && selected.indexOf(emoji) < 0) selected.push(emoji);
+    });
+    return selected.slice(0, 3);
+  }
+
+  function loadReactionFavorites(player) {
+    var key = reactionFavoritesKey(player || state.player);
+    if (!key) {
+      state.reactionFavorites = DEFAULT_REACTION_FAVORITES.slice();
+      return;
+    }
+    try {
+      state.reactionFavorites = normalizedReactionFavorites(
+        JSON.parse(window.localStorage.getItem(key) || "null"),
+      );
+    } catch (err) {
+      state.reactionFavorites = DEFAULT_REACTION_FAVORITES.slice();
+    }
+  }
+
+  function saveReactionFavorites(favorites) {
+    state.reactionFavorites = normalizedReactionFavorites(favorites);
+    var key = reactionFavoritesKey(state.player);
+    if (!key) return;
+    try { window.localStorage.setItem(key, JSON.stringify(state.reactionFavorites)); } catch (err) {}
+  }
+
+  function resetReactionStream() {
+    state.reactions = { tableId: "", cursor: null, pending: [], loading: false, requestId: 0 };
+    state.reactionSending = false;
+    state.reactionLastSentAt = 0;
+    var layer = byId("reaction-burst-layer");
+    if (layer) layer.replaceChildren();
+  }
+
+  function setActiveTableId(value) {
+    var next = String(value || "");
+    if (next !== String(state.activeTableId || "")) resetReactionStream();
+    state.activeTableId = next;
   }
 
   function number(value, fallback) {
@@ -540,6 +606,51 @@
     }
   }
 
+  function renderReactionSettingsDialog() {
+    var selects = Array.from(document.querySelectorAll("[data-reaction-select]"));
+    selects.forEach(function (select, index) {
+      var selected = state.reactionFavorites[index];
+      select.replaceChildren();
+      REACTION_EMOJIS.forEach(function (emoji) {
+        var option = document.createElement("option");
+        option.value = emoji;
+        option.textContent = emoji + "  " + REACTION_EMOJI_LABELS[emoji];
+        select.appendChild(option);
+      });
+      select.value = selected;
+    });
+    syncReactionSelectOptions();
+    byId("reaction-settings-error").hidden = true;
+    byId("reaction-settings-error").textContent = "";
+  }
+
+  function syncReactionSelectOptions() {
+    var selects = Array.from(document.querySelectorAll("[data-reaction-select]"));
+    var values = selects.map(function (select) { return select.value; });
+    selects.forEach(function (select) {
+      Array.from(select.options).forEach(function (option) {
+        option.disabled = option.value !== select.value && values.indexOf(option.value) >= 0;
+      });
+    });
+  }
+
+  function openReactionSettingsDialog() {
+    if (state.isAdmin) return;
+    var dialog = byId("reaction-settings-dialog");
+    if (!dialog) return;
+    renderReactionSettingsDialog();
+    byId("reaction-settings-button").setAttribute("aria-expanded", "true");
+    if (typeof dialog.showModal === "function") dialog.showModal();
+    else dialog.setAttribute("open", "");
+  }
+
+  function closeReactionSettingsDialog(restoreFocus) {
+    var dialog = byId("reaction-settings-dialog");
+    if (dialog && dialog.open) dialog.close();
+    byId("reaction-settings-button").setAttribute("aria-expanded", "false");
+    if (restoreFocus) focusTableControl("reaction-settings-button");
+  }
+
   function closeRecentActionDialog(restoreFocus) {
     var dialog = byId("recent-action-dialog");
     if (dialog && dialog.open) dialog.close();
@@ -784,6 +895,8 @@
     state.sitOutRequestId += 1;
     state.sitOutPending = false;
     state.player = null;
+    state.reactionFavorites = DEFAULT_REACTION_FAVORITES.slice();
+    resetReactionStream();
     state.isAdmin = false;
     document.body.classList.remove("admin-active");
     byId("admin-panel").hidden = true;
@@ -810,7 +923,7 @@
     clearAuth();
     state.tableView = null;
     state.tables = [];
-    state.activeTableId = "";
+    setActiveTableId("");
     state.skipAutoResume = false;
     state.polling = false;
     state.refreshPending = false;
@@ -1842,6 +1955,74 @@
     return !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   }
 
+  function renderReactionBursts() {
+    var stream = state.reactions;
+    if (!stream || stream.tableId !== String(state.activeTableId || "") || !stream.pending.length) return;
+    var layer = byId("reaction-burst-layer");
+    if (!layer) {
+      stream.pending = [];
+      return;
+    }
+    var layerRect = layer.getBoundingClientRect();
+    var queue = stream.pending.splice(0, 32);
+    queue.forEach(function (reaction) {
+      var senderId = String(reaction && reaction.player_id || "");
+      if (!senderId) return;
+      var seat = Array.from(byId("seat-grid").querySelectorAll(".seat-card[data-player-id]")).find(function (node) {
+        return node.getAttribute("data-player-id") === senderId;
+      });
+      if (!seat) return;
+      var seatRect = seat.getBoundingClientRect();
+      var startX = seatRect.left + seatRect.width / 2 - layerRect.left;
+      var startY = seatRect.top + seatRect.height / 2 - layerRect.top;
+      var moving = motionAllowed() && typeof Element.prototype.animate === "function";
+      var count = moving ? 16 : 8;
+      for (var i = 0; i < count; i += 1) {
+        var angle = Math.PI * 2 * i / count + Math.PI / 8;
+        var distance = moving ? 40 + (i % 4) * 10 : 28;
+        var particle = document.createElement("span");
+        particle.className = "reaction-particle";
+        particle.textContent = String(reaction.emoji || "");
+        particle.setAttribute("aria-hidden", "true");
+        particle.style.left = (startX + (moving ? 0 : Math.cos(angle) * distance)) + "px";
+        particle.style.top = (startY + (moving ? 0 : Math.sin(angle) * distance)) + "px";
+        layer.appendChild(particle);
+        if (!moving) {
+          particle.classList.add("reaction-particle-static");
+          window.setTimeout(function (node) { return function () { node.remove(); }; }(particle), 1200);
+          continue;
+        }
+        var endX = Math.max(20, Math.min(layerRect.width - 20, startX + Math.cos(angle) * distance));
+        var endY = Math.max(20, Math.min(layerRect.height - 20, startY + Math.sin(angle) * distance));
+        var dx = endX - startX;
+        var dy = endY - startY;
+        var rotation = (i % 2 ? 1 : -1) * (20 + (i % 5) * 8);
+        var animation = particle.animate([
+          { transform: "translate(-50%, -50%) scale(.52) rotate(0deg)", opacity: .98 },
+          { transform: "translate(calc(-50% + " + dx + "px), calc(-50% + " + dy + "px)) scale(1.08) rotate(" + rotation + "deg)", opacity: 0 }
+        ], { duration: 980 + (i % 4) * 55, easing: "cubic-bezier(.16,.72,.29,1)", fill: "forwards" });
+        animation.finished.catch(function () {}).then(function (node) { return function () { node.remove(); }; }(particle));
+      }
+    });
+  }
+
+  async function sendTableReaction(emoji) {
+    var tableId = String(state.activeTableId || "");
+    if (!tableId || !state.player || state.isAdmin || state.reactionSending ||
+        REACTION_EMOJIS.indexOf(emoji) < 0 || Date.now() - state.reactionLastSentAt < 800) return;
+    state.reactionSending = true;
+    state.reactionLastSentAt = Date.now();
+    try {
+      await mutate("/tables/" + encodeURIComponent(tableId) + "/reactions", { emoji: emoji });
+    } catch (err) {
+      if (state.activeTableId === tableId && err.status !== 401) {
+        showNotice(err.message, err.status === 429 ? "info" : "error", false);
+      }
+    } finally {
+      if (state.activeTableId === tableId) state.reactionSending = false;
+    }
+  }
+
   function animateChip(layer, start, end, amount, duration, label, kind) {
     if (!motionAllowed() || !layer || !start || !end || typeof layer.animate !== "function") return Promise.resolve();
     var bounds = layer.getBoundingClientRect();
@@ -2118,12 +2299,19 @@
         markerHtml += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-label="Pending street wager ' + esc(tableChips(pendingWager, view)) + '" title="Pending street wager ' + esc(tableChips(pendingWager, view)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChipValue(pendingWager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
       }
       var markerLane = '<div class="seat-local-markers"' + (markerHtml ? '' : ' aria-hidden="true"') + '>' + markerHtml + '</div>';
+      var shortcuts = isMe && !state.isAdmin
+        ? '<div class="reaction-shortcuts" role="group" aria-label="Your table reaction shortcuts">' +
+          normalizedReactionFavorites(state.reactionFavorites).map(function (emoji) {
+            var label = REACTION_EMOJI_LABELS[emoji] || "table";
+            return '<button class="reaction-shortcut" type="button" data-send-reaction="' + esc(emoji) + '" aria-label="Send ' + esc(label) + ' reaction" title="Send ' + esc(label) + '">' + esc(emoji) + '</button>';
+          }).join("") + '</div>'
+        : "";
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' +
         tagsMarkup +
         stackHtml +
         '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        cardHtml + markerLane + equityHtml +
+        cardHtml + markerLane + equityHtml + shortcuts +
       '</div>';
     }
 
@@ -2131,10 +2319,17 @@
     var felt = byId("felt");
     var restoreChipToggleFocus = Boolean(document.activeElement && document.activeElement.matches &&
       document.activeElement.matches("[data-chip-display-toggle]"));
+    var focusedReaction = document.activeElement && document.activeElement.getAttribute
+      ? document.activeElement.getAttribute("data-send-reaction") : null;
     grid.innerHTML = html;
     if (restoreChipToggleFocus) {
       var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });
+    } else if (focusedReaction) {
+      var replacementReaction = Array.from(grid.querySelectorAll("[data-send-reaction]")).find(function (node) {
+        return node.getAttribute("data-send-reaction") === focusedReaction;
+      });
+      if (replacementReaction) replacementReaction.focus({ preventScroll: true });
     }
     if (winnerFound && state.winnerAnimationKey !== winnerAnimationKey) {
       state.winnerAnimationKey = winnerAnimationKey;
@@ -3488,6 +3683,7 @@
     byId("end-game-button").hidden = !(host && status === "playing");
     byId("history-button").hidden = state.isAdmin;
     byId("table-logout-button").hidden = state.isAdmin;
+    byId("reaction-settings-button").hidden = state.isAdmin;
     var menu = byId("table-menu");
     if (menu && !hasTable) menu.open = false;
     renderSitOutButton(view, ownSeat);
@@ -3499,6 +3695,7 @@
     renderSettingsPanel(view, host);
     updateHostReadiness(view, host);
     renderSeats(view);
+    renderReactionBursts();
     playTableEffects();
   }
 
@@ -3506,17 +3703,19 @@
     var previousPlayerId = String(state.player && state.player.id || "");
     var nextPlayerId = String(player && player.id || "");
     if (previousPlayerId !== nextPlayerId) {
+      resetReactionStream();
       closeLastHandDialog(false);
       clearChat();
       state.sitOutRequestId += 1;
       state.sitOutPending = false;
     }
     state.player = player || null;
+    loadReactionFavorites(state.player);
     if (typeof sessionProof === "string" && sessionProof) state.sessionProof = sessionProof;
     if (typeof csrf === "string" && csrf) state.csrf = csrf;
     persistAuth();
     state.isAdmin = Boolean(player && player.is_admin);
-    if (!state.activeTableId) state.activeTableId = hashTableId();
+    if (!state.activeTableId) setActiveTableId(hashTableId());
     state.restoreTableId = state.activeTableId ? String(state.activeTableId) : "";
     state.polling = !state.isAdmin;
     byId("login-panel").hidden = true;
@@ -3528,13 +3727,14 @@
     byId("admin-logout-button").hidden = !state.isAdmin;
     byId("history-button").hidden = state.isAdmin;
     byId("table-logout-button").hidden = state.isAdmin;
+    byId("reaction-settings-button").hidden = state.isAdmin;
     document.body.classList.toggle("admin-active", state.isAdmin);
     byId("welcome-name").textContent = state.player ? state.player.name : "";
     byId("identity-avatar").textContent = state.player && state.player.name ? state.player.name.charAt(0).toUpperCase() : "♠";
     clearNotice();
     loadGlobalConfig().catch(function () {});
     if (state.isAdmin) {
-      state.activeTableId = "";
+      setActiveTableId("");
       state.tableView = null;
       setHashTable("");
       renderTable();
@@ -3556,7 +3756,7 @@
         byId("login-panel").hidden = false;
         setAuthMode("claim");
       } else if (data.authenticated && state.sessionProof && data.csrf) {
-        state.activeTableId = hashTableId();
+        setActiveTableId(hashTableId());
         enterApp(data.player, data.csrf, state.sessionProof);
       } else if (data.authenticated || state.sessionProof) {
         setLoggedOut("Your session could not be restored. Sign in again.");
@@ -3588,8 +3788,59 @@
           (number(view.version, 0) === number(previous.version, 0) &&
             number(view.server_now, 0) < number(previous.server_now, 0))) return false;
     }
+    if (state.reactions.tableId !== tableId) {
+      state.reactions = {
+        tableId: tableId,
+        cursor: number(view.reaction_cursor, 0),
+        pending: [],
+        loading: false,
+        requestId: 0
+      };
+    } else if (state.reactions.cursor == null) {
+      state.reactions.cursor = number(view.reaction_cursor, 0);
+    }
     state.tableView = view;
     return true;
+  }
+
+  async function refreshTableReactions(tableId) {
+    if (!tableId || state.activeTableId !== tableId) return;
+    var stream = state.reactions;
+    if (stream.tableId !== tableId) {
+      stream = {
+        tableId: tableId,
+        cursor: null,
+        pending: [],
+        loading: false,
+        requestId: 0
+      };
+      state.reactions = stream;
+    }
+    if (stream.loading) return;
+    var after = stream.cursor;
+    var requestId = ++stream.requestId;
+    stream.loading = true;
+    var path = "/tables/" + encodeURIComponent(tableId) + "/reactions";
+    if (after != null) path += "?after=" + encodeURIComponent(String(after));
+    try {
+      var data = await request(path);
+      if (state.activeTableId !== tableId || state.reactions !== stream || stream.requestId !== requestId) return;
+      if (after == null) {
+        stream.cursor = number(data.cursor, 0);
+        return;
+      }
+      var cursor = number(stream.cursor, 0);
+      var nextCursor = number(data.cursor, cursor);
+      (Array.isArray(data.reactions) ? data.reactions : []).forEach(function (reaction) {
+        var id = number(reaction && reaction.id, 0);
+        if (id > cursor && id <= nextCursor) stream.pending.push(reaction);
+      });
+      stream.pending = stream.pending.slice(-32);
+      stream.cursor = Math.max(cursor, nextCursor);
+      renderReactionBursts();
+    } finally {
+      if (state.reactions === stream && stream.requestId === requestId) stream.loading = false;
+    }
   }
 
   async function refreshAll(force) {
@@ -3616,7 +3867,7 @@
           });
           if (resume) {
             closeLastHandDialog(false);
-            state.activeTableId = String(resume.id || "");
+            setActiveTableId(String(resume.id || ""));
             if (state.activeTableId) setHashTable(state.activeTableId);
           }
         }
@@ -3632,7 +3883,7 @@
           if (state.restoreTableId === selectedTableId) {
             state.restoreTableId = "";
             if (incoming.status === "ended" || incoming.status === "cancelled") {
-              state.activeTableId = "";
+              setActiveTableId("");
               state.tableView = null;
               state.skipAutoResume = true;
               setHashTable("");
@@ -3640,14 +3891,19 @@
               renderTable();
             }
           }
-          if (state.activeTableId === selectedTableId && adoptSnapshot(incoming, selectedTableId)) renderTable();
+          if (state.activeTableId === selectedTableId && adoptSnapshot(incoming, selectedTableId)) {
+            renderTable();
+            refreshTableReactions(selectedTableId).catch(function (reactionError) {
+              if (reactionError.status === 401) return;
+            });
+          }
         } catch (err) {
           if (state.activeTableId !== selectedTableId) return;
           if (err.status === 404) {
             clearBlindAnnouncement(true);
             closeRecentActionDialog();
             closeLastHandDialog(false);
-            state.activeTableId = "";
+            setActiveTableId("");
             state.tableView = null;
             setHashTable("");
             renderTable();
@@ -3894,7 +4150,7 @@
       var data = await request("/" + authMode, {method:"POST", body:body, mutate:authMode === "claim"});
       byId("room-password").value = "";
       byId("login-password").value = "";
-      state.activeTableId = hashTableId();
+      setActiveTableId(hashTableId());
       if (!data.session_proof || !data.csrf) throw new apiError("The room did not issue complete session credentials. Try signing in again.", 500, "missing_session_proof");
       enterApp(data.player, data.csrf, data.session_proof);
     } catch (err) {
@@ -4107,6 +4363,47 @@
     if (menu) menu.open = false;
     openTableSettingsDialog();
   });
+  byId("reaction-settings-button").addEventListener("click", function () {
+    var menu = byId("table-menu");
+    if (menu) menu.open = false;
+    openReactionSettingsDialog();
+  });
+  byId("reaction-settings-close").addEventListener("click", function () {
+    closeReactionSettingsDialog(true);
+  });
+  byId("reaction-settings-cancel").addEventListener("click", function () {
+    closeReactionSettingsDialog(true);
+  });
+  byId("reaction-settings-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeReactionSettingsDialog(true);
+  });
+  byId("reaction-settings-dialog").addEventListener("close", function () {
+    byId("reaction-settings-button").setAttribute("aria-expanded", "false");
+  });
+  byId("reaction-settings-dialog").addEventListener("click", function (event) {
+    if (event.target === byId("reaction-settings-dialog")) closeReactionSettingsDialog(true);
+  });
+  document.querySelectorAll("[data-reaction-select]").forEach(function (select) {
+    select.addEventListener("change", syncReactionSelectOptions);
+  });
+  byId("reaction-settings-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var favorites = Array.from(document.querySelectorAll("[data-reaction-select]")).map(function (select) {
+      return select.value;
+    });
+    if (favorites.length !== 3 || new Set(favorites).size !== 3 ||
+        favorites.some(function (emoji) { return REACTION_EMOJIS.indexOf(emoji) < 0; })) {
+      byId("reaction-settings-error").textContent = "Choose three different reactions.";
+      byId("reaction-settings-error").hidden = false;
+      return;
+    }
+    saveReactionFavorites(favorites);
+    closeReactionSettingsDialog(false);
+    renderTable();
+    var firstShortcut = byId("hero-seat") && byId("hero-seat").querySelector("[data-send-reaction]");
+    if (firstShortcut) firstShortcut.focus({ preventScroll: true });
+  });
   byId("table-menu").addEventListener("click", function (event) {
     var button = event.target.closest("button");
     if (!button || button.disabled) return;
@@ -4287,7 +4584,7 @@
       });
       var table = data.table || data;
       closeLastHandDialog(false);
-      state.activeTableId = String(table.id || "");
+      setActiveTableId(String(table.id || ""));
       state.tableView = table.id ? table : null;
       state.settingsTableId = "";
       state.settingsDirty = false;
@@ -4373,7 +4670,7 @@
       clearBlindAnnouncement(true);
       closeRecentActionDialog();
       closeLastHandDialog(false);
-      state.activeTableId = "";
+      setActiveTableId("");
       state.skipAutoResume = true;
       state.tableView = null;
       setHashTable("");
@@ -4464,7 +4761,7 @@
     state.endConfirmation = { tableId: "", token: "", step: 0, busy: false };
     var menu = byId("table-menu");
     if (menu) menu.open = false;
-    state.activeTableId = "";
+    setActiveTableId("");
     state.skipAutoResume = true;
     state.restoreTableId = "";
     state.tableView = null;
@@ -4515,7 +4812,7 @@
     clearBlindAnnouncement(true);
     closeRecentActionDialog();
     closeLastHandDialog(false);
-    state.activeTableId = button.getAttribute("data-open-table") || "";
+    setActiveTableId(button.getAttribute("data-open-table") || "");
     state.skipAutoResume = false;
     state.tableView = null;
     setHashTable(state.activeTableId);
@@ -4549,6 +4846,11 @@
   });
 
   byId("seat-grid").addEventListener("click", function (event) {
+    var reactionButton = event.target.closest("[data-send-reaction]");
+    if (reactionButton) {
+      sendTableReaction(reactionButton.getAttribute("data-send-reaction"));
+      return;
+    }
     var seatAction = event.target.closest("[data-take-seat]");
     if (seatAction) {
       handleSeatControlClick(event);

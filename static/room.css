@@ -2570,3 +2570,67 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
   background: #453b22 !important;
   opacity: 1 !important;
 }
+
+/* Reactions stay inside the felt overlay and never change seat geometry. */
+.reaction-shortcuts {
+  position: absolute;
+  z-index: 12;
+  top: -39px;
+  left: 50%;
+  display: flex;
+  gap: 4px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.reaction-shortcut {
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid rgba(231, 238, 221, .26);
+  border-radius: 50%;
+  background: rgba(13, 30, 23, .96);
+  color: #fff4d5;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .36);
+  pointer-events: auto;
+}
+.reaction-shortcut:hover { border-color: rgba(197, 227, 124, .72); background: #1d3a2b; }
+.reaction-shortcut:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+.reaction-burst-layer {
+  position: absolute;
+  z-index: 9;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.reaction-particle {
+  position: absolute;
+  display: block;
+  font-size: 22px;
+  line-height: 1;
+  text-shadow: 0 2px 7px rgba(0, 0, 0, .52);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+.reaction-particle-static { transform: translate(-50%, -50%); opacity: .96; }
+.reaction-settings-dialog { width: min(440px, calc(100vw - 24px)); }
+.reaction-settings-dialog > .section-heading { align-items: flex-start; }
+.reaction-settings-dialog .section-heading h2 { margin: 4px 0 0; font-size: 21px; }
+.reaction-settings-dialog > p { margin: 0; font-size: 11px; line-height: 1.55; }
+.reaction-settings-form { display: grid; gap: 14px; }
+.reaction-settings-selects { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.reaction-settings-selects label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 650; }
+.reaction-settings-selects select { width: 100%; min-width: 0; padding-inline: 8px; }
+.reaction-settings-form .end-game-actions { justify-content: flex-end; }
+.reaction-settings-form .button { min-height: 44px; }
+@media (max-width: 480px) {
+  .reaction-settings-selects { grid-template-columns: minmax(0, 1fr); }
+  .reaction-settings-dialog { position: fixed; inset: auto 8px max(8px, env(safe-area-inset-bottom)); width: auto; max-width: none; margin: 0; }
+}

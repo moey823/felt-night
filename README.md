@@ -8,7 +8,7 @@ Players create private accounts, return to a seat after reconnecting, and review
 
 New game opens a lobby and its single host setup dialog. Hosts choose the game name, buy-in, starting stack, blinds, blind-level duration, shot clock, and payout shares. Payout sliders keep the total at 100%; the occupied seats determine the field size when the host starts. Hosts can pause/resume play and end a game with two confirmations. Ending early preserves the game record without declaring a winner or inventing a payout.
 
-The table uses a dedicated gameplay view with a seat ring, centered board and pot, and betting controls below the felt. Chat, history, replay, and host controls are available from the table menu. The settings dialog keeps its close control reachable on mobile. Fullscreen and a separate table window are optional, and the mobile web app can be installed in standalone mode. Live game requests always require the server; the app does not offer offline play.
+The table uses a dedicated gameplay view with a seat ring, centered board and pot, and betting controls below the felt. Players can choose three private reaction shortcuts from the table menu; favorites stay in that browser for that account, while sent reactions briefly burst around the sender’s current seat for table viewers. Chat, history, replay, and host controls are also available from the table menu. The settings dialogs keep their close controls reachable on mobile. Fullscreen and a separate table window are optional, and the mobile web app can be installed in standalone mode. Live game requests always require the server; the app does not offer offline play.
 
 A separate, explicitly enabled room admin configures shared preflop/postflop bet presets, all-in street delay, blind/elimination announcements, showdown result holds, and the winner hold after everyone else folds. The no-showdown hold accepts 0–60 seconds and defaults to 1.5 seconds; blind and elimination announcements follow it. Admin changes apply to future pacing transitions without resetting an active deadline. Only admin can add or remove test bots. The admin account cannot create a game, take a seat, or submit poker actions. Normal players retain their personal accounts, reconnectable seats, and private tournament histories.
 
@@ -75,7 +75,10 @@ BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs flow
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs layout
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs compact
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs stability
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs reactions
 ```
+
+The reactions suite checks private shortcuts, local favorites, live burst delivery, reconnect behavior, and nine-seat mobile layout.
 
 Set `QA_SCREEN_DIR` to a directory on the development machine to retain screenshots. The default suite plays real hands and checks action submission, reconnects, and history. The flow suite covers host setup, payouts, admin separation, mobile dialogs, and ending a game. The layout suite checks crowded tables across screen sizes. The stability suite checks a nine-player game, timer pause/resume, compact chat, viewport controls, seat markers, winner badges, and the admin past-game flow. See [the design and verification priorities](docs/ux-design.md).
 
