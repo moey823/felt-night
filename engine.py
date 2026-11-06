@@ -25,6 +25,7 @@ RUNOUT_SECONDS = 2.5
 BLIND_ANNOUNCEMENT_SECONDS = 5
 ELIMINATION_ANNOUNCEMENT_SECONDS = 5
 HAND_COMPLETE_PAUSE_SECONDS = 1.5
+SHOWDOWN_SECONDS = 5
 RUNOUT_EXACT_LIMIT = 10000
 DEFAULT_BUY_IN = 10
 DEFAULT_PAYOUT_PERCENTAGES = (60, 25, 15)
@@ -76,7 +77,7 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
 def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise GameError("invalid_config", "Table settings are required.")
-    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "blind_announcement_seconds", "elimination_announcement_seconds", "buy_in", "payout_percentages"}
+    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "blind_announcement_seconds", "elimination_announcement_seconds", "showdown_seconds", "buy_in", "payout_percentages"}
     unknown = set(config) - allowed
     if unknown:
         raise GameError("invalid_config", "Unknown table setting: %s." % sorted(unknown)[0])
@@ -88,6 +89,7 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
     values.setdefault("runout_seconds", RUNOUT_SECONDS)  # Lobbies saved before customizable pacing.
     values.setdefault("blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS)
     values.setdefault("elimination_announcement_seconds", ELIMINATION_ANNOUNCEMENT_SECONDS)
+    values.setdefault("showdown_seconds", SHOWDOWN_SECONDS)
     values.setdefault("buy_in", DEFAULT_BUY_IN)  # Tables saved before configurable play-money buy-ins.
     values.setdefault("payout_percentages", list(DEFAULT_PAYOUT_PERCENTAGES))
     values.update(config)
@@ -107,6 +109,10 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
     if (type(elimination_announcement) not in (int, float) or not 0 <= elimination_announcement <= 60
             or not math.isfinite(elimination_announcement)):
         raise GameError("invalid_config", "Elimination announcement length must be 0 to 60 seconds.")
+    showdown_seconds = values["showdown_seconds"]
+    if (type(showdown_seconds) not in (int, float) or not 0 <= showdown_seconds <= 60
+            or not math.isfinite(showdown_seconds)):
+        raise GameError("invalid_config", "Showdown display length must be 0 to 60 seconds.")
     payout_percentages = values["payout_percentages"]
     if (
         not isinstance(payout_percentages, (list, tuple))
@@ -125,6 +131,7 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
         "runout_seconds": delay,
         "blind_announcement_seconds": blind_announcement,
         "elimination_announcement_seconds": elimination_announcement,
+        "showdown_seconds": showdown_seconds,
         "buy_in": _integer(values["buy_in"], "Buy-in", 0, MAX_CHIPS),
         "payout_percentages": list(payout_percentages),
     }
@@ -300,6 +307,7 @@ def create_lobby(
             "runout_seconds": validated["runout_seconds"],
             "blind_announcement_seconds": validated["blind_announcement_seconds"],
             "elimination_announcement_seconds": validated["elimination_announcement_seconds"],
+            "showdown_seconds": validated["showdown_seconds"],
             "buy_in": validated["buy_in"],
             "payout_percentages": list(validated["payout_percentages"]),
         },
@@ -465,19 +473,79 @@ def pause_table(
                     blinds[key] += duration
             hand = state.get("hand")
             if hand is not None:
-                for key in ("turn_deadline", "bot_action_at", "runout_at", "hand_complete_at", "next_hand_at"):
+                for key in (
+                    "turn_deadline", "bot_action_at", "runout_at", "hand_complete_at",
+                    "next_hand_at", "showdown_started_at", "showdown_until", "presentation_until",
+                    "blind_transition_until",
+                ):
                     if hand.get(key) is not None:
                         hand[key] += duration
             for key in ("blind_announcement", "elimination_announcement"):
                 announcement = state.get(key)
-                if isinstance(announcement, dict) and announcement.get("until") is not None:
-                    announcement["until"] += duration
+                if isinstance(announcement, dict):
+                    for deadline in ("starts_at", "until"):
+                        if announcement.get(deadline) is not None:
+                            announcement[deadline] += duration
         state["paused"] = False
         state["paused_at"] = None
         state["turn_version"] += 1
         _log(state, "The host resumed the tournament.", timestamp)
     _bump(state)
     return state
+
+
+def _deadline_number(value: Any) -> Optional[float]:
+    return float(value) if type(value) in (int, float) and math.isfinite(value) else None
+
+
+def _presentation_end(state: Dict[str, Any], hand: Dict[str, Any]) -> Optional[float]:
+    deadlines = [
+        _deadline_number(hand.get("hand_complete_at")),
+        _deadline_number(hand.get("showdown_until")),
+        _deadline_number(hand.get("blind_transition_until")),
+    ]
+    for key in ("elimination_announcement", "blind_announcement"):
+        announcement = state.get(key)
+        if isinstance(announcement, dict):
+            deadlines.append(_deadline_number(announcement.get("until")))
+    valid = [deadline for deadline in deadlines if deadline is not None]
+    return max(valid) if valid else None
+
+
+def _refresh_presentation_deadline(state: Dict[str, Any], hand: Dict[str, Any]) -> None:
+    until = _presentation_end(state, hand)
+    hand["presentation_until"] = until
+    hand["next_hand_at"] = until if state.get("status") == "playing" else None
+
+
+def _announcement_start(announcement: Dict[str, Any], fallback: float) -> float:
+    value = _deadline_number(announcement.get("starts_at"))
+    return fallback if value is None else value
+
+
+def _set_announcement_duration(
+    announcement: Optional[Dict[str, Any]],
+    duration: float,
+    effective_at: float,
+    predecessor_until: float,
+) -> Optional[Dict[str, Any]]:
+    """Resize an existing announcement without reviving an expired window."""
+    if not isinstance(announcement, dict):
+        return None
+    old_until = _deadline_number(announcement.get("until"))
+    if old_until is None or old_until <= effective_at or duration <= 0:
+        return None
+    old_start = _announcement_start(announcement, effective_at)
+    if old_start <= effective_at:
+        start = old_start
+        until = effective_at + duration
+    else:
+        start = max(predecessor_until, effective_at)
+        until = start + duration
+    updated = dict(announcement)
+    updated["starts_at"] = start
+    updated["until"] = until
+    return updated
 
 
 def update_runtime_settings(
@@ -496,6 +564,7 @@ def update_runtime_settings(
     allowed = {
         "turn_seconds", "level_minutes", "runout_seconds",
         "blind_announcement_seconds", "elimination_announcement_seconds",
+        "showdown_seconds",
     }
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise GameError("invalid_config", "Only pacing settings can change during a tournament.")
@@ -508,10 +577,6 @@ def update_runtime_settings(
     effective_at = paused_at if isinstance(paused_at, (int, float)) else timestamp
     state["config"] = updated
     hand = state.get("hand")
-    active_blind_announcement = state.get("blind_announcement")
-    if (not isinstance(active_blind_announcement, dict)
-            or active_blind_announcement.get("until", 0) <= effective_at):
-        active_blind_announcement = None
 
     if hand is not None and hand.get("to_act") is not None and "turn_seconds" in settings:
         actor_seat = _seat_by_id(state, hand["to_act"])
@@ -520,45 +585,96 @@ def update_runtime_settings(
     if hand is not None and hand.get("runout_at") is not None and "runout_seconds" in settings:
         hand["runout_at"] = effective_at + updated["runout_seconds"]
 
-    if "blind_announcement_seconds" in settings:
-        announcement = state.get("blind_announcement")
-        if isinstance(announcement, dict):
-            if updated["blind_announcement_seconds"] == 0:
-                state["blind_announcement"] = None
-                active_blind_announcement = None
-            else:
-                announcement["until"] = effective_at + updated["blind_announcement_seconds"]
-                active_blind_announcement = announcement
-    if "elimination_announcement_seconds" in settings:
-        announcement = state.get("elimination_announcement")
-        if isinstance(announcement, dict):
-            if updated["elimination_announcement_seconds"] == 0:
-                state["elimination_announcement"] = None
-            else:
-                announcement["until"] = effective_at + updated["elimination_announcement_seconds"]
+    announcements_rescheduled = False
+    if hand is not None and hand.get("street") == "showdown":
+        if "showdown_seconds" in settings:
+            started = _deadline_number(hand.get("showdown_started_at"))
+            old_until = _deadline_number(hand.get("showdown_until"))
+            if started is not None and old_until is not None and old_until > effective_at:
+                hand["showdown_until"] = max(effective_at, started + updated["showdown_seconds"])
+                hand["hand_complete_at"] = hand["showdown_until"]
+                announcements_rescheduled = True
 
-    if "level_minutes" in settings or ("blind_announcement_seconds" in settings and active_blind_announcement is not None):
-        blinds = state["blinds"]
-        level_started = (
-            active_blind_announcement["until"]
-            if active_blind_announcement is not None
-            else effective_at
+        result_end = max(
+            _deadline_number(hand.get("showdown_until")) or effective_at,
+            _deadline_number(hand.get("hand_complete_at")) or effective_at,
         )
+        elimination = state.get("elimination_announcement")
+        if "elimination_announcement_seconds" in settings:
+            resized = _set_announcement_duration(
+                elimination, updated["elimination_announcement_seconds"],
+                effective_at, result_end,
+            )
+            if elimination is not None:
+                state["elimination_announcement"] = resized
+                announcements_rescheduled = True
+        elif isinstance(elimination, dict):
+            old_start = _announcement_start(elimination, effective_at)
+            old_until = _deadline_number(elimination.get("until"))
+            if old_until is not None and old_until > effective_at and old_start > effective_at:
+                duration = max(0.0, old_until - old_start)
+                state["elimination_announcement"] = _set_announcement_duration(
+                    elimination, duration, effective_at, result_end,
+                )
+                announcements_rescheduled = True
+
+        elimination = state.get("elimination_announcement")
+        elimination_end = (
+            _deadline_number(elimination.get("until"))
+            if isinstance(elimination, dict) else None
+        )
+        blind_predecessor = max(result_end, elimination_end or result_end)
+        blind = state.get("blind_announcement")
+        if "blind_announcement_seconds" in settings:
+            resized = _set_announcement_duration(
+                blind, updated["blind_announcement_seconds"],
+                effective_at, blind_predecessor,
+            )
+            if blind is not None:
+                state["blind_announcement"] = resized
+                if resized is None:
+                    hand["blind_transition_until"] = max(
+                        effective_at + HAND_COMPLETE_PAUSE_SECONDS, blind_predecessor,
+                    )
+                else:
+                    hand["blind_transition_until"] = max(
+                        resized["until"], resized["starts_at"],
+                        effective_at + HAND_COMPLETE_PAUSE_SECONDS,
+                    )
+                announcements_rescheduled = True
+        elif isinstance(blind, dict):
+            old_start = _announcement_start(blind, effective_at)
+            old_until = _deadline_number(blind.get("until"))
+            if old_until is not None and old_until > effective_at and old_start > effective_at:
+                duration = max(0.0, old_until - old_start)
+                state["blind_announcement"] = _set_announcement_duration(
+                    blind, duration, effective_at, blind_predecessor,
+                )
+                resized = state["blind_announcement"]
+                if resized is not None:
+                    hand["blind_transition_until"] = max(
+                        resized["until"], resized["starts_at"],
+                        effective_at + HAND_COMPLETE_PAUSE_SECONDS,
+                    )
+                announcements_rescheduled = True
+
+        _refresh_presentation_deadline(state, hand)
+
+    if "level_minutes" in settings or "blind_announcement_seconds" in settings or announcements_rescheduled:
+        blinds = state["blinds"]
+        announcement = state.get("blind_announcement")
+        announcement_until = (
+            _deadline_number(announcement.get("until"))
+            if isinstance(announcement, dict) else None
+        )
+        level_started = announcement_until or effective_at
+        if hand is not None and hand.get("street") == "showdown":
+            presentation_end = _deadline_number(hand.get("presentation_until"))
+            if presentation_end is not None:
+                level_started = max(level_started, presentation_end)
         blinds["started_at"] = level_started
         blinds["next_level_at"] = level_started + updated["level_minutes"] * 60
 
-    if hand is not None and hand.get("street") == "showdown":
-        deadlines = [
-            hand.get("hand_complete_at")
-            or hand.get("next_hand_at")
-            or effective_at + HAND_COMPLETE_PAUSE_SECONDS,
-        ]
-        for key in ("blind_announcement", "elimination_announcement"):
-            announcement = state.get(key)
-            if (isinstance(announcement, dict) and announcement.get("until") is not None
-                    and announcement["until"] > effective_at):
-                deadlines.append(announcement["until"])
-        hand["next_hand_at"] = max(deadlines)
     state["last_activity_at"] = timestamp
     _log(state, "The host updated tournament pacing settings.", timestamp)
     _bump(state)
@@ -849,6 +965,10 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "runout_odds_samples": 0,
         "next_hand_at": None,
         "hand_complete_at": None,
+        "showdown_started_at": None,
+        "showdown_until": None,
+        "presentation_until": None,
+        "blind_transition_until": None,
         "blind_transition_announced": False,
         "runout_at": None,
         "runout_swept_street": None,
@@ -1510,8 +1630,12 @@ def _choose_bot_action(
     return fallback()
 
 
-def _apply_due_blinds(state: Dict[str, Any], timestamp: float) -> bool:
-    """Apply every expired blind level at a hand boundary."""
+def _apply_due_blinds(
+    state: Dict[str, Any],
+    timestamp: float,
+    not_before: Optional[float] = None,
+) -> bool:
+    """Apply overdue blind levels once and schedule one non-overlapping notice."""
     if state.get("status") != "playing":
         return False
     blinds = state["blinds"]
@@ -1528,54 +1652,156 @@ def _apply_due_blinds(state: Dict[str, Any], timestamp: float) -> bool:
     announcement_seconds = state["config"].get(
         "blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS,
     )
-    announcement_until = timestamp + announcement_seconds
-    level_started_at = deadline + (passed - 1) * level_seconds + announcement_seconds
-    blinds["started_at"] = level_started_at
-    blinds["next_level_at"] = deadline + passed * level_seconds + announcement_seconds
-    if announcement_seconds > 0:
-        state["blind_announcement"] = {
+
+    starts_at = max(timestamp, not_before if not_before is not None else timestamp)
+    hand = state.get("hand")
+    if hand is not None and hand.get("street") == "showdown":
+        for key in ("hand_complete_at", "showdown_until", "presentation_until"):
+            value = _deadline_number(hand.get(key))
+            if value is not None:
+                starts_at = max(starts_at, value)
+        elimination = state.get("elimination_announcement")
+        if isinstance(elimination, dict):
+            value = _deadline_number(elimination.get("until"))
+            if value is not None:
+                starts_at = max(starts_at, value)
+    existing = state.get("blind_announcement")
+    if isinstance(existing, dict):
+        value = _deadline_number(existing.get("until"))
+        if value is not None:
+            starts_at = max(starts_at, value)
+
+    announcement_until = starts_at + announcement_seconds
+    hand_level_started_at = deadline + (passed - 1) * level_seconds
+    scheduled_next_level = deadline + passed * level_seconds
+    blinds["started_at"] = announcement_until if announcement_seconds > 0 else hand_level_started_at
+    blinds["next_level_at"] = (
+        max(scheduled_next_level + announcement_seconds, announcement_until + level_seconds)
+        if announcement_seconds > 0 else scheduled_next_level
+    )
+    state["blind_announcement"] = (
+        {
             "level": blinds["level"],
             "small": blinds["small"],
             "big": blinds["big"],
+            "starts_at": starts_at,
             "until": announcement_until,
         }
-    else:
-        state["blind_announcement"] = None
+        if announcement_seconds > 0 else None
+    )
     _log(
         state,
         "Blind level %d: %d/%d." % (blinds["level"], blinds["small"], blinds["big"]),
         timestamp,
     )
 
-    hand = state.get("hand")
     if hand is not None and hand.get("street") == "showdown":
         hand["blind_transition_announced"] = True
-        base_deadline = hand.get("hand_complete_at") or hand.get("next_hand_at") or timestamp
-        transition_hold = timestamp + max(
-            HAND_COMPLETE_PAUSE_SECONDS, announcement_seconds,
+        hand["blind_transition_until"] = max(
+            announcement_until, starts_at, timestamp + HAND_COMPLETE_PAUSE_SECONDS,
         )
-        hand["next_hand_at"] = max(base_deadline, transition_hold)
         _record_event(
             state, hand, "blind_level_updated",
             level=blinds["level"],
             small_blind=blinds["small"],
             big_blind=blinds["big"],
             changed_at=timestamp,
+            starts_at=starts_at,
+            until=announcement_until if announcement_seconds > 0 else starts_at,
         )
+        _refresh_presentation_deadline(state, hand)
+    return True
+
+
+def _migrate_presentation_timing(state: Dict[str, Any], hand: Dict[str, Any], now: float) -> bool:
+    """Add sequential deadlines to a persisted hand from an older engine version."""
+    if hand.get("presentation_version", 0) >= 2:
+        return False
+    if hand.get("street") != "showdown":
+        return False
+
+    actual_showdown = bool(hand.get("showdown"))
+    complete_at = _deadline_number(hand.get("hand_complete_at"))
+    if actual_showdown:
+        started_at = _deadline_number(hand.get("showdown_started_at"))
+        if started_at is None:
+            started_at = complete_at - HAND_COMPLETE_PAUSE_SECONDS if complete_at is not None else now
+            hand["showdown_started_at"] = started_at
+        if hand.get("showdown_until") is None:
+            hand["showdown_until"] = started_at + state.get("config", {}).get(
+                "showdown_seconds", SHOWDOWN_SECONDS,
+            )
+        hand["hand_complete_at"] = hand["showdown_until"]
+    elif complete_at is None:
+        complete_at = now + HAND_COMPLETE_PAUSE_SECONDS
+        hand["hand_complete_at"] = complete_at
+
+    result_end = max(
+        _deadline_number(hand.get("showdown_until")) or 0,
+        _deadline_number(hand.get("hand_complete_at")) or now,
+    )
+    elimination = state.get("elimination_announcement")
+    if isinstance(elimination, dict):
+        until = _deadline_number(elimination.get("until"))
+        if until is not None and until > now and elimination.get("starts_at") is None:
+            duration = state.get("config", {}).get(
+                "elimination_announcement_seconds", ELIMINATION_ANNOUNCEMENT_SECONDS,
+            )
+            starts_at = max(result_end, now if complete_at is None else complete_at)
+            if duration > 0:
+                elimination["starts_at"] = starts_at
+                elimination["until"] = starts_at + duration
+            else:
+                state["elimination_announcement"] = None
+
+    elimination = state.get("elimination_announcement")
+    elimination_end = (
+        _deadline_number(elimination.get("until"))
+        if isinstance(elimination, dict) else None
+    )
+    blind = state.get("blind_announcement")
+    if isinstance(blind, dict):
+        until = _deadline_number(blind.get("until"))
+        if until is not None and until > now and blind.get("starts_at") is None:
+            duration = state.get("config", {}).get(
+                "blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS,
+            )
+            starts_at = max(result_end, elimination_end or result_end)
+            if duration > 0:
+                blind["starts_at"] = starts_at
+                blind["until"] = starts_at + duration
+                hand["blind_transition_until"] = max(
+                    blind["until"], starts_at, now + HAND_COMPLETE_PAUSE_SECONDS,
+                )
+            else:
+                state["blind_announcement"] = None
+
+    hand["presentation_version"] = 2
+    old_next_hand = _deadline_number(hand.get("next_hand_at"))
+    _refresh_presentation_deadline(state, hand)
+    if state.get("status") == "playing" and old_next_hand is not None:
+        hand["next_hand_at"] = max(hand["next_hand_at"] or old_next_hand, old_next_hand)
     return True
 
 
 def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any]:
     """Advance blind clocks, turn timeouts, and the short showdown pause."""
     timestamp = _now(now)
+    hand = state.get("hand")
+    migrated = False
+    if state.get("status") == "playing" and isinstance(hand, dict) and hand.get("street") == "showdown":
+        paused_at = state.get("paused_at") if state.get("paused", False) else None
+        effective_now = paused_at if isinstance(paused_at, (int, float)) else timestamp
+        migrated = _migrate_presentation_timing(state, hand, effective_now)
     if state.get("paused", False):
+        if migrated:
+            _bump(state)
         return state
     # Discard check/fold selections left in tables by older versions.
-    hand = state.get("hand")
     if isinstance(hand, dict):
         hand.pop("preactions", None)
         hand.pop("preaction_revisions", None)
-    changed = False
+    changed = migrated
     if state["status"] == "lobby":
         last_activity = state.get("last_activity_at", state["created_at"])
         if timestamp - last_activity >= LOBBY_IDLE_SECONDS:
@@ -1891,8 +2117,12 @@ def _refresh_runout_odds(
     return rows
 
 
+def _hand_name(rank: Tuple[int, ...]) -> str:
+    return HAND_NAMES[rank[0]]
+
+
 def _rank_description(rank: Tuple[int, ...]) -> str:
-    category = HAND_NAMES[rank[0]]
+    category = _hand_name(rank)
     high = rank[1] if len(rank) > 1 else 0
     if rank[0] == 8:
         return "%s, %s high" % (category, RANK_CHARS[high - 2])
@@ -1984,6 +2214,7 @@ def _allocate_pots(
                 "actor_label": seat["name"] if seat is not None else "Player",
                 "amount": amount,
                 "rank": _rank_description(ranks[player_id]) if ranks is not None else None,
+                "hand_name": _hand_name(ranks[player_id]) if ranks is not None else None,
             }
             recipients.append(recipient)
             payouts[player_id] += amount
@@ -2042,6 +2273,7 @@ def _winner_rows(
         }
         if ranks is not None and seat["player_id"] in ranks:
             row["rank"] = _rank_description(ranks[seat["player_id"]])
+            row["hand_name"] = _hand_name(ranks[seat["player_id"]])
         rows.append(row)
     return rows
 
@@ -2345,12 +2577,27 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["to_act"] = None
     hand["turn_deadline"] = None
     hand["bot_action_at"] = None
-    hand["hand_complete_at"] = now + HAND_COMPLETE_PAUSE_SECONDS
+    hand["presentation_version"] = 2
+
+    # A contested showdown gets its own result window. An uncontested fold keeps
+    # the short hand-complete pause before any elimination announcement.
+    if hand.get("showdown"):
+        duration = state["config"].get("showdown_seconds", SHOWDOWN_SECONDS)
+        hand["showdown_started_at"] = now
+        hand["showdown_until"] = now + duration
+        hand["hand_complete_at"] = hand["showdown_until"]
+    else:
+        hand["showdown_started_at"] = None
+        hand["showdown_until"] = None
+        hand["hand_complete_at"] = now + HAND_COMPLETE_PAUSE_SECONDS
     hand["next_hand_at"] = hand["hand_complete_at"]
+    hand["presentation_until"] = hand["hand_complete_at"]
+
     if eliminated:
         duration = state["config"].get(
             "elimination_announcement_seconds", ELIMINATION_ANNOUNCEMENT_SECONDS,
         )
+        starts_at = hand["hand_complete_at"]
         state["elimination_announcement"] = (
             {
                 "players": [
@@ -2362,22 +2609,20 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
                     }
                     for item in eliminated
                 ],
-                "until": now + duration,
+                "starts_at": starts_at,
+                "until": starts_at + duration,
             }
             if duration > 0 else None
         )
     else:
         state["elimination_announcement"] = None
+
     if len(remaining) > 1:
-        _apply_due_blinds(state, now)
-        for key in ("blind_announcement", "elimination_announcement"):
-            announcement = state.get(key)
-            if isinstance(announcement, dict) and announcement.get("until") is not None:
-                hand["next_hand_at"] = max(hand["next_hand_at"], announcement["until"])
-    if len(remaining) <= 1:
+        _apply_due_blinds(state, now, not_before=hand["presentation_until"])
+        _refresh_presentation_deadline(state, hand)
+    else:
         _set_results(state, remaining[0]["player_id"] if remaining else None, now)
-        hand["hand_complete_at"] = None
-        hand["next_hand_at"] = None
+        _refresh_presentation_deadline(state, hand)
     _record_event(
         state, hand, "standings", hand_no=hand.get("number"),
         eliminated=[dict(item) for item in eliminated],
@@ -2455,6 +2700,7 @@ def _settle_showdown(state: Dict[str, Any], now: float) -> None:
                 "name": seat["name"] if seat else "Player",
                 "cards": list(hand["holes"][player_id]),
                 "rank": _rank_description(rank),
+                "hand_name": _hand_name(rank),
                 "rank_value": list(rank),
                 "payout": pot_winnings.get(player_id, 0),
                 "returned": returned.get(player_id, 0),
@@ -2541,9 +2787,12 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         if not isinstance(announcement, dict) or announcement.get("until") is None:
             return None
         until = public_deadline(announcement["until"])
-        if until <= timestamp:
+        start_value = announcement.get("starts_at")
+        starts_at = public_deadline(start_value) if start_value is not None else timestamp
+        if until <= timestamp or starts_at > timestamp:
             return None
         result = dict(announcement)
+        result["starts_at"] = starts_at
         result["until"] = until
         return result
     actor_id = hand["to_act"] if hand else None
@@ -2578,6 +2827,33 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         min_to_value = None
         max_to_value = None
 
+    showdown_rows = [dict(item) for item in hand.get("showdown", [])] if hand else []
+    hand_ranks = {
+        item["player_id"]: {
+            "rank": item.get("rank"),
+            "hand_name": item.get("hand_name") or (
+                item.get("rank", "").split(",", 1)[0] if isinstance(item.get("rank"), str) else None
+            ),
+        }
+        for item in showdown_rows
+        if item.get("player_id") and isinstance(item.get("rank"), str)
+    }
+    pot_winnings = dict(hand.get("pot_winnings", {})) if hand else {}
+    winners = []
+    for seat in _seats_in_order(state):
+        amount = pot_winnings.get(seat["player_id"], 0)
+        if type(amount) is not int or amount <= 0:
+            continue
+        winner = {
+            "player_id": seat["player_id"],
+            "name": seat["name"],
+            "amount": amount,
+        }
+        rank = hand_ranks.get(seat["player_id"])
+        if rank is not None:
+            winner.update(rank)
+        winners.append(winner)
+
     view = {
         "id": state["id"],
         "name": state["name"],
@@ -2598,6 +2874,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "runout_seconds": state["config"].get("runout_seconds", RUNOUT_SECONDS),
             "blind_announcement_seconds": state["config"].get("blind_announcement_seconds", BLIND_ANNOUNCEMENT_SECONDS),
             "elimination_announcement_seconds": state["config"].get("elimination_announcement_seconds", ELIMINATION_ANNOUNCEMENT_SECONDS),
+            "showdown_seconds": state["config"].get("showdown_seconds", SHOWDOWN_SECONDS),
             "buy_in": state["config"].get("buy_in", DEFAULT_BUY_IN),
             "payout_percentages": list(state["config"].get("payout_percentages", DEFAULT_PAYOUT_PERCENTAGES)),
         },
@@ -2657,9 +2934,11 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         },
         "action_log": list(state["action_log"]),
         "results": list(state["results"]),
-        "showdown": list(hand.get("showdown", [])) if hand else [],
+        "showdown": showdown_rows,
+        "hand_ranks": hand_ranks,
+        "winners": winners,
         "pots": list(hand.get("pots", [])) if hand else [],
-        "pot_winnings": dict(hand.get("pot_winnings", {})) if hand else {},
+        "pot_winnings": pot_winnings,
         "payouts": dict(hand.get("payouts", {})) if hand else {},
         "returns": list(hand.get("returns", [])) if hand else [],
         "runout_odds": list(hand.get("runout_odds", [])) if hand else [],
@@ -2669,6 +2948,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "runout_odds_samples": hand.get("runout_odds_samples", 0) if hand else 0,
         "standings": _standings_rows(state),
         "next_hand_at": public_deadline(hand.get("next_hand_at")) if hand else None,
+        "showdown_until": public_deadline(hand.get("showdown_until")) if hand else None,
+        "presentation_until": public_deadline(hand.get("presentation_until")) if hand else None,
         "runout_at": public_deadline(hand.get("runout_at")) if hand else None,
     }
     return view

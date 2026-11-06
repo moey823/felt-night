@@ -82,6 +82,8 @@
       postRequestSerial: 0,
       activePostId: 0,
       error: "",
+      errorSource: "",
+      status: "",
       timer: 0
     },
     actionPending: null,
@@ -223,8 +225,31 @@
     return parsed.toFixed(1).replace(/\.0$/, "") + "%";
   }
 
+  function syncTableAnnouncementRegion() {
+    var region = byId("table-announcements");
+    if (!region) return;
+    region.hidden = !Array.prototype.some.call(region.children, function (child) {
+      return !child.hidden;
+    });
+  }
+
+  function routeNoticeForTable() {
+    var node = byId("notice");
+    var region = byId("table-announcements");
+    var main = document.querySelector("main");
+    if (!node || !main) return;
+    if (state.player && state.activeTableId && state.tableView && region) {
+      if (node.parentNode !== region) region.insertBefore(node, region.firstChild);
+    } else {
+      var historyDialog = byId("history-dialog");
+      if (node.parentNode !== main) main.insertBefore(node, historyDialog || null);
+    }
+    syncTableAnnouncementRegion();
+  }
+
   function showNotice(message, kind, persistent) {
     var node = byId("notice");
+    routeNoticeForTable();
     node.textContent = message || "";
     node.dataset.kind = kind || "error";
     node.hidden = !message;
@@ -235,8 +260,10 @@
     if (message && !persistent) {
       state.noticeTimer = window.setTimeout(function () {
         node.hidden = true;
+        syncTableAnnouncementRegion();
       }, 6000);
     }
+    syncTableAnnouncementRegion();
   }
 
   function showActionFeedback(message, kind, persistent) {
@@ -252,8 +279,10 @@
     if (message && !persistent) {
       state.actionFeedbackTimer = window.setTimeout(function () {
         node.hidden = true;
+        syncTableAnnouncementRegion();
       }, 6000);
     }
+    syncTableAnnouncementRegion();
   }
 
   function clearBlindAnnouncement(resetTracking) {
@@ -267,6 +296,7 @@
       node.textContent = "";
       delete node.dataset.secondsRemaining;
     }
+    syncTableAnnouncementRegion();
     if (resetTracking) {
       state.blindLevelTableId = "";
       state.blindLevelValue = null;
@@ -285,12 +315,59 @@
       node.textContent = "";
       delete node.dataset.secondsRemaining;
     }
+    syncTableAnnouncementRegion();
+  }
+
+  function deadlineRemainingMs(view, deadline) {
+    var until = epochMilliseconds(deadline);
+    var serverNow = epochMilliseconds(view && view.server_now) || Date.now();
+    return until ? Math.max(0, until - serverNow) : 0;
   }
 
   function announcementRemainingMs(view, announcement) {
-    var until = epochMilliseconds(announcement && announcement.until);
     var serverNow = epochMilliseconds(view && view.server_now) || Date.now();
-    return until ? Math.max(0, until - serverNow) : 0;
+    var starts = epochMilliseconds(announcement && announcement.starts_at);
+    if (starts && starts > serverNow) return 0;
+    return deadlineRemainingMs(view, announcement && announcement.until);
+  }
+
+  function showdownRemainingMs(view) {
+    if (!view) return 0;
+    var deadline = view.showdown_until || (view.hand && view.hand.showdown_until);
+    return deadline != null
+      ? deadlineRemainingMs(view, deadline)
+      : (String(view.street || "").toLowerCase() === "showdown" ? 1 : 0);
+  }
+
+  function presentationRemainingMs(view) {
+    if (!view) return 0;
+    var deadline = view.presentation_until || (view.hand && view.hand.presentation_until);
+    return Math.max(
+      deadline == null ? 0 : deadlineRemainingMs(view, deadline),
+      showdownRemainingMs(view),
+      announcementRemainingMs(view, view.elimination_announcement),
+      announcementRemainingMs(view, view.blind_announcement)
+    );
+  }
+
+  function nextAuthoritativeBoundaryDelay(view) {
+    if (!view || view.paused) return 0;
+    var hand = view.hand || {};
+    var serverNow = epochMilliseconds(view.server_now) || Date.now();
+    var deadlines = [
+      view.showdown_until || hand.showdown_until,
+      view.elimination_announcement && view.elimination_announcement.until,
+      view.blind_announcement && view.blind_announcement.until,
+      view.presentation_until || hand.presentation_until,
+      view.next_hand_at || hand.next_hand_at,
+      view.runout_at || hand.runout_at
+    ];
+    var earliest = 0;
+    deadlines.forEach(function (deadline) {
+      var until = epochMilliseconds(deadline);
+      if (until > serverNow && (!earliest || until < earliest)) earliest = until;
+    });
+    return earliest ? Math.max(40, earliest - serverNow + 35) : 0;
   }
 
   function announceBlindLevel(announcement, view) {
@@ -302,11 +379,13 @@
       return;
     }
     if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
-    node.textContent = "Blind level " + number(announcement.level, 1) + ": small blind " +
+    var blindText = "Blind level " + number(announcement.level, 1) + ": small blind " +
       chips(announcement.small) + " chips, big blind " + chips(announcement.big) +
       " chips. The next hand waits until this announcement ends.";
+    if (node.textContent !== blindText) node.textContent = blindText;
     node.dataset.secondsRemaining = String(Math.ceil(remainingMs / 1000));
     node.hidden = false;
+    syncTableAnnouncementRegion();
     if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
     state.blindAnnouncementTimer = 0;
     if (!view.paused) {
@@ -349,9 +428,11 @@
         ? nameText + " were eliminated in a tie for " + ordinal(place) + " place."
         : nameText + " was eliminated in " + ordinal(place) + " place.";
     });
-    node.textContent = lines.length ? lines.join(" ") : "A player was eliminated.";
+    var eliminationText = lines.length ? lines.join(" ") : "A player was eliminated.";
+    if (node.textContent !== eliminationText) node.textContent = eliminationText;
     node.dataset.secondsRemaining = String(Math.ceil(remainingMs / 1000));
     node.hidden = false;
+    syncTableAnnouncementRegion();
     var tableId = String(view.id || state.activeTableId || "");
     if (state.eliminationAnnouncementTimer) window.clearTimeout(state.eliminationAnnouncementTimer);
     state.eliminationAnnouncementTimer = 0;
@@ -435,26 +516,76 @@
     var street = streets[index] || {};
     var board = cardArray(street.board);
     var players = Array.isArray(hand.players) ? hand.players : [];
+    var showdownRows = Array.isArray(hand.showdown) ? hand.showdown : [];
+    var rankMap = hand.hand_ranks && typeof hand.hand_ranks === "object" ? hand.hand_ranks : {};
+    var winnerRows = Array.isArray(hand.winners) ? hand.winners : [];
     streetLabel.textContent = "Hand " + number(hand.number, 0) + " · " + replayStreetName(street.name);
     var boardMarkup = board.length
       ? board.map(function (card) { return playingCardHTML(card, true); }).join("")
       : '<span class="replay-no-cards">No community cards yet</span>';
+    var showdownByPlayer = Object.create(null);
+    showdownRows.forEach(function (row) {
+      var id = String(row && row.player_id || "");
+      if (id) showdownByPlayer[id] = row;
+    });
+    var hasShowdownInfo = showdownRows.length > 0 || Object.keys(rankMap).length > 0;
+    var winnerMarkup = winnerRows.map(function (winner) {
+      var id = String(winner && winner.player_id || "");
+      var row = showdownByPlayer[id] || {};
+      var amount = number(winner && winner.amount,
+        number(hand.pot_winnings && hand.pot_winnings[id], number(row.payout, 0)));
+      if (amount <= 0) return "";
+      var name = String(winner && winner.name || row.name || "Player");
+      var rank = handRankName(row, rankMap, winner);
+      return '<li class="replay-winner-line"><strong>' + esc(name) + ' won ' +
+        esc(chips(amount)) + ' chips' + (rank ? ' with ' + esc(rank) : (hasShowdownInfo ? '' : ' without showdown')) + '.</strong></li>';
+    }).filter(Boolean).join("");
+    var exposedRows = showdownRows.slice();
+    if (!exposedRows.length) {
+      Object.keys(rankMap).forEach(function (id) {
+        var rank = rankMap[id];
+        var player = players.find(function (candidate) {
+          return String(candidate && candidate.player_id || "") === id;
+        }) || {};
+        exposedRows.push({
+          player_id: id,
+          name: player.name || "Player",
+          hand_name: rank && rank.hand_name || ""
+        });
+      });
+    }
+    var rankMarkup = exposedRows.map(function (row) {
+      var rank = handRankName(row, rankMap);
+      if (!rank) return "";
+      return '<li class="replay-rank-line"><span>' + esc(row.name || "Player") +
+        '</span><strong>' + esc(rank) + '</strong></li>';
+    }).filter(Boolean).join("");
+    var outcomeMarkup = winnerMarkup || rankMarkup
+      ? '<section class="replay-outcome" aria-label="Hand result">' +
+        (winnerMarkup ? '<div class="replay-winners"><h3>Winners</h3><ul>' + winnerMarkup + '</ul></div>' : '') +
+        (rankMarkup ? '<div class="replay-ranks"><h3>Exposed hand ranks</h3><ul>' + rankMarkup + '</ul></div>' : '') +
+        '</section>'
+      : '';
     var playerMarkup = players.map(function (player) {
       var cards = cardArray(player && player.cards);
       var seatNo = number(player && player.seat_no, -1);
-      var isViewer = String(player && player.player_id || "") === String(state.player && state.player.id || "");
+      var playerId = String(player && player.player_id || "");
+      var isViewer = playerId === String(state.player && state.player.id || "");
       var name = String(player && player.name || "Player") + (isViewer ? " (you)" : "");
+      var rank = handRankName(showdownByPlayer[playerId] || {}, rankMap);
       var cardMarkup = cards.length
         ? cards.map(function (card) { return playingCardHTML(card, true); }).join("")
         : '<span class="replay-cards-hidden">Cards not exposed</span>';
       return '<article class="replay-player" role="listitem">' +
         '<h3 class="replay-player-name">' + esc(name) + '</h3>' +
         '<span class="replay-player-stack">' + (seatNo >= 0 ? "Seat " + (seatNo + 1) : "Seated player") + '</span>' +
+        (rank ? '<span class="replay-player-rank">' + esc(rank) + '</span>' : '') +
         '<div class="replay-player-cards" aria-label="' + esc(cards.length ? "Visible cards" : "No visible cards") + '">' + cardMarkup + '</div>' +
       '</article>';
     }).join("");
     content.innerHTML =
-      '<p class="replay-live-note">Live hand continues at the table.</p>' +
+      '<p class="replay-live-note">Replay of this completed hand.</p>' +
+      outcomeMarkup +
       '<section class="replay-board" aria-label="Community cards">' +
         '<h3>Community cards</h3><div class="replay-board-cards">' + boardMarkup + '</div>' +
       '</section>' +
@@ -648,11 +779,16 @@
     var button = byId("chat-button");
     var panel = byId("chat-panel");
     var preview = byId("chat-preview");
+    var topline = byId("chat-topline");
+    var quickForm = byId("chat-quick-form");
     if (!button || !panel) return;
     var available = Boolean(state.player && state.activeTableId && state.tableView);
     button.hidden = !available;
     if (preview) preview.hidden = !available;
+    if (topline) topline.hidden = !available;
+    if (quickForm) quickForm.hidden = !available;
     button.setAttribute("aria-expanded", String(Boolean(state.chat.open && !panel.hidden)));
+    updateChatCharacterCount();
   }
 
   function setChatPreviewLine(node, text, title, messageId) {
@@ -673,14 +809,15 @@
     var preview = byId("chat-preview");
     if (!preview) return;
     var lines = preview.querySelectorAll(".chat-preview-line");
-    if (lines.length !== 2) return;
-    var messages = state.chat.messages.slice(-2);
+    if (lines.length !== 3) return;
+    var messages = state.chat.messages.slice(-3);
     if (!messages.length) {
       setChatPreviewLine(lines[0], state.chat.error ? "Chat is unavailable." : (state.chat.loaded ? "No messages yet." : "Loading chat…"), null, null);
-      setChatPreviewLine(lines[1], "Open chat to start the conversation.", null, null);
+      setChatPreviewLine(lines[1], "No earlier messages.", null, null);
+      setChatPreviewLine(lines[2], "No earlier messages.", null, null);
       return;
     }
-    var offset = 2 - messages.length;
+    var offset = 3 - messages.length;
     for (var i = 0; i < offset; i += 1) {
       setChatPreviewLine(lines[i], "No earlier messages.", null, null);
     }
@@ -690,12 +827,25 @@
     });
   }
 
-  function setChatError(message) {
-    var node = byId("chat-error");
-    if (!node) return;
+  function setChatError(message, source) {
     state.chat.error = message || "";
-    node.textContent = state.chat.error;
-    node.hidden = !state.chat.error;
+    state.chat.errorSource = state.chat.error ? (source || "") : "";
+    if (state.chat.error) state.chat.status = "";
+    var node = byId("chat-error");
+    if (node) {
+      node.textContent = state.chat.error;
+      node.hidden = !state.chat.error;
+    }
+    var quickError = byId("chat-quick-error");
+    if (quickError) {
+      quickError.textContent = state.chat.error;
+      quickError.hidden = !state.chat.error;
+    }
+    var quickStatus = byId("chat-quick-status");
+    if (quickStatus && quickStatus.textContent !== (state.chat.status || "")) {
+      quickStatus.textContent = state.chat.status || "";
+    }
+    renderChatPreview();
   }
 
   function chatRequestIsCurrent(requestId, tableId, playerId) {
@@ -739,11 +889,14 @@
     chat.activePostId = chat.postRequestSerial;
     chat.postInFlight = false;
     chat.error = "";
+    chat.errorSource = "";
+    chat.status = "";
     chat.fetchRequestId = 0;
     var panel = byId("chat-panel");
     var button = byId("chat-button");
     var messages = byId("chat-messages");
     var input = byId("chat-input");
+    var quickInput = byId("chat-quick-input");
     var send = byId("chat-send-button");
     var form = byId("chat-form");
     if (panel) panel.hidden = true;
@@ -754,8 +907,14 @@
       input.value = "";
       input.disabled = false;
     }
+    if (quickInput) {
+      quickInput.value = "";
+      quickInput.disabled = false;
+    }
     if (send) send.disabled = true;
     if (form) form.setAttribute("aria-busy", "false");
+    var quickForm = byId("chat-quick-form");
+    if (quickForm) quickForm.setAttribute("aria-busy", "false");
     setChatError("");
     updateChatCharacterCount();
   }
@@ -896,11 +1055,28 @@
   function updateChatCharacterCount() {
     var input = byId("chat-input");
     var count = byId("chat-character-count");
-    if (!input || !count) return;
-    count.textContent = input.value.length + " / 500";
     var send = byId("chat-send-button");
-    if (send) send.disabled = state.chat.sending || state.chat.postInFlight || !String(input.value || "").trim() ||
-      !state.chat.open || !state.activeTableId || !state.player;
+    var quickInput = byId("chat-quick-input");
+    var quickSend = byId("chat-quick-send");
+    var quickStatus = byId("chat-quick-status");
+    var sending = state.chat.sending || state.chat.postInFlight;
+    var available = Boolean(state.activeTableId && state.player && state.tableView &&
+      state.chat.tableId === String(state.activeTableId) &&
+      state.chat.playerId === String(state.player.id || ""));
+    if (input && count) {
+      count.textContent = input.value.length + " / 500";
+      if (send) send.disabled = sending || !String(input.value || "").trim() ||
+        !state.chat.open || !available;
+    }
+    if (quickSend) quickSend.disabled = sending || !quickInput ||
+      !String(quickInput.value || "").trim() || !available;
+    if (quickStatus && quickStatus.textContent !== (state.chat.status || "")) {
+      quickStatus.textContent = state.chat.status || "";
+    }
+    var form = byId("chat-form");
+    var quickForm = byId("chat-quick-form");
+    if (form) form.setAttribute("aria-busy", String(Boolean(sending)));
+    if (quickForm) quickForm.setAttribute("aria-busy", String(Boolean(sending)));
   }
 
   function showChat() {
@@ -909,7 +1085,10 @@
     if (!tableId || !playerId || !state.tableView) return;
     if (state.chat.tableId !== tableId || state.chat.playerId !== playerId) clearChat();
     var chat = state.chat;
-    chat.requestId += 1;
+    if (chat.timer) {
+      window.clearTimeout(chat.timer);
+      chat.timer = 0;
+    }
     chat.tableId = tableId;
     chat.playerId = playerId;
     chat.open = true;
@@ -917,7 +1096,6 @@
     var panel = byId("chat-panel");
     panel.hidden = false;
     byId("chat-button").setAttribute("aria-expanded", "true");
-    setChatError("");
     updateChatCharacterCount();
     byId("chat-input").disabled = false;
     byId("chat-form").setAttribute("aria-busy", String(chat.postInFlight));
@@ -945,51 +1123,55 @@
       var firstLoad = !chat.loaded;
       chat.loaded = true;
       mergeChatMessages(data.messages, firstLoad);
-      setChatError("");
+      if (chat.errorSource === "fetch") setChatError("");
     } catch (err) {
       if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
       var message = err.message || "Chat could not be loaded.";
-      if (chat.open) setChatError(message);
-      else {
-        chat.error = message;
-        renderChatPreview();
-      }
+      if (chat.errorSource !== "send") setChatError(message, "fetch");
     } finally {
       if (chat.fetchRequestId === requestId) chat.fetchRequestId = 0;
       if (chatRequestIsCurrent(requestId, tableId, playerId)) scheduleChatPoll(requestId, tableId, playerId);
     }
   }
 
-  async function sendChatMessage() {
+  async function sendChatMessage(input) {
     var chat = state.chat;
-    var input = byId("chat-input");
-    var text = String(input && input.value || "").trim();
-    if (!text || chat.sending || chat.postInFlight || !chat.open || !state.activeTableId || !state.player) return;
+    input = input || byId("chat-input");
+    var submittedValue = String(input && input.value || "");
+    var submittedRevision = number(input && input.dataset.chatEditVersion, 0);
+    var text = submittedValue.trim();
+    if (!text || chat.sending || chat.postInFlight || !state.activeTableId || !state.player || !state.tableView) return;
+    ensureChatScope();
+    var tableId = String(state.activeTableId);
+    var playerId = String(state.player.id || "");
+    if (chat.tableId !== tableId || chat.playerId !== playerId) return;
     var requestId = chat.requestId;
-    var tableId = chat.tableId;
-    var playerId = chat.playerId;
     var postId = ++chat.postRequestSerial;
     chat.activePostId = postId;
     chat.postInFlight = true;
     chat.sending = true;
     setChatError("");
-    byId("chat-form").setAttribute("aria-busy", "true");
+    chat.status = "Sending message…";
     input.disabled = true;
     updateChatCharacterCount();
     try {
       var data = await mutate("/tables/" + encodeURIComponent(tableId) + "/chat", { text: text });
       if (!chatRequestIsCurrent(requestId, tableId, playerId)) return;
       mergeChatMessages(data && data.message ? [data.message] : [], false);
-      input.value = "";
+      if (number(input.dataset.chatEditVersion, 0) === submittedRevision && input.value === submittedValue) {
+        input.value = "";
+      }
+      chat.status = "Message sent.";
     } catch (err) {
-      if (chatRequestIsCurrent(requestId, tableId, playerId)) setChatError(err.message || "Your message could not be sent.");
+      if (chatRequestIsCurrent(requestId, tableId, playerId)) {
+        setChatError(err.message || "Your message could not be sent.", "send");
+      }
     } finally {
       if (chat.activePostId === postId && chat.tableId === tableId && chat.playerId === playerId &&
           state.activeTableId === tableId && String(state.player && state.player.id || "") === playerId) {
         chat.postInFlight = false;
         chat.sending = false;
         input.disabled = false;
-        byId("chat-form").setAttribute("aria-busy", "false");
         updateChatCharacterCount();
       }
     }
@@ -1691,8 +1873,22 @@
       var oddsRow = oddsByPlayer[id];
       if (oddsRow && cards.length && !folded && stack <= 0) { allIn = true; label = "All in"; }
       if (allIn && stack <= 0) classes += " is-all-in is-zero-stack-all-in";
+      var activeShowdown = String(view.street || "").toLowerCase() === "showdown";
+      var showdownRow = Array.isArray(view.showdown) ? view.showdown.find(function (row) {
+        return String(row && row.player_id || "") === id;
+      }) : null;
       var equityHtml = "";
-      if (oddsRow && cards.length && (isMe || exposed)) {
+      if (activeShowdown) {
+        var winner = Array.isArray(view.winners) ? view.winners.find(function (row) {
+          return String(row && row.player_id || "") === id;
+        }) : null;
+        var winnings = number(winner && winner.amount,
+          number(view.pot_winnings && view.pot_winnings[id], number(showdownRow && showdownRow.payout, 0)));
+        if (winnings > 0) {
+          equityHtml = '<div class="seat-equity is-result" data-player-id="' + esc(id) + '" title="' + esc("Winner · " + tableChips(winnings, view)) + '">' +
+            '<span class="seat-equity-result">Winner</span><strong>+' + esc(tableChips(winnings, view)) + '</strong></div>';
+        }
+      } else if (oddsRow && cards.length && (isMe || exposed)) {
         var winPct = number(oddsRow.win_pct, 0);
         var tiePct = number(oddsRow.tie_pct, 0);
         var equityPct = number(oddsRow.equity_pct, 0);
@@ -1707,8 +1903,8 @@
           '<span class="seat-equity-win"><span>Win alone</span><strong>' + percent(winPct) + '</strong></span>' +
           (tiePct >= 0.5 ? '<span class="seat-equity-tie">Tie ' + percent(tiePct) + '</span>' : '') + '</div>';
       }
+      if (!equityHtml) equityHtml = '<div class="seat-equity is-empty" aria-hidden="true"></div>';
 
-      var compactRunoutSeat = Boolean(equityHtml && !folded && stack <= 0);
       var stackContents = '<span class="seat-stack-amount">' + esc(tableChipValue(stack)) + '</span> <span class="seat-number">' + esc(tableChipUnit()) + '</span>';
       var stackHtml = "";
       if (isMe) {
@@ -1716,26 +1912,32 @@
         var stackLabel = "Your stack: " + tableChips(stack) + ". Activate to display all table chip amounts in " + nextChipDisplay + ".";
         stackHtml = '<button class="seat-stack" type="button" data-chip-display-toggle aria-pressed="' +
           String(tableUsesBigBlinds()) + '" aria-label="' + esc(stackLabel) + '">' + stackContents + '</button>';
-      } else if (!compactRunoutSeat) {
+      } else {
         stackHtml = '<div class="seat-stack">' + stackContents + '</div>';
       }
-      var cardHtml = "";
+      var cardContents = "";
+      var cardRowClass = "seat-cards";
       if (cards.length) {
-        cardHtml = '<div class="seat-cards' + (exposed ? ' is-exposed' : ' is-viewer-cards') + '">' + cards.map(function (card) { return playingCardHTML(card, true); }).join("") + '</div>';
+        cardRowClass += exposed ? " is-exposed" : " is-viewer-cards";
+        cardContents = cards.map(function (card) { return playingCardHTML(card, true); }).join("");
       } else if (currentHand && !folded && (stack > 0 || allIn)) {
-        cardHtml = '<div class="seat-cards">' + hiddenCardHTML(true, false) + hiddenCardHTML(true, false) + '</div>';
+        cardContents = hiddenCardHTML(true, false) + hiddenCardHTML(true, false);
+      } else {
+        cardRowClass += " is-empty";
+        cardContents = '<span class="seat-card-placeholder" aria-hidden="true"></span><span class="seat-card-placeholder" aria-hidden="true"></span>';
       }
+      var cardHtml = '<div class="' + cardRowClass + '"' + (cardRowClass.indexOf("is-empty") >= 0 ? ' aria-hidden="true"' : '') + '>' + cardContents + '</div>';
 
       var tags = (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '') +
         (sittingOut ? '<span class="seat-label sit-out-label">SITTING OUT</span>' : '');
-      var tagsMarkup = tags ? '<div class="seat-tags">' + tags + '</div>' : '';
+      var tagsMarkup = '<div class="seat-tags"' + (tags ? '' : ' aria-hidden="true"') + '>' + tags + '</div>';
       var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(i + 1) + ', ' + esc(seatName) + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' +
         tagsMarkup +
         stackHtml +
         '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        (isMe ? equityHtml + cardHtml : cardHtml + equityHtml) +
+        cardHtml + equityHtml +
       '</div>';
       if (dealer) html += '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>';
       if (actionState) {
@@ -1815,6 +2017,7 @@
       if (box) blockers.push(box);
     });
     grid.querySelectorAll(".seat-equity").forEach(function (node) {
+      if (node.classList.contains("is-empty")) return;
       var box = boxForNode(node, gridRect);
       if (box) blockers.push(box);
     });
@@ -1887,7 +2090,9 @@
     var pot = number(view.pot, view.hand && view.hand.pot);
     byId("pot-amount").textContent = tableChips(pot);
     byId("pot-label").textContent = "Pot";
-    byId("pot-display").hidden = !(inProgress && pot > 0);
+    var potDisplay = byId("pot-display");
+    potDisplay.hidden = !(inProgress || view.status === "completed");
+    potDisplay.classList.toggle("is-empty", pot <= 0);
     byId("street-label").textContent = view.street && view.street !== "lobby" ? String(view.street).replace(/_/g, " ").toUpperCase() : "";
   }
 
@@ -1944,7 +2149,7 @@
     var results = Array.isArray(view.standings) && view.standings.length
       ? view.standings.slice()
       : (Array.isArray(view.results) ? view.results.slice() : []);
-    if (view.status !== "completed" || !results.length || announcementRemainingMs(view, view.elimination_announcement) > 0) {
+    if (view.status !== "completed" || !results.length || presentationRemainingMs(view) > 0) {
       panel.hidden = true;
       reopen.hidden = true;
       reopen.setAttribute("aria-expanded", "false");
@@ -2153,8 +2358,10 @@
     var viewer = view.viewer || {};
     var seat = viewerSeat(view);
     var playing = view.status === "playing";
+    var completed = view.status === "completed";
     var seated = Boolean(seat);
-    var panelVisible = playing && seated;
+    var panelVisible = seated && (playing || completed);
+    var finishedStatus = byId("action-finished-status");
     var canAct = viewerCanAct(view);
     var currentKey = actionTokenKey(view);
     if (state.actionSubmittedKey && state.actionSubmittedKey !== currentKey) state.actionSubmittedKey = "";
@@ -2164,8 +2371,20 @@
       state.actionPending = null;
     }
     panel.hidden = !panelVisible;
+    controls.hidden = !playing || !panelVisible;
+    if (finishedStatus) {
+      finishedStatus.hidden = !completed || !panelVisible;
+      finishedStatus.textContent = completed && panelVisible
+        ? (presentationRemainingMs(view) > 0
+          ? "Tournament complete. Final standings appear after the hand result presentation."
+          : "Tournament complete. Review the final standings and last hand.")
+        : "";
+    }
     panel.setAttribute("aria-busy", String(Boolean(state.actionPending || state.actionSubmittedKey === currentKey)));
-    if (!playing || !panelVisible) return;
+    if (!playing || !panelVisible) {
+      controls.querySelectorAll("button, input").forEach(function (control) { control.disabled = true; });
+      return;
+    }
 
     var stack = number(seat && seat.stack, 0);
     var ownBet = number(seat && seat.bet, 0);
@@ -2320,6 +2539,7 @@
     byId("settings-runout-seconds").value = String(number(config.runout_seconds, 2.5));
     byId("settings-blind-announcement-seconds").value = String(number(config.blind_announcement_seconds, 5));
     byId("settings-elimination-announcement-seconds").value = String(number(config.elimination_announcement_seconds, 5));
+    byId("settings-showdown-seconds").value = String(number(config.showdown_seconds, 5));
   }
 
   function renderSettingsPanel(view, host) {
@@ -2408,10 +2628,71 @@
     } else {
       banner.textContent = "";
     }
+    syncTableAnnouncementRegion();
+  }
+
+  function liveShowdownRows(view) {
+    return Array.isArray(view && view.showdown) ? view.showdown : [];
+  }
+
+  function handRankName(row, rankMap, winnerRow) {
+    var id = String(row && row.player_id || "");
+    var mapped = rankMap && rankMap[id];
+    var label = (winnerRow && winnerRow.rank) || (row && row.rank) || (mapped && mapped.rank) ||
+      (winnerRow && winnerRow.hand_name) || (row && row.hand_name) || (mapped && mapped.hand_name) || "";
+    return String(label || "");
+  }
+
+  function renderShowdownSummary(view) {
+    var node = byId("showdown-summary");
+    if (!node) return;
+    var rows = liveShowdownRows(view);
+    var deadline = view && (view.showdown_until || (view.hand && view.hand.showdown_until));
+    var active = Boolean(rows.length &&
+      (deadline != null ? showdownRemainingMs(view) > 0 :
+        String(view.street || "").toLowerCase() === "showdown"));
+    if (!active) {
+      node.hidden = true;
+      node.replaceChildren();
+      syncTableAnnouncementRegion();
+      return;
+    }
+
+    var byPlayer = Object.create(null);
+    rows.forEach(function (row) {
+      var id = String(row && row.player_id || "");
+      if (id) byPlayer[id] = row;
+    });
+    var rankMap = view.hand_ranks && typeof view.hand_ranks === "object" ? view.hand_ranks : {};
+    var winners = Array.isArray(view.winners) ? view.winners : [];
+    var winnerMarkup = winners.map(function (winner) {
+      var id = String(winner && winner.player_id || "");
+      var row = byPlayer[id] || {};
+      var amount = number(winner && winner.amount, number(view.pot_winnings && view.pot_winnings[id], number(row.payout, 0)));
+      if (amount <= 0) return "";
+      var name = String(winner && winner.name || row.name || "Player");
+      var rank = handRankName(row, rankMap, winner);
+      return '<p class="showdown-winner-line"><strong>' + esc(name) + ' wins ' +
+        esc(tableChips(amount, view)) + (rank ? ' with ' + esc(rank) : '') + '.</strong></p>';
+    }).filter(Boolean).join("");
+    var rankRows = rows.map(function (row) {
+      var name = String(row && row.name || "Player");
+      var rank = handRankName(row, rankMap);
+      if (!rank) return "";
+      return '<li class="showdown-rank-line"><span>' + esc(name) + '</span><strong>' + esc(rank) + '</strong></li>';
+    }).filter(Boolean).join("");
+    var summaryMarkup =
+      (winnerMarkup ? '<div class="showdown-winners" aria-label="Hand winners">' + winnerMarkup + '</div>' : '') +
+      (rankRows ? '<div class="showdown-ranks" aria-label="Exposed hand ranks"><span class="showdown-ranks-label">Exposed hands</span><ul>' + rankRows + '</ul></div>' : '');
+    if (node.innerHTML !== summaryMarkup) node.innerHTML = summaryMarkup;
+    node.hidden = !winnerMarkup && !rankRows;
+    syncTableAnnouncementRegion();
   }
 
   function renderTableAnnouncements(view) {
     announceEliminations(view);
+    renderShowdownSummary(view);
+    syncTableAnnouncementRegion();
   }
 
   function renderTable() {
@@ -2422,6 +2703,10 @@
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
       clearChat();
+      routeNoticeForTable();
+      renderChatButton();
+      var announcements = byId("table-announcements");
+      if (announcements) announcements.hidden = true;
       state.sitOutRequestId += 1;
       state.sitOutPending = false;
       renderSitOutButton(null, null);
@@ -2437,6 +2722,7 @@
       byId("runtime-settings-button").hidden = true;
       byId("paused-banner").hidden = true;
       byId("announcement-banner").hidden = true;
+      showActionFeedback("", "info", true);
       closeRecentActionDialog();
       byId("lobby-seat-panel").hidden = true;
       byId("host-panel").hidden = true;
@@ -2459,17 +2745,15 @@
     byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats" + (view.prize_pool_cents == null ? "" : " · " + credits(view.prize_pool_cents) + " play credits in the pool") + (status === "lobby" && view.config ? " · Buy-in " + view.config.buy_in + " · " + view.config.payout_percentages.join(" / ") + "%" : "");
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
     byId("hand-status-label").textContent = view.paused ? "GAME PAUSED" : (status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : "TABLE LOBBY"));
-    renderTableAnnouncements(view);
+    routeNoticeForTable();
     byId("table-player-count").textContent = seats.length + " seated";
     byId("button-caption").textContent = view.status === "playing" ? "" : "Play chips · No rebuys";
 
     renderBlindStrip(view);
     renderBoard(view);
     renderActions(view);
-    renderSeats(view);
     renderLog(view);
     renderResults(view);
-    playTableEffects();
 
     var viewer = view.viewer || {};
     var playerId = String(viewer.player_id || (state.player && state.player.id) || "");
@@ -2482,9 +2766,12 @@
     ensureChatScope();
     renderChatButton();
     renderPauseControls(view, host);
+    renderTableAnnouncements(view);
     renderLobbyControls(view, host, ownSeat, seated, layout);
     renderSettingsPanel(view, host);
     updateHostReadiness(view, host);
+    renderSeats(view);
+    playTableEffects();
   }
 
   function enterApp(player, csrf, sessionProof) {
@@ -2614,18 +2901,8 @@
       state.refreshBusy = false;
       var activeHand = Boolean(state.tableView && state.tableView.status === "playing");
       var visibleDelay = activeHand ? 900 : 2800;
-      if (activeHand) {
-        var liveView = state.tableView;
-        var street = String(liveView.street || "").toLowerCase();
-        var dueAt = street === "showdown"
-          ? (liveView.next_hand_at || (liveView.hand && liveView.hand.next_hand_at))
-          : (liveView.runout_at || (liveView.hand && liveView.hand.runout_at));
-        if (dueAt) {
-          // Fetch just after the next deal/runout, including the short hand-complete pause.
-          var untilDeal = epochMilliseconds(dueAt) - (epochMilliseconds(liveView.server_now) || Date.now());
-          visibleDelay = Math.max(40, Math.min(visibleDelay, untilDeal + 35));
-        }
-      }
+      var boundaryDelay = nextAuthoritativeBoundaryDelay(state.tableView);
+      if (boundaryDelay > 0) visibleDelay = Math.max(40, Math.min(visibleDelay, boundaryDelay));
       var delay = state.refreshPending ? 0 : (document.hidden ? 8000 : visibleDelay);
       state.refreshPending = false;
       scheduleRefresh(delay);
@@ -2651,7 +2928,8 @@
       turn_seconds: number(byId("settings-turn-seconds").value, 0),
       runout_seconds: number(byId("settings-runout-seconds").value, 0),
       blind_announcement_seconds: number(byId("settings-blind-announcement-seconds").value, -1),
-      elimination_announcement_seconds: number(byId("settings-elimination-announcement-seconds").value, -1)
+      elimination_announcement_seconds: number(byId("settings-elimination-announcement-seconds").value, -1),
+      showdown_seconds: number(byId("settings-showdown-seconds").value, -1)
     };
     if (view.status === "playing") return timing;
     return {
@@ -2666,7 +2944,8 @@
       turn_seconds: timing.turn_seconds,
       runout_seconds: timing.runout_seconds,
       blind_announcement_seconds: timing.blind_announcement_seconds,
-      elimination_announcement_seconds: timing.elimination_announcement_seconds
+      elimination_announcement_seconds: timing.elimination_announcement_seconds,
+      showdown_seconds: timing.showdown_seconds
     };
   }
 
@@ -2683,7 +2962,8 @@
     var timingInvalid = payload.level_minutes < 0.01 || payload.turn_seconds < 1 ||
       payload.runout_seconds < 1 || payload.blind_announcement_seconds < 0 ||
       payload.blind_announcement_seconds > 60 || payload.elimination_announcement_seconds < 0 ||
-      payload.elimination_announcement_seconds > 60;
+      payload.elimination_announcement_seconds > 60 || payload.showdown_seconds < 0 ||
+      payload.showdown_seconds > 60;
     if (!form.checkValidity() || timingInvalid || (!inGame &&
         (!payload.name || payload.max_seats < 2 || payload.max_seats > 9 ||
         payload.starting_stack < 100 || payload.small_blind < 1 || payload.big_blind <= payload.small_blind))) {
@@ -3060,7 +3340,8 @@
         turn_seconds: number(byId("turn-seconds").value, 30),
         runout_seconds: number(byId("runout-seconds").value, 2.5),
         blind_announcement_seconds: number(byId("blind-announcement-seconds").value, 5),
-        elimination_announcement_seconds: number(byId("elimination-announcement-seconds").value, 5)
+        elimination_announcement_seconds: number(byId("elimination-announcement-seconds").value, 5),
+        showdown_seconds: number(byId("showdown-seconds").value, 5)
       });
       var table = data.table || data;
       closeLastHandDialog(false);
@@ -3326,12 +3607,25 @@
   });
   byId("chat-close-button").addEventListener("click", function () { closeChat(true); });
   byId("chat-input").addEventListener("input", function () {
+    this.dataset.chatEditVersion = String(number(this.dataset.chatEditVersion, 0) + 1);
     setChatError("");
     updateChatCharacterCount();
   });
+  byId("chat-quick-input").addEventListener("input", function () {
+    this.dataset.chatEditVersion = String(number(this.dataset.chatEditVersion, 0) + 1);
+    setChatError("");
+    updateChatCharacterCount();
+  });
+  byId("chat-quick-input").addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && (event.isComposing || event.keyCode === 229)) event.preventDefault();
+  });
   byId("chat-form").addEventListener("submit", function (event) {
     event.preventDefault();
-    sendChatMessage();
+    sendChatMessage(byId("chat-input"));
+  });
+  byId("chat-quick-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    sendChatMessage(byId("chat-quick-input"));
   });
   byId("sit-out-button").addEventListener("click", toggleSitOut);
 
@@ -3349,12 +3643,14 @@
     }
   });
 
-  byId("action-controls").addEventListener("wheel", function (event) {
-    if (!event.target.closest(".raise-control")) return;
+  byId("table-surface").addEventListener("wheel", function (event) {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.deltaX !== 0 ||
+        !Number.isFinite(event.deltaY) || event.deltaY === 0 ||
+        event.target.closest("button, a, textarea, select, [contenteditable='true'], input:not(#raise-amount), .chat-panel, .table-settings")) return;
     var input = byId("raise-amount");
     var view = state.tableView;
     if (!input || input.disabled || !view || !viewerCanAct(view) || state.actionPending ||
-        state.actionSubmittedKey === actionTokenKey(view) || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+        state.actionSubmittedKey === actionTokenKey(view)) return;
     var min = number(input.min, 0);
     var max = number(input.max, 0);
     if (max <= min) return;

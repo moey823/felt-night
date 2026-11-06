@@ -524,6 +524,57 @@ def last_completed_hand(conn, table_id, viewer_player_id):
             public_player["cards_source"] = source
         players.append(public_player)
 
+    public_players = {item["player_id"]: item for item in players}
+    showdown_rows = []
+    hand_ranks = {}
+    for item in result.get("showdown", []) if isinstance(result.get("showdown"), list) else []:
+        if not isinstance(item, dict) or not item.get("player_id"):
+            continue
+        player_id = item["player_id"]
+        public_player = public_players.get(player_id, {})
+        cards = _safe_card_list(item.get("cards"), (2,))
+        source = public_player.get("cards_source")
+        if not cards or (player_id != viewer_player_id and source != "revealed"):
+            continue
+        rank = item.get("rank") if isinstance(item.get("rank"), str) else None
+        hand_name = item.get("hand_name")
+        if not isinstance(hand_name, str) and rank:
+            hand_name = rank.split(",", 1)[0]
+        public_row = {
+            "player_id": player_id,
+            "name": str(item.get("name") or public_player.get("name") or "Player"),
+            "cards": cards,
+            "rank": rank,
+            "hand_name": hand_name,
+            "payout": item.get("payout", 0),
+            "returned": item.get("returned", 0),
+            "total_credited": item.get("total_credited", 0),
+        }
+        if isinstance(item.get("rank_value"), list):
+            public_row["rank_value"] = list(item["rank_value"])
+        showdown_rows.append(public_row)
+        if rank:
+            hand_ranks[player_id] = {"rank": rank, "hand_name": hand_name}
+
+    pot_winnings = result.get("pot_winnings")
+    if not isinstance(pot_winnings, dict):
+        pot_winnings = {}
+    winners = []
+    for player_id, amount in pot_winnings.items():
+        if type(amount) is not int or amount <= 0:
+            continue
+        public_player = public_players.get(player_id, {})
+        winner = {
+            "player_id": player_id,
+            "name": str(public_player.get("name") or "Player"),
+            "amount": amount,
+        }
+        rank = hand_ranks.get(player_id)
+        if rank is not None:
+            winner.update(rank)
+        winners.append(winner)
+    winners.sort(key=lambda item: (item["name"].casefold(), item["player_id"]))
+
     streets = [{"name": "preflop", "board": []}]
     if len(board) >= 3:
         streets.append({"name": "flop", "board": board[:3]})
@@ -531,9 +582,20 @@ def last_completed_hand(conn, table_id, viewer_player_id):
         streets.append({"name": "turn", "board": board[:4]})
     if len(board) >= 5:
         streets.append({"name": "river", "board": board[:5]})
-    showdown = result.get("showdown")
-    if isinstance(showdown, list) and showdown:
+    if showdown_rows:
         streets.append({"name": "showdown", "board": list(board)})
+
+    returns = result.get("returns")
+    if not isinstance(returns, list):
+        returns = []
+    returns = [
+        {"player_id": item.get("player_id"), "amount": item.get("amount")}
+        for item in returns
+        if isinstance(item, dict)
+        and isinstance(item.get("player_id"), str)
+        and type(item.get("amount")) is int
+        and item["amount"] > 0
+    ]
 
     return {
         "id": row["hand_id"],
@@ -541,4 +603,12 @@ def last_completed_hand(conn, table_id, viewer_player_id):
         "board": board,
         "players": players,
         "streets": streets,
+        "showdown": showdown_rows,
+        "hand_ranks": hand_ranks,
+        "winners": winners,
+        "pot_winnings": {
+            player_id: amount for player_id, amount in pot_winnings.items()
+            if isinstance(player_id, str) and type(amount) is int and amount >= 0
+        },
+        "returns": returns,
     }

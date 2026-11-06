@@ -14,6 +14,7 @@ def config(**overrides):
         "turn_seconds": 30,
         "blind_announcement_seconds": 0,
         "elimination_announcement_seconds": 0,
+        "showdown_seconds": 1.5,
     }
     value.update(overrides)
     return value
@@ -37,11 +38,13 @@ class EngineTests(unittest.TestCase):
         legacy_config = config()
         legacy_config.pop("blind_announcement_seconds")
         legacy_config.pop("elimination_announcement_seconds")
+        legacy_config.pop("showdown_seconds")
         state = engine.create_lobby("default-announcements", "p1", "Ada", legacy_config, now=1)
         self.assertEqual(state["config"]["blind_announcement_seconds"], 5)
         self.assertEqual(state["config"]["elimination_announcement_seconds"], 5)
+        self.assertEqual(state["config"]["showdown_seconds"], 5)
 
-        for setting in ("blind_announcement_seconds", "elimination_announcement_seconds"):
+        for setting in ("blind_announcement_seconds", "elimination_announcement_seconds", "showdown_seconds"):
             for value in (-0.1, 60.1, True, float("nan"), float("inf"), -float("inf")):
                 with self.subTest(setting=setting, value=value):
                     with self.assertRaises(engine.GameError):
@@ -158,10 +161,10 @@ class EngineTests(unittest.TestCase):
         announced_hand_no = state["hand_no"]
         announcement = state["blind_announcement"]
         self.assertEqual(announcement, {
-            "level": 2, "small": 10, "big": 20, "until": 108,
+            "level": 2, "small": 10, "big": 20, "starts_at": 103, "until": 108,
         })
         self.assertEqual(hand["next_hand_at"], 108)
-        self.assertEqual(state["blinds"]["next_level_at"], 108.1)
+        self.assertEqual(state["blinds"]["next_level_at"], 108.6)
 
         # A delayed poll after both deadlines still deals once; it does not
         # replace the announcement and postpone this same hand boundary again.
@@ -188,9 +191,11 @@ class EngineTests(unittest.TestCase):
 
         engine._finish_hand(state, {player_id: 0 for player_id in hand["contrib"]}, now=10)
 
-        self.assertEqual(state["blind_announcement"]["until"], 18)
-        self.assertEqual(state["elimination_announcement"]["until"], 14)
-        self.assertEqual(hand["next_hand_at"], 18)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 11.5)
+        self.assertEqual(state["elimination_announcement"]["until"], 15.5)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 15.5)
+        self.assertEqual(state["blind_announcement"]["until"], 23.5)
+        self.assertEqual(hand["next_hand_at"], 23.5)
         self.assertEqual(state["status"], "playing")
 
         final = engine.create_lobby(
@@ -213,7 +218,241 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(view["elimination_announcement"]["players"], [
             {"name": "Ada", "place": 2, "tied": False, "tie_count": 1},
         ])
-        self.assertEqual(view["elimination_announcement"]["until"], 206)
+        self.assertEqual(view["elimination_announcement"]["starts_at"], 201.5)
+        self.assertEqual(view["elimination_announcement"]["until"], 207.5)
+        self.assertEqual(view["presentation_until"], 207.5)
+
+    def test_showdown_elimination_blind_and_deal_windows_are_sequential(self):
+        state = engine.create_lobby(
+            "sequenced", "p1", "Ada",
+            config(max_seats=3, starting_stack=100, showdown_seconds=5,
+                   elimination_announcement_seconds=4, blind_announcement_seconds=8),
+            now=1,
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        hand = state["hand"]
+        hand["showdown"] = [{
+            "player_id": "p2", "name": "Bea", "cards": ["As", "Ah"],
+            "rank": "Four of a kind", "hand_name": "Four of a kind",
+        }]
+        hand["stack_before"] = {"p1": 100, "p2": 100, "p3": 100}
+        for player_id, stack in (("p1", 0), ("p2", 100), ("p3", 100)):
+            engine._seat_by_id(state, player_id)["stack"] = stack
+        state["blinds"]["next_level_at"] = 10
+
+        engine._finish_hand(
+            state, {player_id: 0 for player_id in hand["contrib"]}, now=10,
+        )
+
+        self.assertEqual(hand["showdown_until"], 15)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 15)
+        self.assertEqual(state["elimination_announcement"]["until"], 19)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 19)
+        self.assertEqual(state["blind_announcement"]["until"], 27)
+        self.assertEqual(hand["presentation_until"], 27)
+        self.assertEqual(hand["next_hand_at"], 27)
+
+        with patch("engine.time.time", return_value=14.99):
+            view = engine.public_view(state, "p2")
+        self.assertIsNone(view["elimination_announcement"])
+        self.assertIsNone(view["blind_announcement"])
+        self.assertEqual(view["showdown_until"], 15)
+        with patch("engine.time.time", return_value=15):
+            view = engine.public_view(state, "p2")
+        self.assertEqual(view["elimination_announcement"]["starts_at"], 15)
+        self.assertIsNone(view["blind_announcement"])
+        with patch("engine.time.time", return_value=19):
+            view = engine.public_view(state, "p2")
+        self.assertIsNone(view["elimination_announcement"])
+        self.assertEqual(view["blind_announcement"]["starts_at"], 19)
+
+        hand_no = state["hand_no"]
+        engine.advance(state, now=26.99)
+        self.assertEqual(state["hand_no"], hand_no)
+        engine.advance(state, now=27)
+        self.assertEqual(state["hand_no"], hand_no + 1)
+
+    def test_final_tournament_showdown_keeps_result_and_elimination_windows(self):
+        state = engine.create_lobby(
+            "final-showdown-window", "p1", "Ada",
+            config(max_seats=2, starting_stack=100, showdown_seconds=5,
+                   elimination_announcement_seconds=6),
+            now=100,
+        )
+        engine.join(state, "p2", "Bea", now=101)
+        engine.start(state, "p1", now=102)
+        hand = state["hand"]
+        hand["showdown"] = [{
+            "player_id": "p2", "name": "Bea", "cards": ["As", "Ah"],
+            "rank": "Four of a kind", "hand_name": "Four of a kind",
+        }]
+        hand["stack_before"] = {"p1": 100, "p2": 100}
+        engine._seat_by_id(state, "p1")["stack"] = 0
+        engine._seat_by_id(state, "p2")["stack"] = 200
+
+        engine._finish_hand(
+            state, {player_id: 0 for player_id in hand["contrib"]}, now=200,
+        )
+
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(hand["showdown_until"], 205)
+        self.assertIsNone(hand["next_hand_at"])
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 205)
+        self.assertEqual(state["elimination_announcement"]["until"], 211)
+        self.assertEqual(hand["presentation_until"], 211)
+        with patch("engine.time.time", return_value=204.99):
+            view = engine.public_view(state, "p2")
+        self.assertIsNone(view["elimination_announcement"])
+        self.assertEqual(view["presentation_until"], 211)
+        with patch("engine.time.time", return_value=205):
+            view = engine.public_view(state, "p2")
+        self.assertIsNotNone(view["elimination_announcement"])
+        self.assertEqual(view["elimination_announcement"]["starts_at"], 205)
+
+    def test_river_showdown_holds_after_all_in_runout_is_already_complete(self):
+        state = heads_up(starting_stack=100)
+        state["config"]["showdown_seconds"] = 7
+        hand = state["hand"]
+        hand.update({
+            "street": "river",
+            "board": ["2c", "3d", "4h", "9s", "Jc"],
+            "holes": {"p1": ["As", "Ah"], "p2": ["Ks", "Kh"]},
+            "folded": [],
+            "contrib": {"p1": 20, "p2": 20},
+            "bets": {"p1": 0, "p2": 0},
+            "runout_at": None,
+            "to_act": None,
+        })
+        for seat in state["seats"]:
+            seat["stack"] = 80
+
+        engine._settle_showdown(state, now=200)
+
+        self.assertEqual(hand["street"], "showdown")
+        self.assertIsNone(hand["runout_at"])
+        self.assertEqual(hand["showdown_started_at"], 200)
+        self.assertEqual(hand["showdown_until"], 207)
+        self.assertEqual(hand["next_hand_at"], 207)
+        self.assertTrue(all("hand_name" in item for item in hand["showdown"]))
+        hand_no = state["hand_no"]
+        engine.advance(state, now=206.99)
+        self.assertEqual(state["hand_no"], hand_no)
+        engine.advance(state, now=207)
+        self.assertEqual(state["hand_no"], hand_no + 1)
+
+    def test_paused_runtime_edits_reflow_showdown_and_queued_windows(self):
+        state = engine.create_lobby(
+            "runtime-windows", "p1", "Ada",
+            config(max_seats=3, starting_stack=100, showdown_seconds=5,
+                   elimination_announcement_seconds=4, blind_announcement_seconds=8),
+            now=1,
+        )
+        engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=3)
+        engine.start(state, "p1", now=4)
+        hand = state["hand"]
+        hand["showdown"] = [{"player_id": "p2", "name": "Bea", "cards": ["As", "Ah"],
+                             "rank": "Flush", "hand_name": "Flush"}]
+        hand["stack_before"] = {"p1": 100, "p2": 100, "p3": 100}
+        for player_id, stack in (("p1", 0), ("p2", 100), ("p3", 100)):
+            engine._seat_by_id(state, player_id)["stack"] = stack
+        state["blinds"]["next_level_at"] = 10
+        engine._finish_hand(
+            state, {player_id: 0 for player_id in hand["contrib"]}, now=10,
+        )
+        engine.pause_table(state, "p1", True, now=12)
+
+        engine.update_runtime_settings(
+            state, "p1",
+            {"showdown_seconds": 10, "elimination_announcement_seconds": 6,
+             "blind_announcement_seconds": 4},
+            now=20,
+        )
+        self.assertEqual(hand["showdown_until"], 20)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 20)
+        self.assertEqual(state["elimination_announcement"]["until"], 26)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 26)
+        self.assertEqual(state["blind_announcement"]["until"], 30)
+        self.assertEqual(hand["presentation_until"], 30)
+        self.assertEqual(hand["next_hand_at"], 30)
+
+        engine.update_runtime_settings(
+            state, "p1",
+            {"showdown_seconds": 0, "elimination_announcement_seconds": 2,
+             "blind_announcement_seconds": 1},
+            now=21,
+        )
+        self.assertEqual(hand["showdown_until"], 12)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 12)
+        self.assertEqual(state["elimination_announcement"]["until"], 14)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 14)
+        self.assertEqual(state["blind_announcement"]["until"], 15)
+        self.assertEqual(hand["presentation_until"], 15)
+        with patch("engine.time.time", return_value=30):
+            view = engine.public_view(state, "p2")
+        self.assertIsNotNone(view["elimination_announcement"])
+        self.assertIsNone(view["blind_announcement"])
+
+        engine.pause_table(state, "p1", False, now=50)
+        self.assertEqual(hand["showdown_started_at"], 48)
+        self.assertEqual(hand["showdown_until"], 50)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 50)
+        self.assertEqual(state["elimination_announcement"]["until"], 52)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 52)
+        self.assertEqual(state["blind_announcement"]["until"], 53)
+        self.assertEqual(hand["presentation_until"], 53)
+        self.assertEqual(hand["next_hand_at"], 53)
+
+    def test_legacy_showdown_windows_are_sequenced_once_and_expired_windows_stay_expired(self):
+        state = heads_up()
+        hand = state["hand"]
+        hand.update({
+            "street": "showdown",
+            "showdown": [{"player_id": "p1", "name": "Ada", "cards": ["As", "Ah"],
+                           "rank": "One pair"}],
+            "hand_complete_at": 102,
+            "next_hand_at": 107,
+        })
+        for key in ("presentation_version", "showdown_started_at", "showdown_until", "presentation_until"):
+            hand.pop(key, None)
+        state["config"]["elimination_announcement_seconds"] = 4
+        state["config"]["blind_announcement_seconds"] = 5
+        state["elimination_announcement"] = {"players": [], "until": 105}
+        state["blind_announcement"] = {"level": 2, "small": 10, "big": 20, "until": 106}
+
+        engine.advance(state, now=101)
+
+        self.assertEqual(hand["showdown_started_at"], 100.5)
+        self.assertEqual(hand["showdown_until"], 102)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 102)
+        self.assertEqual(state["elimination_announcement"]["until"], 106)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 106)
+        self.assertEqual(state["blind_announcement"]["until"], 111)
+        self.assertEqual(hand["next_hand_at"], 111)
+
+        expired = heads_up(now=200)
+        old_hand = expired["hand"]
+        old_hand.update({
+            "street": "showdown",
+            "showdown": [{"player_id": "p1", "name": "Ada", "cards": ["As", "Ah"],
+                           "rank": "One pair"}],
+            "hand_complete_at": 201,
+            "next_hand_at": 202,
+        })
+        for key in ("presentation_version", "showdown_started_at", "showdown_until", "presentation_until"):
+            old_hand.pop(key, None)
+        expired["config"]["elimination_announcement_seconds"] = 4
+        expired["config"]["blind_announcement_seconds"] = 5
+        expired["elimination_announcement"] = {"players": [], "until": 205}
+        expired["blind_announcement"] = {"level": 2, "small": 10, "big": 20, "until": 206}
+
+        engine.advance(expired, now=210)
+
+        self.assertIsNone(expired["elimination_announcement"])
+        self.assertIsNone(expired["blind_announcement"])
+        self.assertGreater(expired["hand_no"], 1)
 
     def test_lobby_host_seated_and_heads_up_blinds(self):
         state = heads_up()
@@ -1264,6 +1503,43 @@ class EngineTests(unittest.TestCase):
         hand["current_bet"] = 110
         self.assertTrue(engine._has_raise_right(hand, "p1"))
 
+    def test_paused_legacy_showdown_migrates_at_frozen_time_and_hides_future_notice(self):
+        state = heads_up()
+        hand = state["hand"]
+        state["config"]["showdown_seconds"] = 5
+        state["config"]["elimination_announcement_seconds"] = 4
+        state["config"]["blind_announcement_seconds"] = 5
+        hand.update({
+            "street": "showdown",
+            "showdown": [{"player_id": "p1", "name": "Ada", "cards": ["As", "Ah"],
+                           "rank": "One pair"}],
+            "hand_complete_at": 102,
+            "next_hand_at": 107,
+        })
+        for key in ("presentation_version", "showdown_started_at", "showdown_until", "presentation_until"):
+            hand.pop(key, None)
+        state["elimination_announcement"] = {"players": [], "until": 107}
+        state["blind_announcement"] = {"level": 2, "small": 10, "big": 20, "until": 109}
+        state["paused"] = True
+        state["paused_at"] = 106
+
+        engine.advance(state, now=1000)
+        normalized = dict(state["elimination_announcement"])
+        version = state["version"]
+        engine.advance(state, now=1001)
+        self.assertEqual(state["version"], version)
+        self.assertEqual(normalized, state["elimination_announcement"])
+        self.assertEqual(hand["presentation_version"], 2)
+        self.assertEqual(hand["showdown_until"], 105.5)
+        self.assertEqual(state["elimination_announcement"]["starts_at"], 105.5)
+        self.assertEqual(state["elimination_announcement"]["until"], 109.5)
+        self.assertEqual(state["blind_announcement"]["starts_at"], 109.5)
+        with patch("engine.time.time", return_value=1000):
+            view = engine.public_view(state, "p1")
+        self.assertIsNotNone(view["elimination_announcement"])
+        self.assertIsNone(view["blind_announcement"])
+        self.assertEqual(hand["next_hand_at"], 114.5)
+
     def test_button_avoids_consecutive_big_blind_when_button_busts_three_to_two(self):
         state = engine.create_lobby(
             "transition", "p1", "Ada", config(max_seats=3), now=1
@@ -1281,6 +1557,9 @@ class EngineTests(unittest.TestCase):
         old_hand["to_act"] = None
         old_hand["turn_deadline"] = None
         old_hand["next_hand_at"] = 10
+        old_hand["hand_complete_at"] = 10
+        old_hand["presentation_until"] = 10
+        old_hand["presentation_version"] = 2
         engine.advance(state, now=11)
         self.assertEqual(state["hand_no"], 2)
         self.assertEqual(state["hand"]["button_id"], old_big_blind)
@@ -1718,6 +1997,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(event["showdown"][0]["returned"], 980)
         self.assertEqual(event["payouts"], {"p1": 1020, "p2": 0})
         self.assertEqual(sum(seat["stack"] for seat in state["seats"]), 1020)
+        view = engine.public_view(state, "p1")
+        self.assertEqual(view["winners"], [{
+            "player_id": "p1", "name": "Ada", "amount": 40,
+            "rank": view["hand_ranks"]["p1"]["rank"],
+            "hand_name": view["hand_ranks"]["p1"]["hand_name"],
+        }])
+        self.assertEqual(view["pot_winnings"]["p1"], 40)
+        self.assertEqual(view["returns"][0]["amount"], 980)
 
     def test_check_call_tournament_finishes_without_losing_chips(self):
         state = engine.create_lobby(

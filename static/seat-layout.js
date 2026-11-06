@@ -58,6 +58,9 @@
     var sourceBlockers = Array.isArray(input.blockers) ? input.blockers : [];
     var key;
     try {
+      // A hand's board, pot, and content rows have reserved footprints. Keep
+      // the first collision-safe seat placement for this viewport and seat set
+      // while those occupants change text or cards during the hand.
       key = JSON.stringify({
         width: width,
         height: height,
@@ -70,10 +73,6 @@
             number(seat && seat.height, 68),
             Boolean(seat && seat.hero)
           ];
-        }),
-        blockers: sourceBlockers.map(function (item) {
-          var rect = normalizeRect(item);
-          return [rect.left, rect.top, rect.right, rect.bottom];
         })
       });
       if (key === cacheKey && cacheValue) return copyResult(cacheValue);

@@ -28,12 +28,12 @@ export default async function game([one, two], sleep, roomPassword) {
   }
   async function create(name, extra = {}) {
     if(await ev(one,visible,'#create-game-tab')) await click(one,'#create-game-tab');
-    for(const [s,v] of Object.entries({'#table-name':name,'#max-seats':2,'#level-minutes':79,'#turn-seconds':47,'#runout-seconds':1.25,'#blind-announcement-seconds':0,'#elimination-announcement-seconds':0,...extra})) await input(one,s,v);
+    for(const [s,v] of Object.entries({'#table-name':name,'#max-seats':2,'#level-minutes':79,'#turn-seconds':47,'#runout-seconds':1.25,'#showdown-seconds':0,'#blind-announcement-seconds':0,'#elimination-announcement-seconds':0,...extra})) await input(one,s,v);
     await submit(one,'#create-form');
     await wait(one,n=>document.querySelector('#view-table-name')?.textContent===n,name);
     await wait(two,n=>{const e=[...document.querySelectorAll('[data-open-table]')].find(e=>e.innerText.includes(n)); if(!e) return false; e.click(); return true;},name);
     await click(two,'[data-take-seat="1"]');
-    for (const [s,v] of [['#settings-level-minutes','79'],['#settings-turn-seconds', String(extra['#turn-seconds'] ?? 47)],['#settings-runout-seconds','1.25'],['#settings-blind-announcement-seconds','0'],['#settings-elimination-announcement-seconds','0']]) {
+    for (const [s,v] of [['#settings-level-minutes','79'],['#settings-turn-seconds', String(extra['#turn-seconds'] ?? 47)],['#settings-runout-seconds','1.25'],['#settings-showdown-seconds','0'],['#settings-blind-announcement-seconds','0'],['#settings-elimination-announcement-seconds','0']]) {
       if(await ev(one,s=>document.querySelector(s).value,s)!==v) throw Error('Create value not restored: '+s);
     }
     await input(one,'#settings-runout-seconds','1.75'); await input(one,'#settings-blind-announcement-seconds','0'); await input(one,'#settings-elimination-announcement-seconds','0'); await click(one,'#save-settings-button');
@@ -138,7 +138,7 @@ export default async function game([one, two], sleep, roomPassword) {
     window.historyQA=[];
     window.setInterval(()=>{
       const board=[...document.querySelectorAll('#board-cards .playing-card')].filter(e=>e.innerText.trim()).length;
-      const odds=[...document.querySelectorAll('.seat-equity')].filter(e=>e.offsetWidth).map(e=>[e.dataset.playerId,e.innerText]);
+      const odds=[...document.querySelectorAll('.seat-equity:not(.is-empty)')].filter(e=>e.offsetWidth).map(e=>[e.dataset.playerId,e.innerText]);
       const stamp=JSON.stringify([board,odds]); if(window.historyQA.at(-1)!==stamp) window.historyQA.push(stamp);
     },75);
     });
@@ -200,7 +200,7 @@ export default async function game([one, two], sleep, roomPassword) {
     await input(first,range,max);
     await click(first,'[data-poker-action="raise_to"]');
     await wait(other,()=>{const b=document.querySelector('[data-poker-action="call"]');return b?.offsetWidth&&!b.disabled;});
-    if(await ev(other,visible,'.seat-equity')) throw Error('Odds appeared while action still pending');
+    if(await ev(other,visible,'.seat-equity:not(.is-empty)')) throw Error('Odds appeared while action still pending');
     const topSeatSnapshot = async p => ev(p, () => {
       const bounds = node => {
         const r = node.getBoundingClientRect();
@@ -210,7 +210,12 @@ export default async function game([one, two], sleep, roomPassword) {
       const seat = document.querySelector('#seat-grid .seat-card:not(.is-me)[data-player-id]');
       const cards = seat?.querySelector('.seat-cards');
       const felt = document.querySelector('#felt');
-      return seat && cards && felt ? {seat:bounds(seat),cards:bounds(cards),felt:bounds(felt)} : null;
+      const miniCards = [...(cards?.querySelectorAll('.mini-card') || [])].map(node => {
+        const box = bounds(node), style = getComputedStyle(node);
+        return {...box, visible:style.display !== 'none' && style.visibility !== 'hidden' &&
+          box.width > 0 && box.height > 0, back:node.classList.contains('back')};
+      });
+      return seat && cards && felt ? {seat:bounds(seat),cards:bounds(cards),miniCards,felt:bounds(felt)} : null;
     });
     const beforeRunout = [];
     for (let index = 0; index < pages.length; index++) {
@@ -218,10 +223,15 @@ export default async function game([one, two], sleep, roomPassword) {
       await sleep(100);
       beforeRunout[index] = await topSeatSnapshot(pages[index]);
       if (!beforeRunout[index]) throw Error('Could not measure the heads-up top opponent before all-in');
+      if (beforeRunout[index].miniCards.length !== 2 ||
+          !beforeRunout[index].miniCards.every(card => card.visible && card.back)) {
+        throw Error('Opponent must show two visible card backs before all-in at ' +
+          (index === 0 ? '320px' : '1280px') + ': ' + JSON.stringify(beforeRunout[index].miniCards));
+      }
       await pages[index].screenshot('top-opponent-before-' + (index === 0 ? 'mobile' : 'desktop'));
     }
     await click(other,'[data-poker-action="call"]');
-    for(const p of pages) await wait(p,visible,'.seat-equity');
+    for(const p of pages) await wait(p,visible,'.seat-equity:not(.is-empty)');
     for (let index = 0; index < pages.length; index++) {
       const page = pages[index];
       await page.screenshot('top-opponent-all-in-' + (index === 0 ? 'mobile' : 'desktop'));
@@ -233,8 +243,13 @@ export default async function game([one, two], sleep, roomPassword) {
         };
         const seat = document.querySelector('#seat-grid .seat-card:not(.is-me)[data-player-id]');
         const cards = seat?.querySelector('.seat-cards');
-        const odds = seat?.querySelector('.seat-equity');
+        const odds = seat?.querySelector('.seat-equity:not(.is-empty)');
         const felt = document.querySelector('#felt');
+        const miniCards = [...(cards?.querySelectorAll('.mini-card') || [])].map(node => {
+          const box = bounds(node), style = getComputedStyle(node);
+          return {...box,visible:style.display !== 'none' && style.visibility !== 'hidden' &&
+            box.width > 0 && box.height > 0,back:node.classList.contains('back')};
+        });
         const blockers = ['#blind-strip','#board-caption','#board-cards','#pot-display','#street-label']
           .map(selector => document.querySelector(selector))
           .filter(node => node && !node.hidden && node.offsetWidth)
@@ -248,7 +263,7 @@ export default async function game([one, two], sleep, roomPassword) {
           .filter(node => !node.hidden && node.offsetWidth)
           .map(bounds);
         return seatBox && cardBox && oddsBox && feltBox ? {
-          seat:seatBox,cards:cardBox,odds:oddsBox,felt:feltBox,
+          seat:seatBox,cards:cardBox,miniCards,odds:oddsBox,felt:feltBox,
           blockerOverlaps:blockers.filter(box => overlaps(seatBox,box)).length,
           oddsBlockerOverlaps:blockers.filter(box => overlaps(oddsBox,box)).length,
           oddsMarkerOverlaps:markerBoxes.filter(box => overlaps(oddsBox,box)).length,
@@ -262,13 +277,19 @@ export default async function game([one, two], sleep, roomPassword) {
       const shiftY = Math.abs(after.seat.centerY-before.seat.centerY);
       const cardsShiftX = Math.abs(after.cards.centerX-before.cards.centerX);
       const cardsShiftY = Math.abs(after.cards.centerY-before.cards.centerY);
+      const internalCardsValid = after.miniCards.length === 2 && after.miniCards.every(card => card.visible && !card.back);
+      const internalCardShifts = after.miniCards.map((card, cardIndex) => ({
+        x:Math.abs(card.centerX-before.miniCards[cardIndex].centerX),
+        y:Math.abs(card.centerY-before.miniCards[cardIndex].centerY)
+      }));
+      const internalCardsShifted = internalCardShifts.some(shift => shift.x > 1 || shift.y > 1);
       console.log('Heads-up all-in layout at ' + (index === 0 ? '320px' : '1280px') +
         ': horizontal seat/card shifts ' + shiftX.toFixed(1) + '/' + cardsShiftX.toFixed(1) +
         'px; vertical shifts ' + shiftY.toFixed(1) + '/' + cardsShiftY.toFixed(1) + 'px');
-      if (shiftX > 4 || cardsShiftX > 4) {
-        throw Error('Top opponent moved sideways when all-in odds appeared at ' +
+      if (shiftX > 1 || shiftY > 1 || cardsShiftX > 1 || cardsShiftY > 1 || !internalCardsValid || internalCardsShifted) {
+        throw Error('Top opponent cards moved when all-in odds appeared at ' +
           (index === 0 ? '320px' : '1280px') + ': ' +
-          JSON.stringify({shiftX,shiftY,cardsShiftX,cardsShiftY,before:before.seat,after:after.seat}));
+          JSON.stringify({shiftX,shiftY,cardsShiftX,cardsShiftY,internalCardShifts,before:before.seat,after:after.seat}));
       }
       if (after.blockerOverlaps || after.oddsBlockerOverlaps || after.oddsMarkerOverlaps || !after.oddsInsideFelt) {
         throw Error('Top opponent or all-in odds overlap table content at ' +

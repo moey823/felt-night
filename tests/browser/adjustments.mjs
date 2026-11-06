@@ -163,6 +163,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     level_minutes: 79,
     turn_seconds: 3600,
     runout_seconds: 1,
+    showdown_seconds: 0,
     blind_announcement_seconds: 0,
     elimination_announcement_seconds: 0,
     buy_in: 10,
@@ -206,7 +207,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   'Preset buttons are clipped or cause horizontal overflow at 320px: ' + JSON.stringify(fivePresets));
   await actorPage.screenshot('presets-320x568');
 
-  await click(actorPage, '#action-panel [data-raise-preset]');
+  await input(actorPage, '#raise-amount', 50);
   await evaluate(actorPage, () => {
     window.adjustmentActionPosts = 0;
     const original = window.fetch.bind(window);
@@ -215,24 +216,28 @@ export default async function adjustments([one, two], sleep, roomPassword) {
           String(options?.method || 'GET').toUpperCase() === 'POST') window.adjustmentActionPosts += 1;
       return original(url, options);
     };
+    document.activeElement?.blur();
   });
+  const feltPoint = await evaluate(actorPage, () => {
+    const r = document.querySelector('#felt').getBoundingClientRect();
+    return {x:r.left + 8, y:r.top + r.height * .62};
+  });
+  await actorPage.wheelAt(feltPoint.x, feltPoint.y, -120);
   const wheelResult = await evaluate(actorPage, () => {
     const input = document.querySelector('#raise-amount');
-    const before = Number(input.value);
-    const event = new WheelEvent('wheel', {deltaY: -120, bubbles: true, cancelable: true});
-    input.dispatchEvent(event);
     return {
-      before,
+      before: 50,
       after: Number(input.value),
       min: Number(input.min),
       max: Number(input.max),
-      prevented: event.defaultPrevented,
+      focused: document.activeElement === input,
       posts: window.adjustmentActionPosts,
+      focusedElement: document.activeElement?.id || document.activeElement?.tagName || '',
     };
   });
-  assert(wheelResult.prevented && wheelResult.after > wheelResult.before &&
-    wheelResult.after >= wheelResult.min && wheelResult.after <= wheelResult.max && wheelResult.posts === 0,
-  'Raise wheel input must adjust only the legal amount without submitting: ' + JSON.stringify(wheelResult));
+  assert(wheelResult.after > wheelResult.before && wheelResult.after >= wheelResult.min &&
+    wheelResult.after <= wheelResult.max && !wheelResult.focused && wheelResult.posts === 0,
+  'A real wheel over the felt must step the legal raise amount without focus or submission: ' + JSON.stringify(wheelResult));
 
   await click(actorPage, '#chat-button');
   await wait(actorPage, visible, '#chat-panel:not([hidden]) #chat-input');
@@ -247,7 +252,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   await request(presetPath + '/chat', host, {text: 'preview-while-closed-' + stamp});
   const preview = await wait(actorPage, expected => {
     const lines = [...document.querySelectorAll('#chat-preview .chat-preview-line')];
-    return lines.length === 2 && lines[1].textContent.includes(expected) ? lines.map(n => n.textContent) : false;
+    return lines.length === 3 && lines[2].textContent.includes(expected) ? lines.map(n => n.textContent) : false;
   }, 'preview-while-closed-' + stamp);
   const previewLayout = await evaluate(actorPage, () => {
     const node = document.querySelector('#chat-preview');
@@ -262,13 +267,53 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       viewport: [innerWidth, innerHeight],
     };
   });
-  assert(previewLayout.lines === 2 && previewLayout.visible && previewLayout.fullChatClosed,
-    'Mini chat must show exactly two lines while full chat is closed: ' + JSON.stringify(previewLayout));
-  assert(previewLayout.latest[0].includes('preview-latest-' + stamp) &&
-    previewLayout.latest[1].includes('preview-while-closed-' + stamp),
-  'Mini chat does not show the two latest messages, including a closed-chat update: ' + JSON.stringify(previewLayout));
+  assert(previewLayout.lines === 3 && previewLayout.visible && previewLayout.fullChatClosed,
+    'Mini chat must show exactly three lines while full chat is closed: ' + JSON.stringify(previewLayout));
+  assert(previewLayout.latest[0].includes('preview-middle-' + stamp) &&
+    previewLayout.latest[1].includes('preview-latest-' + stamp) &&
+    previewLayout.latest[2].includes('preview-while-closed-' + stamp),
+  'Mini chat does not show the three latest messages, including a closed-chat update: ' + JSON.stringify(previewLayout));
   assert(!previewLayout.overflow && previewLayout.bounds[0] >= -1 && previewLayout.bounds[2] <= 321,
     'Mini chat causes horizontal page overflow at 320px: ' + JSON.stringify(previewLayout));
+  const chatPlacement = await evaluate(actorPage, () => {
+    const preview = document.querySelector('#chat-preview');
+    const surface = document.querySelector('.table-surface');
+    const input = document.querySelector('#chat-quick-input');
+    const p = preview.getBoundingClientRect(), s = surface.getBoundingClientRect(), i = input.getBoundingClientRect();
+    return {beforeSurface: Boolean(preview.compareDocumentPosition(surface) & Node.DOCUMENT_POSITION_FOLLOWING),
+      inputVisible: i.width > 0 && i.height > 0 && i.left >= -1 && i.right <= innerWidth + 1 && i.top >= -1 && i.bottom <= innerHeight + 1,
+      separate: p.bottom <= s.top + 1};
+  });
+  assert(chatPlacement.beforeSurface && chatPlacement.inputVisible && chatPlacement.separate,
+    'Chat preview and composer must be above the table surface and fully visible: ' + JSON.stringify(chatPlacement));
+  await sleep(1200);
+  await input(actorPage, '#chat-quick-input', 'preview-enter-' + stamp);
+  await evaluate(actorPage, () => {
+    window.chatEnterQA = {keydown:[], submits:0, fetch:[]};
+    const field = document.querySelector('#chat-quick-input');
+    field.focus({preventScroll:true});
+    field.addEventListener('keydown', event => window.chatEnterQA.keydown.push({key:event.key,code:event.code,keyCode:event.keyCode,target:event.target.id}));
+    document.querySelector('#chat-quick-form').addEventListener('submit', () => window.chatEnterQA.submits++);
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async function(url, options) {
+      const isChatPost = String(url).includes('/poker/api/tables/') && /\/chat(?:\?|$)/.test(String(url)) && String(options?.method || 'GET').toUpperCase() === 'POST';
+      if (isChatPost) window.chatEnterQA.fetch.push({stage:'start',url:String(url),body:options?.body});
+      const response = await originalFetch(url, options);
+      if (isChatPost) window.chatEnterQA.fetch.push({stage:'response',status:response.status});
+      return response;
+    };
+  });
+  await actorPage.pressEnter();
+  await sleep(600);
+  await wait(actorPage, expected => {
+    const lines = [...document.querySelectorAll('#chat-preview .chat-preview-line')];
+    return lines.length === 3 && lines[2].textContent.includes(expected) &&
+      document.querySelector('#chat-quick-input')?.value === '';
+  }, 'preview-enter-' + stamp);
+  const quickSend = await evaluate(actorPage, () => window.chatEnterQA.fetch);
+  assert(quickSend.length === 2 && quickSend[0].stage === 'start' &&
+    quickSend[0].body.includes('preview-enter-') && quickSend[1].stage === 'response' && quickSend[1].status >= 200 && quickSend[1].status < 300,
+  'Enter must send exactly one successful quick-chat POST: ' + JSON.stringify(quickSend));
   await actorPage.screenshot('chat-preview-320x568');
 
   const beforeAllIn = await evaluate(actorPage, () => {
@@ -300,6 +345,14 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       seatCount,
       seat: [r.left, r.top, r.right, r.bottom],
       cards: [cards.left, cards.top, cards.right, cards.bottom],
+      miniCards: [...seat.querySelectorAll('.seat-cards .mini-card')].map(node => {
+        const box = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return {left:box.left,top:box.top,width:box.width,height:box.height,
+          centerX:box.left+box.width/2,centerY:box.top+box.height/2,
+          visible:style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0,
+          back:node.classList.contains('back')};
+      }),
       centerX: r.left + r.width / 2,
       cardsCenterX: cards.left + cards.width / 2,
       viewport: [innerWidth, innerHeight],
@@ -323,6 +376,8 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       },
     };
   });
+  assert(beforeAllIn.miniCards.length === 2 && beforeAllIn.miniCards.every(card => card.visible && card.back),
+    'Opponent must show two visible card backs before all-in exposure: ' + JSON.stringify(beforeAllIn.miniCards));
   await actorPage.screenshot('top-opponent-before-allin-320');
   await otherPage.screenshot('top-opponent-before-allin-390');
   const raiseMax = await evaluate(actorPage, () => Number(document.querySelector('#raise-amount').max));
@@ -333,7 +388,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     return button?.offsetWidth && !button.disabled;
   });
   await click(otherPage, '#action-controls [data-poker-action="call"]');
-  for (const page of [actorPage, otherPage]) await waitLong(page, visible, '#seat-grid .seat-card:not(.is-me) .seat-equity');
+  for (const page of [actorPage, otherPage]) await waitLong(page, visible, '#seat-grid .seat-card:not(.is-me) .seat-equity:not(.is-empty)');
   for (const [index, page] of [actorPage, otherPage].entries()) {
     await page.screenshot(index === 0 ? 'top-opponent-allin-odds-320' : 'top-opponent-allin-odds-390');
   }
@@ -355,7 +410,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     const seat = document.querySelector('#seat-grid .seat-card:not(.is-me)[data-player-id]');
     const r = seat.getBoundingClientRect();
     const cards = seat.querySelector('.seat-cards').getBoundingClientRect();
-    const odds = seat.querySelector('.seat-equity').getBoundingClientRect();
+    const odds = seat.querySelector('.seat-equity:not(.is-empty)').getBoundingClientRect();
     const felt = document.querySelector('#felt').getBoundingClientRect();
     const relativeIndex = Number(seat.dataset.relativeSeat);
     const seatCount = Number(document.querySelector('#felt').dataset.seatCount);
@@ -381,6 +436,14 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       seat: [r.left, r.top, r.right, r.bottom],
       centerX: r.left + r.width / 2,
       cards: [cards.left, cards.top, cards.right, cards.bottom],
+      miniCards: [...seat.querySelectorAll('.seat-cards .mini-card')].map(node => {
+        const box = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        return {left:box.left,top:box.top,width:box.width,height:box.height,
+          centerX:box.left+box.width/2,centerY:box.top+box.height/2,
+          visible:style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0,
+          back:node.classList.contains('back')};
+      }),
       cardsCenterX: cards.left + cards.width / 2,
       odds: [odds.left, odds.top, odds.right, odds.bottom],
       felt: [felt.left, felt.top, felt.right, felt.bottom],
@@ -420,7 +483,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
           hero: node.classList.contains('is-me'),
           seat: bounds(node),
           cards: bounds(node.querySelector('.seat-cards')),
-          odds: bounds(node.querySelector('.seat-equity')),
+          odds: bounds(node.querySelector('.seat-equity:not(.is-empty)')),
         };
       }),
       seatBlockerOverlaps: (() => {
@@ -443,7 +506,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
           const components = [
             ['seat', node],
             ['cards', node.querySelector('.seat-cards')],
-            ['equity', node.querySelector('.seat-equity')],
+            ['equity', node.querySelector('.seat-equity:not(.is-empty)')],
           ];
           for (const [part, element] of components) {
             const box = asBox(element);
@@ -471,15 +534,22 @@ export default async function adjustments([one, two], sleep, roomPassword) {
       oddsHitNearBottom: point(odds.left + odds.width / 2, Math.min(innerHeight - 1, odds.bottom - 1)),
     };
   });
-  const shifted = Math.abs(beforeAllIn.centerX - afterAllIn.centerX) > 3 ||
-    Math.abs(beforeAllIn.cardsCenterX - afterAllIn.cardsCenterX) > 3;
+  const shifted = Math.abs(beforeAllIn.centerX - afterAllIn.centerX) > 1 ||
+    Math.abs(beforeAllIn.seat[1] - afterAllIn.seat[1]) > 1 ||
+    Math.abs(beforeAllIn.cardsCenterX - afterAllIn.cardsCenterX) > 1 ||
+    Math.abs(beforeAllIn.cards[1] - afterAllIn.cards[1]) > 1;
+  const internalCardShift = beforeAllIn.miniCards.length !== 2 || afterAllIn.miniCards.length !== 2 ||
+    beforeAllIn.miniCards.some(card => !card.visible || !card.back) ||
+    afterAllIn.miniCards.some((card, index) => !card.visible || card.back ||
+      Math.abs(card.centerX - beforeAllIn.miniCards[index].centerX) > 1 ||
+      Math.abs(card.centerY - beforeAllIn.miniCards[index].centerY) > 1);
   const escaped = afterAllIn.odds[0] < afterAllIn.felt[0] - 1 ||
     afterAllIn.odds[2] > afterAllIn.felt[2] + 1 ||
     afterAllIn.odds[1] < afterAllIn.felt[1] - 1 ||
     afterAllIn.odds[3] > afterAllIn.felt[3] + 1 ||
     afterAllIn.overflow;
-  if (shifted) layoutFailures.push(
-    'Heads-up top opponent shifted sideways when all-in odds appeared: ' +
+  if (shifted || internalCardShift) layoutFailures.push(
+    'Heads-up opponent card bounds or card faces moved when all-in odds appeared: ' +
     JSON.stringify({beforeAllIn, afterAllIn}));
   if (escaped) layoutFailures.push(
     'All-in odds escaped the felt bounds or caused page overflow: ' +
@@ -489,7 +559,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     JSON.stringify(afterAllIn.seatBlockerOverlaps));
   console.log('320px all-in geometry diagnostics: ' +
     JSON.stringify({before: beforeAllIn, after: afterAllIn}));
-  console.log('320px presets, raise wheel, and two-line chat pass; strict odds geometry is deferred to the suite end.');
+  console.log('320px presets, focus-free felt wheel, three-line chat, and Enter-to-send pass; strict odds geometry is deferred to the suite end.');
   await actorPage.screenshot('heads-up-full-320');
   const pauseConfig = {
     name: 'Adjustments pause ' + stamp,
@@ -500,6 +570,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     level_minutes: 79,
     turn_seconds: 3,
     runout_seconds: 1,
+    showdown_seconds: 0,
     blind_announcement_seconds: 0,
     elimination_announcement_seconds: 0,
     buy_in: 10,
@@ -631,9 +702,10 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     starting_stack: 1000,
     small_blind: 5,
     big_blind: 10,
-    level_minutes: 0.01,
+    level_minutes: 0.1,
     turn_seconds: 3600,
     runout_seconds: 1,
+    showdown_seconds: 0,
     blind_announcement_seconds: 8,
     elimination_announcement_seconds: 5,
     buy_in: 10,
@@ -645,8 +717,14 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   await request(blindPath + '/seat', third, {seat_no: 2});
   await request(blindPath + '/start', host, {});
   await Promise.all([openTable(one, blindConfig.name), openTable(two, blindConfig.name)]);
-  await sleep(900);
   let blindView = await request(blindPath, host);
+  const untilBlindDeadline = blindView.blinds.next_level_at * 1000 - Date.now();
+  if (untilBlindDeadline > 0) await sleep(untilBlindDeadline + 150);
+  blindView = await request(blindPath, host);
+  assert(blindView.blinds.level === 1 && blindView.street !== 'showdown',
+    'The short blind fixture did not wait out level 1 during its live hand: ' + JSON.stringify({
+      level:blindView.blinds.level,street:blindView.street,nextLevel:blindView.blinds.next_level_at
+    }));
   let folds = 0;
   while (blindView.street !== 'showdown' && folds < 3) {
     const actor = [host, guest, third].find(user => user.player.id === blindView.actor_id);
@@ -658,9 +736,24 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     });
     folds += 1;
   }
-  assert(blindView.street === 'showdown' && blindView.blind_announcement,
-    'A short blind level did not publish a boundary announcement: ' + JSON.stringify(blindView.blind_announcement));
-  assert(blindView.config.blind_announcement_seconds === 8 &&
+  assert(blindView.street === 'showdown',
+    'The blind-boundary hand did not reach showdown: ' + JSON.stringify({
+      street:blindView.street,hand:blindView.hand_no,blind:blindView.blinds
+    }));
+  const boundaryHand = blindView.hand_no;
+  const boundaryDeadline = blindView.next_hand_at;
+  for (let attempt = 0; attempt < 80 && !blindView.blind_announcement; attempt++) {
+    await sleep(100);
+    blindView = await request(blindPath, host);
+    assert(blindView.hand_no === boundaryHand && blindView.street === 'showdown',
+      'A new hand started before the blind announcement became active: ' + JSON.stringify({
+        before:boundaryHand,after:blindView.hand_no,street:blindView.street
+      }));
+  }
+  assert(blindView.blind_announcement,
+    'The queued blind boundary announcement never became active: ' + JSON.stringify(blindView));
+  assert(blindView.next_hand_at >= boundaryDeadline &&
+    blindView.config.blind_announcement_seconds === 8 &&
     blindView.next_hand_at >= blindView.blind_announcement.until,
   'Blind announcement duration did not hold the next deal: ' + JSON.stringify({
     config: blindView.config,
@@ -691,6 +784,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
     level_minutes: 79,
     turn_seconds: 3600,
     runout_seconds: 1,
+    showdown_seconds: 0,
     blind_announcement_seconds: 0,
     elimination_announcement_seconds: 12,
     buy_in: 10,

@@ -1011,9 +1011,6 @@ input[type=number] { font-variant-numeric: tabular-nums; }
     white-space: nowrap;
   }
   body.gameplay-active #felt.is-crowded .seat-card .seat-stack .seat-number { font-size: 6px; }
-  body.gameplay-active #felt.is-crowded .seat-card .seat-detail:has(> span:empty) { display: none; }
-  body.gameplay-active #felt.is-crowded .seat-card .seat-tags { display: none; }
-  body.gameplay-active #felt.is-crowded .seat-card:not(.is-me) .seat-cards:not(.is-exposed) { display: none; }
 }
 
 
@@ -1354,11 +1351,8 @@ body.gameplay-active .last-hand-nav .button { min-height: 36px; padding-inline: 
   body.gameplay-active #felt.is-crowded .seat-card .seat-name { font-size: 7px; }
   body.gameplay-active #felt.is-crowded .seat-card .seat-number { font-size: 6px; }
   body.gameplay-active #felt.is-crowded .seat-card .seat-stack { margin-top: 1px; font-size: 8px; }
-  body.gameplay-active #felt.is-crowded .seat-card .seat-detail:has(> span:empty) { display: none; }
   body.gameplay-active #felt.is-crowded .seat-card .seat-detail { margin-top: 1px; font-size: 5px; }
-  body.gameplay-active #felt.is-crowded .seat-card .seat-tags { display: none; }
   body.gameplay-active #felt.is-crowded .seat-card .seat-cards { margin-top: 1px; gap: 1px; }
-  body.gameplay-active #felt.is-crowded .seat-card:not(.is-me) .mini-card.back { width: 17px; height: 25px; }
   body.gameplay-active #felt.is-crowded .seat-card.is-me .mini-card { width: 25px; height: 35px; }
   body.gameplay-active #felt.is-crowded .board-center { top: 46%; width: min(72%, 230px); }
 }
@@ -1378,7 +1372,6 @@ body.gameplay-active .last-hand-nav .button { min-height: 36px; padding-inline: 
   body.gameplay-active .seat-card.is-me { width: clamp(68px, 9vw, 80px); padding: 2px 3px; }
   body.gameplay-active #felt.is-crowded .seat-card { width: clamp(62px, 9vw, 76px); padding: 2px 3px; }
   body.gameplay-active #felt.is-crowded .seat-card.is-me { width: clamp(68px, 9vw, 80px); padding: 2px 3px; }
-  body.gameplay-active #hero-seat:has(> .seat-equity) > .seat-detail { display: none; }
   body.gameplay-active .seat-equity { justify-content: center; gap: 1px; margin-top: 1px; padding: 2px 1px; }
   body.gameplay-active .seat-equity-win { justify-content: center; gap: 2px; }
   body.gameplay-active .seat-equity-win strong { font-size: 10px; }
@@ -1420,14 +1413,6 @@ body.gameplay-active .last-hand-nav .button { min-height: 36px; padding-inline: 
   body.gameplay-active .topbar, body.gameplay-active .action-panel { backdrop-filter: none; }
   body.gameplay-active .recent-action-dialog::backdrop,
   body.gameplay-active .last-hand-dialog::backdrop { backdrop-filter: none; }
-}
-
-/* Keep opponent runout odds out of the fitted seat box in heads-up. */
-#felt[data-seat-count="2"]:has(#hero-seat) .seat-card:not(.is-me) > .seat-equity {
-  position: absolute;
-  top: calc(100% + 3px);
-  left: 0;
-  margin-top: 0;
 }
 
 /* Personal betting preferences use the same quiet green table palette. */
@@ -1605,45 +1590,1207 @@ body.gameplay-active #runtime-settings-button { max-width: 112px; overflow: hidd
   body.gameplay-active .topbar-right #logout-button { min-height: 25px; padding-inline: 4px; font-size: 7px; }
 }
 
-/* Tighten the crowded runout board stack to preserve clearance above the hero seat. */
-@media (max-width: 640px) {
-  body.gameplay-active #felt.is-crowded.exposed-ring .board-center { top: 42%; }
-  body.gameplay-active #felt.is-crowded.exposed-ring .pot-display { margin-top: 3px; padding: 4px 8px; }
+/* Felt Night v2: reserve stable player, board, chat, and announcement footprints. */
+body.gameplay-active #table-view {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 4px;
+}
+body.gameplay-active .table-heading-tools {
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+body.gameplay-active .table-heading-tools::-webkit-scrollbar { display: none; }
+body.gameplay-active .table-heading-tools > .button { flex: 0 0 auto; }
+
+body.gameplay-active #chat-preview {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: repeat(3, 12px) 25px;
+  gap: 2px;
+  width: 100%;
+  height: 70px;
+  min-height: 70px;
+  max-height: 70px;
+  padding: 3px 7px;
+  overflow: hidden;
+  border: 1px solid rgba(197, 227, 124, .18);
+  border-radius: 8px;
+  background: rgba(17, 29, 23, .88);
+}
+body.gameplay-active #chat-preview .chat-preview-line {
+  display: block;
+  min-width: 0;
+  height: 12px;
+  overflow: hidden;
+  color: #d8e3d4;
+  font-size: 9px;
+  line-height: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.gameplay-active #chat-quick-form {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  min-width: 0;
+  height: 25px;
+  margin: 0;
+}
+body.gameplay-active #chat-quick-input {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  min-height: 25px;
+  height: 25px;
+  padding: 2px 7px;
+  font-size: 11px;
+}
+body.gameplay-active #chat-quick-send {
+  flex: 0 0 auto;
+  min-width: 48px;
+  min-height: 25px;
+  height: 25px;
+  padding-inline: 8px;
+  font-size: 9px;
+}
+body.gameplay-active #chat-quick-error,
+body.gameplay-active #chat-quick-status { min-width: 0; font-size: 8px; line-height: 1.2; }
+
+body.gameplay-active #table-announcements {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 44px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+body.gameplay-active #table-announcements > * {
+  position: static !important;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  max-height: 40px;
+  margin: 0;
+  transform: none !important;
+  overflow: auto;
+  text-align: center;
+  pointer-events: auto;
+}
+body.gameplay-active #table-announcements #showdown-summary {
+  padding: 3px 8px;
+  border: 1px solid rgba(230, 197, 141, .28);
+  border-radius: 7px;
+  background: rgba(45, 36, 23, .9);
+  color: #f0d6a6;
+  font-size: 9px;
+  line-height: 1.25;
+}
+body.gameplay-active #table-announcements #notice {
+  top: auto !important;
+  left: auto !important;
+  z-index: auto;
+  max-height: 40px;
+  padding: 5px 8px;
+  box-shadow: none;
+}
+body.gameplay-active #table-announcements #paused-banner,
+body.gameplay-active #table-announcements #announcement-banner,
+body.gameplay-active #table-announcements #blind-announcement,
+body.gameplay-active #table-announcements #action-feedback {
+  padding: 5px 8px;
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+/* Stable board and pot bounds keep the initial seat fit valid through every street. */
+body.gameplay-active #board-caption {
+  display: block;
+  height: 10px;
+  min-height: 10px;
+  line-height: 10px;
+}
+body.gameplay-active #board-cards {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 88px;
+  min-height: 88px;
+  max-height: 88px;
+  margin-top: 5px;
+  overflow: visible;
+}
+body.gameplay-active #felt .board-center { width: min(72%, 440px); }
+body.gameplay-active #felt .playing-card { width: clamp(44px, 4.8vw, 64px); height: clamp(62px, 6.7vw, 86px); }
+body.gameplay-active #felt .playing-card .rank { font-size: 22px; }
+body.gameplay-active #felt .playing-card .suit { font-size: 21px; }
+body.gameplay-active #pot-display {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  margin-top: 5px;
+  padding: 3px 10px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+body.gameplay-active #pot-display.is-empty { visibility: hidden; }
+body.gameplay-active #pot-display strong { font-size: 15px; }
+body.gameplay-active #street-label {
+  box-sizing: border-box;
+  height: 15px;
+  min-height: 15px;
+  margin-top: 3px;
+  overflow: hidden;
+  line-height: 15px;
+  white-space: nowrap;
+}
+body.gameplay-active #blind-strip { height: 25px; min-height: 25px; }
+body.gameplay-active .blind-tile { height: 25px; min-height: 25px; padding: 2px 7px; }
+body.gameplay-active .blind-tile span { font-size: 8px; }
+body.gameplay-active .blind-tile strong { font-size: 12px; line-height: 1.15; }
+body.gameplay-active .blind-tile em { font-size: 8px; line-height: 1.15; }
+
+/* Replay cards follow the same modest size increase as the live board and seat cards. */
+body.gameplay-active .replay-board-cards .mini-card { width: 45px; height: 63px; }
+body.gameplay-active .replay-player-cards .mini-card { width: 38px; height: 54px; }
+body.gameplay-active .replay-board-cards .mini-rank,
+body.gameplay-active .replay-player-cards .mini-rank { font-size: 17px; }
+body.gameplay-active .replay-board-cards .mini-suit,
+body.gameplay-active .replay-player-cards .mini-suit { font-size: 15px; }
+
+@media (max-width: 820px) {
+  body.gameplay-active #chat-preview {
+    grid-template-rows: repeat(3, 11px) 24px;
+    height: 67px;
+    min-height: 67px;
+    max-height: 67px;
+    padding: 3px 6px;
+  }
+  body.gameplay-active #chat-preview .chat-preview-line { height: 11px; font-size: 8px; line-height: 11px; }
+  body.gameplay-active #chat-quick-form,
+  body.gameplay-active #chat-quick-input,
+  body.gameplay-active #chat-quick-send { height: 24px; min-height: 24px; }
+  body.gameplay-active #table-announcements { flex-basis: 40px; height: 40px; min-height: 40px; max-height: 40px; }
+  body.gameplay-active #table-announcements > * { max-height: 36px; }
+  body.gameplay-active #table-announcements #notice { max-height: 36px; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 12px 8px 14px 9px 42px 19px;
+    height: 118px;
+    min-height: 118px;
+    max-height: 118px;
+    padding: 4px 4px;
+  }
+  body.gameplay-active #seat-grid .seat-equity-win strong { font-size: 11px; }
+  body.gameplay-active .seat-turn-clock { min-width: 38px; font-size: 10px; }
+  body.gameplay-active #board-cards { height: 64px; min-height: 64px; max-height: 64px; margin-top: 3px; }
+  body.gameplay-active #felt .board-center { width: min(76%, 440px); }
+  body.gameplay-active #felt .playing-card { width: clamp(36px, 6vw, 44px); height: clamp(50px, 7vw, 61px); }
+  body.gameplay-active #felt .playing-card .rank { font-size: 18px; }
+  body.gameplay-active #felt .playing-card .suit { font-size: 17px; }
+  body.gameplay-active #pot-display { height: 25px; min-height: 25px; max-height: 25px; min-width: 100px; }
+  body.gameplay-active #blind-strip { height: 25px; min-height: 25px; }
+  body.gameplay-active .blind-tile { height: 25px; min-height: 25px; gap: 4px; padding-inline: 5px; }
+  body.gameplay-active .blind-tile span { font-size: 7px; }
+  body.gameplay-active .blind-tile strong { font-size: 11px; }
+  body.gameplay-active .blind-tile em { font-size: 7px; }
+  body.gameplay-active .replay-board-cards .mini-card { width: 36px; height: 50px; }
+  body.gameplay-active .replay-player-cards .mini-card { width: 33px; height: 46px; }
+}
+@media (max-width: 360px) {
+  body.gameplay-active #table-announcements { flex-basis: 36px; height: 36px; min-height: 36px; max-height: 36px; }
+  body.gameplay-active #table-announcements > * { max-height: 32px; font-size: 8px; }
+  body.gameplay-active #board-cards { height: 61px; min-height: 61px; max-height: 61px; }
+  body.gameplay-active #felt .playing-card { width: 36px; height: 50px; }
+  body.gameplay-active .blind-tile strong { font-size: 10px; }
+}
+@media (max-width: 360px) and (max-height: 650px) and (orientation: portrait) {
+  body.gameplay-active #felt.is-crowded .seat-card:not(.is-me) .mini-card { width: 19px; height: 28px; }
 }
 @media (max-height: 500px) and (orientation: landscape) {
-  body.gameplay-active #felt.is-crowded .board-center { transform: translate(-50%, -50%) translateY(-14px); }
-  body.gameplay-active #felt.is-crowded.exposed-ring .board-center { top: 24%; }
+  body.gameplay-active #table-view { grid-template-rows: auto 48px 34px minmax(0, 1fr); gap: 2px; }
+  body.gameplay-active #chat-preview {
+    grid-template-rows: repeat(3, 9px) 20px;
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    padding: 2px 5px;
+    gap: 1px;
+  }
+  body.gameplay-active #chat-preview .chat-preview-line { height: 9px; font-size: 7px; line-height: 9px; }
+  body.gameplay-active #chat-quick-form,
+  body.gameplay-active #chat-quick-input,
+  body.gameplay-active #chat-quick-send { height: 20px; min-height: 20px; font-size: 8px; }
+  body.gameplay-active #table-announcements { flex-basis: 34px; height: 34px; min-height: 34px; max-height: 34px; }
+  body.gameplay-active #table-announcements > * { max-height: 30px; padding-block: 3px; font-size: 8px; }
+  body.gameplay-active .table-heading { min-height: 26px; }
+  body.gameplay-active .table-heading-tools .button { min-height: 24px; height: 24px; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 11px 7px 12px 8px 36px 16px;
+    height: 98px;
+    min-height: 98px;
+    max-height: 98px;
+    padding: 2px 3px;
+  }
+  body.gameplay-active #seat-grid .seat-equity-win strong { font-size: 9px; }
+  body.gameplay-active #seat-grid .seat-equity-win > span { font-size: 5px; }
+  body.gameplay-active #blind-strip { height: 22px; min-height: 22px; }
+  body.gameplay-active .blind-tile { height: 22px; min-height: 22px; }
+  body.gameplay-active .blind-tile span { font-size: 7px; }
+  body.gameplay-active .blind-tile strong { font-size: 10px; }
+  body.gameplay-active .blind-tile em { font-size: 6px; }
+  body.gameplay-active #board-cards { height: 52px; min-height: 52px; max-height: 52px; margin-top: 0; }
+  body.gameplay-active #felt .playing-card { width: clamp(33px, 5vw, 39px); height: 47px; }
+  body.gameplay-active #felt .playing-card .rank { font-size: 16px; }
+  body.gameplay-active #felt .playing-card .suit { font-size: 15px; }
+  body.gameplay-active #pot-display { height: 22px; min-height: 22px; max-height: 22px; margin-top: 2px; font-size: 8px; }
+  body.gameplay-active #pot-display strong { font-size: 10px; }
+  body.gameplay-active #street-label { height: 12px; min-height: 12px; margin-top: 1px; line-height: 12px; }
+  body.gameplay-active .seat-turn-clock { min-width: 34px; font-size: 9px; }
+  body.gameplay-active .replay-board-cards .mini-card { width: 33px; height: 46px; }
+  body.gameplay-active .replay-player-cards .mini-card { width: 30px; height: 42px; }
 }
-/* Keep the top heads-up seat, adjacent odds, board, and hero in separate lanes on short phones. */
-@media (max-width: 360px) and (max-height: 600px) and (orientation: portrait) {
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .board-center { top: 52%; }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .seat-card:not(.is-me) > .seat-equity {
-    top: 0; left: calc(100% + 4px); width: 72px; min-width: 72px; max-width: 72px;
+
+/* Match the actual chat-topline DOM: three messages beside a compact composer. */
+body.gameplay-active #table-view {
+  grid-template-rows: auto 58px 44px minmax(0, 1fr);
+  gap: 4px;
+}
+body.gameplay-active #chat-topline {
+  position: relative;
+  box-sizing: border-box;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(145px, 30%);
+  grid-template-rows: minmax(0, 1fr) 10px;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  width: 100%;
+  height: 58px;
+  min-height: 58px;
+  max-height: 58px;
+  padding: 3px 7px;
+  overflow: hidden;
+  border: 1px solid rgba(197, 227, 124, .18);
+  border-radius: 8px;
+  background: rgba(17, 29, 23, .88);
+}
+body.gameplay-active #chat-topline[hidden] { visibility: hidden; }
+body.gameplay-active #chat-topline:not([hidden]) { visibility: visible; }
+body.gameplay-active #chat-preview {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  display: grid !important;
+  grid-template-rows: repeat(3, 10px);
+  align-content: center;
+  gap: 1px;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+}
+body.gameplay-active #chat-preview[hidden] { visibility: hidden; }
+body.gameplay-active #chat-preview .chat-preview-line {
+  display: block;
+  min-width: 0;
+  height: 10px;
+  overflow: hidden;
+  color: #d8e3d4;
+  font-size: 9px;
+  line-height: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.gameplay-active #chat-quick-form {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex !important;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  margin: 0;
+}
+body.gameplay-active #chat-quick-form[hidden] { visibility: hidden; }
+body.gameplay-active #chat-quick-input {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  min-height: 26px;
+  height: 26px;
+  padding: 2px 6px;
+  font-size: 10px;
+}
+body.gameplay-active #chat-quick-send {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 26px;
+  height: 26px;
+  padding-inline: 6px;
+  font-size: 8px;
+}
+body.gameplay-active #chat-quick-error {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  box-sizing: border-box;
+  height: 10px;
+  min-height: 10px;
+  max-height: 10px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  font-size: 7px;
+  line-height: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+body.gameplay-active #chat-quick-status { position: absolute; }
+
+/* The hidden announcement wrapper keeps its row when messages come and go. */
+body.gameplay-active #table-announcements {
+  box-sizing: border-box;
+  display: flex !important;
+  flex: 0 0 44px;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  padding: 2px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+body.gameplay-active #table-announcements[hidden] { visibility: hidden; }
+body.gameplay-active #table-announcements:not([hidden]) { visibility: visible; }
+body.gameplay-active #table-announcements > * {
+  position: static !important;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: none;
+  max-height: 38px;
+  margin: 0;
+  transform: none !important;
+  overflow: auto;
+  text-align: center;
+  pointer-events: auto;
+}
+body.gameplay-active #table-announcements #showdown-summary {
+  order: -1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 7px;
+  border: 1px solid rgba(230, 197, 141, .28);
+  border-radius: 7px;
+  background: rgba(45, 36, 23, .96);
+  color: #f0d6a6;
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: left;
+}
+body.gameplay-active #table-announcements .showdown-winners { flex: 0 0 auto; }
+body.gameplay-active #table-announcements .showdown-winner-line { margin: 0; line-height: 13px; }
+body.gameplay-active #table-announcements .showdown-ranks { min-height: 0; max-height: 18px; overflow-y: auto; }
+body.gameplay-active #table-announcements .showdown-ranks-label { display: block; font-size: 7px; line-height: 9px; }
+body.gameplay-active #table-announcements .showdown-ranks ul { margin: 0; padding: 0; list-style: none; }
+body.gameplay-active #table-announcements .showdown-rank-line { display: flex; justify-content: space-between; gap: 6px; font-size: 8px; line-height: 12px; }
+body.gameplay-active #table-announcements #notice {
+  order: 0;
+  top: auto !important;
+  left: auto !important;
+  z-index: auto;
+  max-height: 36px;
+  padding: 4px 7px;
+  box-shadow: none;
+}
+body.gameplay-active #table-announcements #paused-banner { order: 1; }
+body.gameplay-active #table-announcements #announcement-banner { order: 2; }
+body.gameplay-active #table-announcements #blind-announcement { order: 3; }
+body.gameplay-active #table-announcements #action-feedback { order: 4; }
+body.gameplay-active #table-announcements #paused-banner,
+body.gameplay-active #table-announcements #announcement-banner,
+body.gameplay-active #table-announcements #blind-announcement,
+body.gameplay-active #table-announcements #action-feedback {
+  padding: 4px 7px;
+  font-size: 8px;
+  line-height: 1.2;
+}
+
+/* Keep the full action dock in place when completed tables replace controls with status. */
+body.gameplay-active .table-surface > #action-panel {
+  box-sizing: border-box;
+  flex: 0 0 74px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 74px;
+  min-height: 74px;
+  max-height: 74px;
+  padding: 2px 4px;
+}
+body.gameplay-active #action-panel #action-controls { width: 100%; }
+body.gameplay-active #action-panel #action-finished-status {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 8px;
+  overflow: auto;
+  color: #d6e7b4;
+  font-size: 9px;
+  line-height: 1.25;
+  text-align: center;
+}
+
+@media (max-width: 820px) {
+  body.gameplay-active #table-view { grid-template-rows: auto 55px 40px minmax(0, 1fr); gap: 3px; }
+  body.gameplay-active #chat-topline {
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 34%);
+    grid-template-rows: minmax(0, 1fr) 9px;
+    column-gap: 5px;
+    row-gap: 1px;
+    height: 55px;
+    min-height: 55px;
+    max-height: 55px;
+    padding: 3px 5px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .pot-display {
-    margin-top: 3px; padding: 2px 6px; gap: 3px; font-size: 8px; line-height: 1;
-    flex-wrap: nowrap; white-space: nowrap;
+  body.gameplay-active #chat-preview { grid-template-rows: repeat(3, 9px); gap: 1px; }
+  body.gameplay-active #chat-preview .chat-preview-line { height: 9px; font-size: 8px; line-height: 9px; }
+  body.gameplay-active #chat-quick-form { height: 24px; }
+  body.gameplay-active #chat-quick-input,
+  body.gameplay-active #chat-quick-send { height: 24px; min-height: 24px; }
+  body.gameplay-active #chat-quick-error { height: 9px; min-height: 9px; max-height: 9px; line-height: 9px; }
+  body.gameplay-active #table-announcements { flex-basis: 40px; height: 40px; min-height: 40px; max-height: 40px; }
+  body.gameplay-active #table-announcements > * { max-height: 34px; }
+  body.gameplay-active #table-announcements #notice { max-height: 34px; }
+  body.gameplay-active #table-announcements .showdown-ranks { max-height: 14px; }
+  body.gameplay-active .table-surface > #action-panel {
+    flex-basis: 74px; height: 74px; min-height: 74px; max-height: 74px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .pot-display strong {
-    font-size: 9px; line-height: 1;
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 12px 8px 14px 9px 42px 19px;
+    height: 120px;
+    min-height: 120px;
+    max-height: 120px;
+    padding: 4px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) .street-label { display: none; }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat:has(> .seat-equity) > .seat-detail {
-    display: none;
+}
+@media (max-width: 360px) {
+  body.gameplay-active #chat-topline {
+    grid-template-columns: minmax(0, 1fr) minmax(106px, 40%);
+    column-gap: 4px;
+    padding-inline: 4px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat:has(> .seat-equity) > .seat-stack[data-chip-display-toggle] {
-    min-height: 14px; height: 14px; margin: 0 auto; padding: 0 3px; font-size: 7px; line-height: 1;
+  body.gameplay-active #chat-quick-input { padding-inline: 4px; font-size: 9px; }
+  body.gameplay-active #chat-quick-send { min-width: 40px; padding-inline: 4px; font-size: 7px; }
+  body.gameplay-active #table-announcements { flex-basis: 36px; height: 36px; min-height: 36px; max-height: 36px; }
+  body.gameplay-active #table-announcements > * { max-height: 30px; font-size: 8px; }
+}
+@media (max-width: 360px) and (max-height: 650px) and (orientation: portrait) {
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.is-me) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me .mini-card { width: 25px; height: 35px; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active #table-view { grid-template-rows: auto 48px 34px minmax(0, 1fr); gap: 2px; }
+  body.gameplay-active #chat-topline {
+    grid-template-columns: minmax(0, 1fr) minmax(118px, 32%);
+    grid-template-rows: minmax(0, 1fr) 8px;
+    column-gap: 5px;
+    row-gap: 1px;
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    padding: 2px 5px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity {
-    flex-wrap: nowrap; justify-content: center; gap: 2px; margin-top: 1px; padding: 1px 3px;
+  body.gameplay-active #chat-preview { grid-template-rows: repeat(3, 8px); gap: 1px; }
+  body.gameplay-active #chat-preview .chat-preview-line { height: 8px; font-size: 7px; line-height: 8px; }
+  body.gameplay-active #chat-quick-form { height: 20px; }
+  body.gameplay-active #chat-quick-input,
+  body.gameplay-active #chat-quick-send { height: 20px; min-height: 20px; font-size: 8px; }
+  body.gameplay-active #chat-quick-error { height: 8px; min-height: 8px; max-height: 8px; line-height: 8px; }
+  body.gameplay-active #table-announcements { flex-basis: 34px; height: 34px; min-height: 34px; max-height: 34px; }
+  body.gameplay-active #table-announcements > * { max-height: 29px; padding-block: 3px; font-size: 8px; }
+  body.gameplay-active #table-announcements .showdown-ranks { max-height: 12px; }
+  body.gameplay-active .table-heading { min-height: 26px; }
+  body.gameplay-active .table-heading-tools .button { min-height: 24px; height: 24px; }
+  body.gameplay-active .table-surface > #action-panel {
+    flex-basis: 68px; height: 68px; min-height: 68px; max-height: 68px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity .seat-equity-win > span {
-    display: none;
+  body.gameplay-active .action-controls { grid-template-rows: 30px 27px; gap: 2px; }
+  body.gameplay-active .action-controls > .button,
+  body.gameplay-active .action-controls > .action-buttons > .button,
+  body.gameplay-active .action-controls > .primary-actions > .button { min-height: 30px; height: 30px; }
+  body.gameplay-active .action-controls .raise-control .raise-presets .raise-preset { min-height: 27px; height: 27px; }
+  body.gameplay-active .action-controls .raise-control input[type="range"] { height: 27px; min-height: 27px; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 11px 7px 12px 8px 36px 16px;
+    height: 102px;
+    min-height: 102px;
+    max-height: 102px;
+    padding: 2px 3px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity .seat-equity-win strong {
-    font-size: 9px;
+  body.gameplay-active #blind-strip { height: 22px; min-height: 22px; }
+  body.gameplay-active .blind-tile { height: 22px; min-height: 22px; }
+  body.gameplay-active .blind-tile span { font-size: 7px; }
+  body.gameplay-active .blind-tile strong { font-size: 10px; }
+  body.gameplay-active .blind-tile em { font-size: 6px; }
+  body.gameplay-active #board-cards { height: 52px; min-height: 52px; max-height: 52px; margin-top: 0; }
+  body.gameplay-active #felt .playing-card { width: clamp(33px, 5vw, 39px); height: 47px; }
+  body.gameplay-active #felt .playing-card .rank { font-size: 16px; }
+  body.gameplay-active #felt .playing-card .suit { font-size: 15px; }
+  body.gameplay-active #pot-display { height: 22px; min-height: 22px; max-height: 22px; margin-top: 2px; font-size: 8px; }
+  body.gameplay-active #pot-display strong { font-size: 10px; }
+  body.gameplay-active #street-label { height: 12px; min-height: 12px; margin-top: 1px; line-height: 12px; }
+  body.gameplay-active .seat-turn-clock { min-width: 34px; font-size: 9px; }
+}
+
+
+
+/* Canonical seat rows keep player cards anchored across every hand phase. */
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 13px 8px 15px 10px 50px 20px;
+  grid-auto-rows: 0;
+  align-content: start;
+  justify-items: stretch;
+  row-gap: 1px;
+  width: clamp(68px, 9vw, 104px);
+  height: 132px;
+  min-height: 132px;
+  max-height: 132px;
+  padding: 5px 6px;
+  overflow: visible;
+  text-align: left;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-top,
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-tags,
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-stack,
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-detail,
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-cards,
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-top {
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-tags {
+  grid-row: 2;
+  display: flex !important;
+  align-content: center;
+  min-height: 8px;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-stack {
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 1;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-detail {
+  grid-row: 4;
+  display: flex !important;
+  align-items: center;
+  visibility: visible;
+  font-size: 7px;
+  line-height: 1;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+  grid-row: 5;
+  display: flex !important;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+  height: 50px;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity {
+  grid-row: 6;
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  height: 20px;
+  padding: 2px 3px;
+  line-height: 1;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-cards.is-empty,
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+  visibility: hidden;
+}
+body.gameplay-active #seat-grid .seat-card:not(.seat-empty) .mini-card {
+  width: 32px;
+  height: 45px;
+  flex: 0 0 auto;
+}
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) {
+  grid-template-rows: 13px 8px 15px 10px 20px 50px;
+  width: clamp(76px, 10vw, 112px);
+  text-align: center;
+}
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top,
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-stack,
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+  justify-content: center;
+  text-align: center;
+}
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { grid-row: 6; }
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-equity { grid-row: 5; }
+body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 34px; height: 48px; }
+
+/* Nine-seat tables use the same compact footprint during action and runout. */
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 12px 45px 15px;
+  height: 80px;
+  min-height: 80px;
+  max-height: 80px;
+  width: clamp(46px, 9vw, 80px);
+  padding: 3px 4px;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-top {
+  grid-row: 1;
+  grid-column: 1;
+  min-width: 0;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-stack {
+  grid-row: 1;
+  grid-column: 2;
+  width: auto;
+  max-width: 100%;
+  justify-self: end;
+  font-size: 8px;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-tags {
+  grid-row: 3;
+  grid-column: 1;
+  visibility: hidden;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-detail {
+  grid-row: 3;
+  grid-column: 1;
+  font-size: 6px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+  grid-row: 2;
+  grid-column: 1 / 3;
+  justify-content: center;
+  height: 45px;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+  grid-row: 3;
+  grid-column: 2;
+  justify-self: end;
+  width: 38px;
+  min-width: 38px;
+  max-width: 38px;
+  height: 14px;
+  min-height: 14px;
+  max-height: 14px;
+  padding: 1px 2px;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .seat-equity-win > span,
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .seat-equity-tie { display: none; }
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .seat-equity-win strong { font-size: 9px; }
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) {
+  grid-template-rows: 12px 15px 45px;
+  width: clamp(58px, 10vw, 88px);
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-detail { grid-row: 2; grid-column: 1; }
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-equity { grid-row: 2; grid-column: 2; }
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+  grid-row: 3;
+  grid-column: 1 / 3;
+  height: 45px;
+}
+body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 34px; height: 45px; }
+
+/* Stable board and pot blocks remain collision-safe across every street. */
+body.gameplay-active #felt.exposed-ring { min-height: 0 !important; }
+body.gameplay-active #board-caption {
+  box-sizing: border-box;
+  display: block;
+  height: 10px;
+  min-height: 10px;
+  max-height: 10px;
+  line-height: 10px;
+  overflow: hidden;
+}
+body.gameplay-active #board-cards {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: max-content;
+  max-width: 100%;
+  margin-inline: auto;
+  gap: clamp(4px, .65vw, 8px);
+  height: 88px;
+  min-height: 88px;
+  max-height: 88px;
+  margin-top: 5px;
+  overflow: visible;
+}
+body.gameplay-active #felt .board-center {
+  top: 48%;
+  width: max-content;
+  min-width: 0;
+  max-width: calc(100% - 16px);
+  transform: translate(-50%, -50%);
+}
+body.gameplay-active #felt .playing-card {
+  width: clamp(44px, 4.8vw, 64px);
+  height: clamp(62px, 6.7vw, 86px);
+}
+body.gameplay-active #felt .playing-card .rank { font-size: 22px; }
+body.gameplay-active #felt .playing-card .suit { font-size: 21px; }
+body.gameplay-active #pot-display {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  margin-top: 5px;
+  padding: 3px 10px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+body.gameplay-active #pot-display.is-empty { visibility: hidden; }
+body.gameplay-active #pot-display strong { font-size: 15px; }
+body.gameplay-active #street-label {
+  box-sizing: border-box;
+  height: 15px;
+  min-height: 15px;
+  max-height: 15px;
+  margin-top: 3px;
+  overflow: hidden;
+  line-height: 15px;
+  white-space: nowrap;
+}
+body.gameplay-active #blind-strip { height: 25px; min-height: 25px; }
+body.gameplay-active .blind-tile { height: 25px; min-height: 25px; padding: 2px 7px; }
+body.gameplay-active .blind-tile span { font-size: 8px; }
+body.gameplay-active .blind-tile strong { font-size: 12px; line-height: 1.15; }
+body.gameplay-active .blind-tile em { font-size: 8px; line-height: 1.15; }
+body.gameplay-active .seat-turn-clock { min-width: 42px; font-size: 11px; }
+
+@media (max-width: 820px) {
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 25px; height: 35px; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 27px; height: 38px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 12px 36px 14px;
+    height: 66px;
+    min-height: 66px;
+    max-height: 66px;
+    padding: 2px;
   }
-  body.gameplay-active #felt[data-seat-count="2"]:has(#hero-seat) #hero-seat > .seat-equity .seat-equity-tie {
-    font-size: 6px;
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-cards { height: 36px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows: 12px 14px 36px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { height: 36px; }
+  body.gameplay-active .seat-equity-win strong { font-size: 11px; }
+  body.gameplay-active .seat-turn-clock { min-width: 38px; font-size: 10px; }
+  body.gameplay-active #board-cards { height: 64px; min-height: 64px; max-height: 64px; margin-top: 3px; }
+  body.gameplay-active #felt .playing-card { width: clamp(36px, 6vw, 44px); height: clamp(50px, 7vw, 61px); }
+  body.gameplay-active #felt .playing-card .rank { font-size: 18px; }
+  body.gameplay-active #felt .playing-card .suit { font-size: 17px; }
+  body.gameplay-active #pot-display { height: 25px; min-height: 25px; max-height: 25px; min-width: 100px; }
+  body.gameplay-active #blind-strip { height: 25px; min-height: 25px; }
+  body.gameplay-active .blind-tile { height: 25px; min-height: 25px; gap: 4px; padding-inline: 5px; }
+  body.gameplay-active .blind-tile span { font-size: 7px; }
+  body.gameplay-active .blind-tile strong { font-size: 11px; }
+  body.gameplay-active .blind-tile em { font-size: 7px; }
+  body.gameplay-active .replay-board-cards .mini-card { width: 36px; height: 50px; }
+  body.gameplay-active .replay-player-cards .mini-card { width: 33px; height: 46px; }
+}
+@media (max-width: 360px) {
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 12px 33px 14px;
+    height: 65px;
+    min-height: 65px;
+    max-height: 65px;
+    width: 46px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-cards { height: 33px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 12px 14px 35px;
+    width: 62px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { height: 35px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 25px; height: 35px; }
+}
+@media (max-width: 360px) {
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty),
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 12px 18px 37px;
+    height: 75px;
+    min-height: 75px;
+    max-height: 75px;
+    width: clamp(68px, 9vw, 104px);
+    padding: 2px 3px;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-top,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-top { grid-row: 1; grid-column: 1; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-stack,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-stack {
+    grid-row: 1; grid-column: 2; width: auto; max-width: 100%; justify-self: end; font-size: 8px;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-tags,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-tags { grid-row: 2; grid-column: 1; visibility: hidden; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-detail,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-detail { grid-row: 2; grid-column: 1; font-size: 6px; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-cards,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+    grid-row: 3; grid-column: 1 / 3; justify-content: center; height: 37px; gap: 2px;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+    grid-row: 2; grid-column: 2; justify-self: end; width: 38px; min-width: 38px; max-width: 38px;
+    height: 17px; min-height: 17px; max-height: 17px; padding: 1px 2px; overflow: hidden; flex-wrap: nowrap;
+  }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty),
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 12px 18px 37px;
+    width: clamp(76px, 10vw, 112px);
+  }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-detail,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-detail { grid-row: 2; grid-column: 1; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-equity { grid-row: 2; grid-column: 2; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { grid-row: 3; grid-column: 1 / 3; height: 37px; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 24px; height: 34px; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 26px; height: 37px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) { width: 46px; grid-template-rows: 12px 18px 37px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) { width: 62px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 25px; height: 35px; }
+  body.gameplay-active #hero-seat { bottom: 2px; }
+
+  body.gameplay-active #board-caption,
+  body.gameplay-active #street-label { display: none !important; }
+  body.gameplay-active #board-cards { height: 52px; min-height: 52px; max-height: 52px; margin: 0 auto; }
+  body.gameplay-active #felt .playing-card { width: 36px; height: 50px; }
+  body.gameplay-active #felt .playing-card .rank { font-size: 16px; }
+  body.gameplay-active #felt .playing-card .suit { font-size: 15px; }
+  body.gameplay-active #pot-display { height: 22px; min-height: 22px; max-height: 22px; margin-top: 2px; font-size: 8px; }
+  body.gameplay-active #pot-display strong { font-size: 10px; }
+  body.gameplay-active #felt .board-center { top: 47%; }
+}
+@media (max-width: 360px) and (max-height: 650px) and (orientation: portrait) {
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 12px 28px 14px;
+    height: 60px;
+    min-height: 60px;
+    max-height: 60px;
+    padding: 1px 3px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 12px 28px 14px;
+    height: 60px;
+    min-height: 60px;
+    max-height: 60px;
+    width: 62px;
+    padding: 1px 3px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-top { grid-row: 1; grid-column: 1; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-stack {
+    grid-row: 1; grid-column: 2; width: auto; max-width: 100%; justify-self: end; font-size: 8px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-tags {
+    grid-row: 3; grid-column: 1; visibility: hidden;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-detail {
+    grid-row: 3; grid-column: 1; font-size: 6px; line-height: 1;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+    grid-row: 2; grid-column: 1 / 3; justify-content: center; height: 28px; gap: 2px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+    grid-row: 3; grid-column: 2; justify-self: end; width: 38px; min-width: 38px; max-width: 38px;
+    height: 14px; min-height: 14px; max-height: 14px; padding: 1px 2px; overflow: hidden; flex-wrap: nowrap;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-detail { grid-row: 3; grid-column: 1; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-equity { grid-row: 3; grid-column: 2; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    grid-row: 2; grid-column: 1 / 3; height: 28px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #board-cards { gap: 0; }
+  body.gameplay-active #felt.is-crowded .playing-card { width: 34px; height: 50px; }
+}
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty),
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 12px 18px 37px;
+    height: 75px;
+    min-height: 75px;
+    max-height: 75px;
+    width: clamp(62px, 9vw, 76px);
+    padding: 2px 3px;
+  }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty),
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows: 12px 18px 37px; width: clamp(68px, 9vw, 80px); }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 22px; height: 31px; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 24px; height: 34px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) { width: 46px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) { width: 62px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 25px; height: 35px; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { grid-row: 3; }
+  body.gameplay-active #hero-seat { bottom: 2px; }
+  body.gameplay-active #board-caption,
+  body.gameplay-active #street-label { display: none !important; }
+  body.gameplay-active #board-cards { height: 52px; min-height: 52px; max-height: 52px; margin: 0 auto; }
+  body.gameplay-active #felt .playing-card { width: 36px; height: 50px; }
+  body.gameplay-active #pot-display { height: 22px; min-height: 22px; max-height: 22px; margin-top: 2px; font-size: 8px; }
+  body.gameplay-active #pot-display strong { font-size: 10px; }
+  body.gameplay-active #felt .board-center { top: calc(22% - 18px); }
+  body.gameplay-active #felt .board-center #pot-display {
+    position: absolute;
+    top: 50%;
+    left: calc(100% + 8px);
+    transform: translateY(-50%);
+    margin-top: 0;
+  }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 12px 28px 14px;
+    height: 60px;
+    min-height: 60px;
+    max-height: 60px;
+    padding: 1px 3px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 12px 28px 14px;
+    height: 60px;
+    min-height: 60px;
+    max-height: 60px;
+    width: 62px;
+    padding: 1px 3px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-top { grid-row: 1; grid-column: 1; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-stack {
+    grid-row: 1; grid-column: 2; width: auto; max-width: 100%; justify-self: end; font-size: 8px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-tags {
+    grid-row: 3; grid-column: 1; visibility: hidden;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-detail {
+    grid-row: 3; grid-column: 1; font-size: 6px; line-height: 1;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+    grid-row: 2; grid-column: 1 / 3; justify-content: center; height: 28px; gap: 2px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+    grid-row: 3; grid-column: 2; justify-self: end; width: 38px; min-width: 38px; max-width: 38px;
+    height: 14px; min-height: 14px; max-height: 14px; padding: 1px 2px; overflow: hidden; flex-wrap: nowrap;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-detail { grid-row: 3; grid-column: 1; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-equity { grid-row: 3; grid-column: 2; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    grid-row: 2; grid-column: 1 / 3; height: 28px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 19px; height: 28px; }
+}
+
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active .topbar {
+    height: calc(34px + env(safe-area-inset-top));
+    min-height: calc(34px + env(safe-area-inset-top));
+    max-height: calc(34px + env(safe-area-inset-top));
+  }
+  body.gameplay-active #table-view {
+    grid-template-rows: 30px 40px 28px minmax(0, 1fr);
+    gap: 0;
+  }
+  body.gameplay-active .table-heading {
+    height: 30px; min-height: 30px; max-height: 30px; padding: 0 2px;
+  }
+  body.gameplay-active .table-heading-tools .button {
+    height: 22px; min-height: 22px; padding-inline: 4px; font-size: 8px;
+  }
+  body.gameplay-active #chat-topline {
+    grid-template-rows: minmax(0, 1fr) 8px;
+    height: 40px; min-height: 40px; max-height: 40px; padding: 2px 5px;
+  }
+  body.gameplay-active #chat-preview { grid-template-rows: repeat(3, 8px); gap: 0; }
+  body.gameplay-active #chat-preview .chat-preview-line { height: 8px; font-size: 7px; line-height: 8px; }
+  body.gameplay-active #chat-quick-form { height: 20px; }
+  body.gameplay-active #chat-quick-input,
+  body.gameplay-active #chat-quick-send { height: 20px; min-height: 20px; font-size: 8px; }
+  body.gameplay-active #chat-quick-error { height: 8px; min-height: 8px; max-height: 8px; line-height: 8px; }
+  body.gameplay-active #table-announcements {
+    flex-basis: 28px; height: 28px; min-height: 28px; max-height: 28px;
+  }
+  body.gameplay-active #table-announcements > *,
+  body.gameplay-active #table-announcements #notice,
+  body.gameplay-active #table-announcements #showdown-summary {
+    max-height: 24px;
+    overflow: auto;
+  }
+  body.gameplay-active #table-announcements .showdown-ranks { max-height: 12px; }
+  body.gameplay-active #felt .board-center { top: 38%; }
+  body.gameplay-active #seat-grid { inset: 29px 0 0; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+}
+
+/* The compact board and fixed announcements stay outside the player-card ring. */
+
+
+/* Short landscape: fit the entire table and retain readable, stable seat rows. */
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active .topbar {
+    height: calc(28px + env(safe-area-inset-top));
+    min-height: calc(28px + env(safe-area-inset-top));
+    max-height: calc(28px + env(safe-area-inset-top));
+  }
+  body.gameplay-active .topbar .ace-brand { width: 22px; height: 22px; }
+  body.gameplay-active .brand { gap: 5px; }
+  body.gameplay-active .brand-copy strong { font-size: 11px; line-height: 1; }
+  body.gameplay-active .topbar-right,
+  body.gameplay-active .identity { gap: 3px; }
+  body.gameplay-active .identity-avatar { width: 22px; height: 22px; }
+  body.gameplay-active .welcome-name { max-width: 54px; font-size: 8px; }
+  body.gameplay-active .topbar #history-button,
+  body.gameplay-active .topbar #player-settings-button,
+  body.gameplay-active .topbar #logout-button {
+    height: 22px; min-height: 22px; max-height: 22px; padding-inline: 4px; font-size: 7px; line-height: 1;
+  }
+  body.gameplay-active #table-view { grid-template-rows: 24px 36px 26px minmax(0, 1fr); gap: 0; }
+  body.gameplay-active .table-heading { height: 24px; min-height: 24px; max-height: 24px; padding: 0 2px; }
+  body.gameplay-active .table-heading h2 { font-size: 11px; }
+  body.gameplay-active .table-heading-tools { flex-wrap: nowrap; gap: 2px; }
+  body.gameplay-active .table-heading-tools .button {
+    height: 18px; min-height: 18px; max-height: 18px; padding-inline: 4px; font-size: 7px; line-height: 1;
+  }
+  body.gameplay-active #chat-topline {
+    grid-template-rows: minmax(0, 1fr) 8px;
+    height: 36px; min-height: 36px; max-height: 36px; padding: 2px 5px;
+  }
+  body.gameplay-active #chat-preview { grid-template-rows: repeat(3, 8px); gap: 0; }
+  body.gameplay-active #chat-preview .chat-preview-line { height: 8px; font-size: 7px; line-height: 8px; }
+  body.gameplay-active #chat-quick-form { height: 20px; }
+  body.gameplay-active #chat-quick-input,
+  body.gameplay-active #chat-quick-send { height: 20px; min-height: 20px; font-size: 8px; }
+  body.gameplay-active #chat-quick-error { height: 8px; min-height: 8px; max-height: 8px; line-height: 8px; }
+  body.gameplay-active #table-announcements { flex-basis: 26px; height: 26px; min-height: 26px; max-height: 26px; }
+  body.gameplay-active #table-announcements > *,
+  body.gameplay-active #table-announcements #notice,
+  body.gameplay-active #table-announcements #showdown-summary { max-height: 22px; overflow: auto; }
+  body.gameplay-active #table-announcements .showdown-ranks { max-height: 12px; }
+  body.gameplay-active #felt .board-center { top: 38%; }
+  body.gameplay-active #seat-grid { inset: 29px 0 0; }
+
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 10px 12px 34px;
+    height: 60px; min-height: 60px; max-height: 60px;
+    width: clamp(62px, 9vw, 76px);
+    padding: 1px 3px;
+  }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 10px 12px 34px;
+    height: 60px; min-height: 60px; max-height: 60px;
+    width: clamp(68px, 9vw, 80px);
+    padding: 1px 3px;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-top { grid-row: 1; grid-column: 1; }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-stack {
+    grid-row: 1; grid-column: 2; width: auto; max-width: 100%; justify-self: end; font-size: 8px;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-tags {
+    grid-row: 2; grid-column: 1; visibility: hidden;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-detail {
+    grid-row: 2; grid-column: 1; font-size: 6px; line-height: 1;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+    grid-row: 2; grid-column: 2; justify-self: end; width: 38px; min-width: 38px; max-width: 38px;
+    height: 12px; min-height: 12px; max-height: 12px; padding: 0 2px; overflow: hidden; flex-wrap: nowrap;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) > .seat-cards,
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    grid-row: 3; grid-column: 1 / -1; justify-self: stretch; width: 100%; min-width: 0;
+    justify-content: center; height: 34px; gap: 2px;
+  }
+  body.gameplay-active #seat-grid .seat-card:not(.seat-empty) .mini-card { width: 22px; height: 31px; }
+  body.gameplay-active #seat-grid .seat-card.is-me:not(.seat-empty) .mini-card { width: 24px; height: 34px; }
+}
+
+
+/* Leave a badge lane in the shortest crowded landscape felt. */
+@media (max-height: 500px) and (orientation: landscape) {
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty),
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 12px 28px 10px;
+    height: 56px; min-height: 56px; max-height: 56px;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-detail,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity,
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) > .seat-equity.is-empty {
+    grid-row: 3; height: 10px; min-height: 10px; max-height: 10px; padding-block: 0; line-height: 1;
+  }
+  body.gameplay-active #felt.is-crowded #seat-grid .seat-card:not(.seat-empty) .seat-equity-win strong {
+    font-size: 8px; line-height: 1;
   }
 }

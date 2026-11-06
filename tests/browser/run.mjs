@@ -15,7 +15,9 @@ const game = (mode === 'adjustments'
   ? await import('./crowded.mjs')
   : mode === 'ux'
     ? await import('./ux.mjs')
-    : await import('./tournament.mjs')).default;
+    : mode === 'presentation'
+      ? await import('./presentation.mjs')
+      : await import('./tournament.mjs')).default;
 const testRoomPassword = 'test-room-invite';
 
 if (!process.env.BROWSER_BIN) throw Error('Set BROWSER_BIN to a Chromium headless shell executable.');
@@ -70,6 +72,15 @@ async function makePage() {
       const key = {key:'Escape',code:'Escape',windowsVirtualKeyCode:27};
       await send('Input.dispatchKeyEvent',{type:'keyDown',...key});
       await send('Input.dispatchKeyEvent',{type:'keyUp',...key});
+    },
+    async pressEnter() {
+      const key = {key:'Enter',code:'Enter',windowsVirtualKeyCode:13};
+      await send('Input.dispatchKeyEvent',{type:'keyDown',...key});
+      await send('Input.dispatchKeyEvent',{type:'char',text:'\r',...key});
+      await send('Input.dispatchKeyEvent',{type:'keyUp',...key});
+    },
+    async wheelAt(x, y, deltaY, modifiers = 0) {
+      await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:0,deltaY,modifiers});
     },
     reload() {
       return send('Page.reload',{ignoreCache:true});

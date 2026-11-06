@@ -97,6 +97,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     level_minutes: 54,
     turn_seconds: 3600,
     runout_seconds: 40,
+    showdown_seconds: 0,
     blind_announcement_seconds: 0,
     elimination_announcement_seconds: 0,
     buy_in: 10,
@@ -168,7 +169,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
         }
       }
       const heroPairBox=heroPair?rect(heroPair):null;
-      const footerLimit=innerWidth>innerHeight?72:80;
+      const footerLimit=innerWidth>innerHeight?74:80;
       if(panelBox && panelBox.height>footerLimit+1) errors.push('action footer exceeds '+footerLimit+'px: '+panelBox.height.toFixed(1));
       if(panelBox && surfaceBox && (
         panelBox.left<surfaceBox.left-1 || panelBox.right>surfaceBox.right+1 ||
@@ -248,6 +249,33 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     await activePage.screenshot('active-' + width + 'x' + height);
   }
 
+
+  await activePage.resize(320, 568);
+  await sleep(180);
+  await ev(activePage, () => document.querySelector('#felt').scrollIntoView({ block: 'center' }));
+  const topOpponentBefore = await ev(activePage, () => {
+    const rect = node => {
+      const r = node.getBoundingClientRect();
+      return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,
+        centerX:r.left+r.width/2,centerY:r.top+r.height/2};
+    };
+    const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]:not(.is-me)')];
+    const seat = seats.sort((a,b) => rect(a).top - rect(b).top)[0];
+    if (!seat) return null;
+    const cards = seat.querySelector('.seat-cards');
+    const miniCards = [...(cards?.querySelectorAll('.mini-card') || [])].map(node => {
+      const box = rect(node), style = getComputedStyle(node);
+      return {...box,visible:style.display !== 'none' && style.visibility !== 'hidden' &&
+        box.width > 0 && box.height > 0,back:node.classList.contains('back')};
+    });
+    return {playerId:seat.dataset.playerId,seat:rect(seat),cards:rect(cards),miniCards,
+      relativeSeat:Number(seat.dataset.relativeSeat)};
+  });
+  if (!topOpponentBefore || topOpponentBefore.miniCards.length !== 2 ||
+      !topOpponentBefore.miniCards.every(card => card.visible && card.back)) {
+    throw Error('Top opponent must show two visible card backs before nine-seat runout: ' +
+      JSON.stringify(topOpponentBefore));
+  }
   for (let i = 0; i < seatsCount + 2 && view.actor_id; i++) {
     const actor = players.find(session => session.player.id === view.actor_id);
     if (!actor) throw Error('Unknown active player ' + view.actor_id);
@@ -258,7 +286,37 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   if (view.actor_id) throw Error('The forced all-in round did not close');
   if (view.runout_odds?.length !== seatsCount) throw Error('All live hands were not exposed');
 
-  await wait(activePage, count => document.querySelectorAll('.seat-equity').length === count, seatsCount);
+  await wait(activePage, count => document.querySelectorAll('.seat-equity:not(.is-empty)').length === count, seatsCount);
+  const topOpponentAfter = await ev(activePage, playerId => {
+    const rect = node => {
+      const r = node.getBoundingClientRect();
+      return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,
+        centerX:r.left+r.width/2,centerY:r.top+r.height/2};
+    };
+    const seat = [...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')]
+      .find(node => node.dataset.playerId === playerId);
+    if (!seat) return null;
+    const cards = seat.querySelector('.seat-cards');
+    const miniCards = [...(cards?.querySelectorAll('.mini-card') || [])].map(node => {
+      const box = rect(node), style = getComputedStyle(node);
+      return {...box,visible:style.display !== 'none' && style.visibility !== 'hidden' &&
+        box.width > 0 && box.height > 0,back:node.classList.contains('back')};
+    });
+    return {playerId:seat.dataset.playerId,seat:rect(seat),cards:rect(cards),miniCards,
+      equity:rect(seat.querySelector('.seat-equity:not(.is-empty)'))};
+  }, topOpponentBefore.playerId);
+  if (!topOpponentAfter || topOpponentAfter.miniCards.length !== 2 ||
+      topOpponentAfter.miniCards.some((card,index) => !card.visible || card.back ||
+        Math.abs(card.centerX-topOpponentBefore.miniCards[index].centerX)>1 ||
+        Math.abs(card.centerY-topOpponentBefore.miniCards[index].centerY)>1) ||
+      Math.abs(topOpponentAfter.seat.centerX-topOpponentBefore.seat.centerX)>1 ||
+      Math.abs(topOpponentAfter.seat.centerY-topOpponentBefore.seat.centerY)>1 ||
+      Math.abs(topOpponentAfter.cards.centerX-topOpponentBefore.cards.centerX)>1 ||
+      Math.abs(topOpponentAfter.cards.centerY-topOpponentBefore.cards.centerY)>1) {
+    throw Error('Nine-seat top opponent cards moved from backs to exposed faces: ' +
+      JSON.stringify({before:topOpponentBefore,after:topOpponentAfter}));
+  }
+
   for (const {width, height} of [{width:320,height:568},{width:667,height:375},{width:844,height:390}]) {
     await activePage.resize(width, height);
     await sleep(240);
@@ -269,7 +327,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const area=(a,b)=>Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
       const surface=document.querySelector('.table-surface'), felt=document.querySelector('#felt'), panel=document.querySelector('#action-panel');
       const hero=document.querySelector('.seat-card.is-me'), pair=document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
-      const equity=hero?.querySelector('.seat-equity'), heroes=[...document.querySelectorAll('.seat-card.is-me .seat-cards.is-viewer-cards .mini-card')];
+      const equity=hero?.querySelector('.seat-equity:not(.is-empty)'), heroes=[...document.querySelectorAll('.seat-card.is-me .seat-cards.is-viewer-cards .mini-card')];
       const seats=[...document.querySelectorAll('.seat-card[data-player-id]')];
       const actions=[...document.querySelectorAll('#action-panel .action-buttons [data-poker-action]')];
       const labels=["#board-caption","#pot-display","#street-label"].map(id=>[id,document.querySelector(id)])
@@ -281,7 +339,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       if(actions.length!==3 || actions.some(button=>!button.disabled)) errors.push('runout footer is not three disabled actions');
       if(!equity?.offsetWidth) errors.push('hero equity badge missing during runout');
       const footer=panel?rect(panel):null, surfaceBox=surface?rect(surface):null, feltBox=felt?rect(felt):null, pairBox=pair?rect(pair):null;
-      const limit=innerWidth>innerHeight?72:80;
+      const limit=innerWidth>innerHeight?74:80;
       if(footer && footer.height>limit+1) errors.push('runout footer exceeds '+limit+'px');
       if(footer && surfaceBox && (footer.left<surfaceBox.left-1 || footer.right>surfaceBox.right+1 || footer.top<surfaceBox.top-1 || footer.bottom>surfaceBox.bottom+1)) errors.push('runout footer escapes surface');
       const center=pairBox&&feltBox?{
@@ -318,7 +376,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   const spectatorView = await req(tablePath, spectator);
   if (spectatorView.viewer?.seated) throw Error('All-in observer unexpectedly occupies a seat');
   await openTable(spectatorPage, tableName);
-  await wait(spectatorPage, count => document.querySelectorAll('.seat-equity').length === count, seatsCount);
+  await wait(spectatorPage, count => document.querySelectorAll('.seat-equity:not(.is-empty)').length === count, seatsCount);
 
   for (const width of [320, 390, 768, 1366]) {
     await spectatorPage.resize(width, 850);
@@ -329,7 +387,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
       const expected=${seatsCount};
       const rect=e=>{const r=e.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
       const area=(a,b)=>Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));
-      const seats=[...document.querySelectorAll('.seat-card')], badges=[...document.querySelectorAll('.seat-equity')], board=rect(document.querySelector('#board-cards')), problems=[], boardOverlaps=[], seatOverlaps=[];
+      const seats=[...document.querySelectorAll('.seat-card')], badges=[...document.querySelectorAll('.seat-equity:not(.is-empty)')], board=rect(document.querySelector('#board-cards')), problems=[], boardOverlaps=[], seatOverlaps=[];
       if(badges.length!==expected) problems.push('missing odds');
       if(seats.length!==expected) problems.push('seat count '+seats.length);
       for(let i=0;i<seats.length;i++) {

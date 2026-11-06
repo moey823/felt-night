@@ -1189,6 +1189,9 @@ class Handler(BaseHTTPRequestHandler):
                     "elimination_announcement_seconds": body.get(
                         "elimination_announcement_seconds", engine.ELIMINATION_ANNOUNCEMENT_SECONDS,
                     ),
+                    "showdown_seconds": body.get(
+                        "showdown_seconds", engine.SHOWDOWN_SECONDS,
+                    ),
                     "buy_in": self._integer(
                         body.get("buy_in", engine.DEFAULT_BUY_IN),
                         "buy_in", 0, engine.MAX_CHIPS,
@@ -1230,7 +1233,7 @@ class Handler(BaseHTTPRequestHandler):
                     "max_seats", "starting_stack", "small_blind", "big_blind",
                     "buy_in", "turn_seconds", "level_minutes", "runout_seconds",
                     "blind_announcement_seconds", "elimination_announcement_seconds",
-                    "payout_percentages", "name",
+                    "showdown_seconds", "payout_percentages", "name",
                 }
                 unknown_settings = set(body) - supported_settings
                 if unknown_settings:
@@ -1250,7 +1253,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 for duration in (
                     "level_minutes", "runout_seconds", "blind_announcement_seconds",
-                    "elimination_announcement_seconds",
+                    "elimination_announcement_seconds", "showdown_seconds",
                 ):
                     if duration in body:
                         settings[duration] = body[duration]  # Numeric ranges are validated by the engine.

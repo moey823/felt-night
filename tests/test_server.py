@@ -1149,15 +1149,16 @@ class ServerAuthTests(unittest.TestCase):
         auth = dict(cookie=cookie, proof=proof, csrf=csrf)
         cfg = dict(name="Custom pace", max_seats=2, starting_stack=1000,
                    small_blind=10, big_blind=20, level_minutes=97,
-                   turn_seconds=19, runout_seconds=1.5, buy_in=25,
-                   payout_percentages=[70, 30])
+                   turn_seconds=19, runout_seconds=1.5, showdown_seconds=4.5,
+                   buy_in=25, payout_percentages=[70, 30])
         status, _, created = self.request("POST", "/poker/api/tables", cfg, **auth)
         self.assertEqual(status, 201, created)
         table = created["table"]
         self.assertEqual(table["config"]["blind_announcement_seconds"], 5)
         self.assertEqual(table["config"]["elimination_announcement_seconds"], 5)
+        self.assertEqual(table["config"]["showdown_seconds"], 4.5)
         for field in (
-            "level_minutes", "turn_seconds", "runout_seconds",
+            "level_minutes", "turn_seconds", "runout_seconds", "showdown_seconds",
             "buy_in", "payout_percentages",
         ):
             self.assertEqual(table["config"][field], cfg[field])
@@ -1168,7 +1169,9 @@ class ServerAuthTests(unittest.TestCase):
                            ("blind_announcement_seconds", -1),
                            ("blind_announcement_seconds", 61),
                            ("elimination_announcement_seconds", float("nan")),
-                           ("elimination_announcement_seconds", float("inf"))):
+                           ("elimination_announcement_seconds", float("inf")),
+                           ("showdown_seconds", -1), ("showdown_seconds", 60.1),
+                           ("showdown_seconds", True), ("showdown_seconds", float("nan"))):
             with self.subTest(field=field, bad=bad):
                 status, _, _ = self.request("POST", "/poker/api/tables",
                                             dict(cfg, **{field: bad}), **auth)
@@ -1178,7 +1181,7 @@ class ServerAuthTests(unittest.TestCase):
         updated = dict(
             level_minutes=72.5, turn_seconds=7, runout_seconds=3.25,
             blind_announcement_seconds=4, elimination_announcement_seconds=6,
-            buy_in=0, payout_percentages=[80, 20],
+            showdown_seconds=7, buy_in=0, payout_percentages=[80, 20],
         )
         status, _, result = self.request("POST", path + "/settings", updated, **auth)
         self.assertEqual(status, 200, result)
@@ -1187,7 +1190,7 @@ class ServerAuthTests(unittest.TestCase):
         for field in updated:
             invalid = -1 if field in {
                 "buy_in", "blind_announcement_seconds",
-                "elimination_announcement_seconds",
+                "elimination_announcement_seconds", "showdown_seconds",
             } else 0
             status, _, _ = self.request(
                 "POST", path + "/settings", {field: invalid}, **auth,
@@ -1264,6 +1267,7 @@ class ServerAuthTests(unittest.TestCase):
             "runout_seconds": 1.25,
             "blind_announcement_seconds": 60,
             "elimination_announcement_seconds": 0,
+            "showdown_seconds": 8,
         }
         status, _, updated = self.request(
             "POST", path + "/settings", pacing, **host_auth,
@@ -1293,6 +1297,9 @@ class ServerAuthTests(unittest.TestCase):
             ("blind_announcement_seconds", 61),
             ("elimination_announcement_seconds", float("nan")),
             ("elimination_announcement_seconds", float("inf")),
+            ("showdown_seconds", -1),
+            ("showdown_seconds", 61),
+            ("showdown_seconds", True),
         ):
             with self.subTest(field=field, value=value):
                 status, _, rejected = self.request(
@@ -1452,11 +1459,13 @@ class ServerAuthTests(unittest.TestCase):
             ][:5]
             hand["street"] = "river"
             hand["folded"] = [folded["id"]]
-            hand["contrib"] = {player_id: 10 for player_id in player_ids}
+            hand["contrib"] = {
+                host["id"]: 10, guest["id"]: 20, folded["id"]: 5,
+            }
             hand["bets"] = {player_id: 0 for player_id in player_ids}
             hand["current_bet"] = 0
             for seat in state["seats"]:
-                seat["stack"] = state["config"]["starting_stack"] - 10
+                seat["stack"] = state["config"]["starting_stack"] - hand["contrib"][seat["player_id"]]
             folded_cards["cards"] = list(hand["holes"][folded["id"]])
             server.engine._settle_showdown(state, now=time.time())
             return state
@@ -1464,6 +1473,19 @@ class ServerAuthTests(unittest.TestCase):
         finished = self.app.store.mutate_table(table_id, complete_hand, time.time())
         self.assertEqual(finished["hand"]["street"], "showdown")
         self.assertEqual(finished["hand"]["folded"], [folded["id"]])
+        self.assertEqual(finished["hand"]["returns"][0]["player_id"], guest["id"])
+        live_status, _, live_result = self.request(
+            "GET", table_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(live_status, 200, live_result)
+        live_hand = live_result["table"]
+        self.assertEqual(live_hand["showdown"][0]["hand_name"],
+                         live_hand["hand_ranks"][live_hand["showdown"][0]["player_id"]]["hand_name"])
+        self.assertEqual(
+            sum(item["amount"] for item in live_hand["winners"]),
+            sum(live_hand["pot_winnings"].values()),
+        )
+        self.assertEqual(live_hand["returns"][0]["amount"], 10)
         completed_cards = {
             player_id: list(cards)
             for player_id, cards in finished["hand"]["holes"].items()
@@ -1494,6 +1516,16 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(players[guest["id"]]["cards"], completed_cards[guest["id"]])
         self.assertEqual(players[guest["id"]]["cards_source"], "revealed")
         self.assertEqual(players[folded["id"]]["cards"], [])
+        self.assertEqual({item["player_id"] for item in hand["showdown"]},
+                         {host["id"], guest["id"]})
+        self.assertEqual(set(hand["hand_ranks"]), {host["id"], guest["id"]})
+        self.assertNotIn(folded["id"], hand["hand_ranks"])
+        replay_winners = {item["player_id"]: item for item in hand["winners"]}
+        self.assertEqual(
+            {player_id: item["amount"] for player_id, item in replay_winners.items()},
+            {player_id: amount for player_id, amount in hand["pot_winnings"].items() if amount > 0},
+        )
+        self.assertEqual(hand["returns"], [{"player_id": guest["id"], "amount": 10}])
         self.assertNotIn("events", hand)
         self.assertTrue(
             set(folded_cards["cards"]).isdisjoint(

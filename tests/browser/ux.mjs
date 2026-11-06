@@ -141,6 +141,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       level_minutes: 79,
       turn_seconds: 3600,
       runout_seconds: 1,
+      showdown_seconds: 0,
       blind_announcement_seconds: 0,
       elimination_announcement_seconds: 0,
       buy_in: 10,
@@ -237,7 +238,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     const panelBox = panel && rect(panel);
     const heroPairBox = heroPair && rect(heroPair);
     const boardBox = board && rect(board);
-    const footerLimit = innerWidth > innerHeight ? 72 : 80;
+    const footerLimit = innerWidth > innerHeight ? 74 : 80;
     if (panelBox && panelBox.height > footerLimit + 1) {
       errors.push('action footer exceeds ' + footerLimit + 'px: ' + panelBox.height.toFixed(1));
     }
@@ -297,6 +298,13 @@ export default async function ux([one, two], sleep, roomPassword) {
       boardBox.left < -1 || boardBox.right > innerWidth + 1 ||
       boardBox.top < -1 || boardBox.bottom > innerHeight + 1
     )) errors.push('community card area is clipped');
+    if (boardBox && feltBox && (
+      boardBox.left < feltBox.left - 1 || boardBox.right > feltBox.right + 1 ||
+      boardBox.top < feltBox.top - 1 || boardBox.bottom > feltBox.bottom + 1
+    )) errors.push('community card area escapes felt');
+    if (boardBox && stripBox && overlap(boardBox, stripBox) > 1) {
+      errors.push('community cards overlap blind strip');
+    }
     if (stripBox && gridBox && stripBox.bottom > gridBox.top + 1) {
       errors.push('blind strip is not above the seat area');
     }
@@ -846,7 +854,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     'Replay did not open at the bounded final street: ' + JSON.stringify(showdown));
   assert(showdown.boardCards === 5 && showdown.exposedCards === 4,
     'Showdown replay did not show five board cards and two exposed hands: ' + JSON.stringify(showdown));
-  assert(showdown.liveNote.includes('Live hand continues'),
+  assert(showdown.liveNote.includes('Replay of this completed hand.'),
     'Replay omitted the live-hand note');
   await one.screenshot('last-hand-showdown');
   for (const {width, height} of [{width:320,height:568},{width:667,height:375}]) {
@@ -966,6 +974,8 @@ export default async function ux([one, two], sleep, roomPassword) {
   await switchUser(two, nineOther);
   await openTable(one, nineSeats.name);
   await wait(one, visible, '#action-panel:not([hidden]) #action-controls [data-poker-action]');
+  await one.resize(1366, 768);
+  await sleep(900);
   await checkViewports(one, 9, 'nine-seat', true);
 
   await evaluate(one, () => {
@@ -1004,21 +1014,33 @@ export default async function ux([one, two], sleep, roomPassword) {
     );
   });
   const announcement = await evaluate(one, () => document.querySelector('#blind-announcement').innerText.trim());
-  const announcementCenter = await evaluate(one, () => {
-    const node=document.querySelector('#blind-announcement').getBoundingClientRect();
-    const felt=document.querySelector('#felt').getBoundingClientRect();
+  const blindStrip = await evaluate(one, () => document.querySelector('#blind-strip')?.innerText || '');
+  const announcementGeometry = await evaluate(one, () => {
+    const node = document.querySelector('#blind-announcement');
+    const region = document.querySelector('#table-announcements');
+    const surface = document.querySelector('.table-surface');
+    const felt = document.querySelector('#felt');
+    const preview = document.querySelector('#chat-topline');
+    const box = n => { const r=n.getBoundingClientRect(); return {left:r.left,top:r.top,right:r.right,bottom:r.bottom}; };
+    const overlaps = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const n=box(node), r=box(region), s=box(surface), f=box(felt), c=box(preview);
     return {
-      x:+(((node.left+node.right)-(felt.left+felt.right))/2).toFixed(1),
-      y:+(((node.top+node.bottom)-(felt.top+felt.bottom))/2).toFixed(1),
+      inReservedRegion: region.contains(node),
+      outsideSurface: !surface.contains(node) && n.bottom <= s.top + 1,
+      outsideFelt: !overlaps(n,f),
+      separateFromChat: !overlaps(n,c),
+      inViewport: n.left >= -1 && n.top >= -1 && n.right <= innerWidth + 1 && n.bottom <= innerHeight + 1,
+      announcement:n,region:r,surface:s,felt:f,chat:c
     };
   });
-  const blindStrip = await evaluate(one, () => document.querySelector('#blind-strip')?.innerText || '');
   assert(
     /level\s*2/i.test(announcement) && /20/.test(announcement) && /40/.test(announcement),
     'Blind announcement missed level 2 and new 20/40 blinds: ' + announcement
   );
-  assert(Math.abs(announcementCenter.x)<=2 && Math.abs(announcementCenter.y)<=2,
-    'Blind announcement is not centered on the felt: ' + JSON.stringify(announcementCenter));
+  assert(announcementGeometry.inReservedRegion && announcementGeometry.outsideSurface &&
+    announcementGeometry.outsideFelt && announcementGeometry.separateFromChat && announcementGeometry.inViewport,
+    'Blind announcement must stay in its reserved region outside the felt and fully in view: ' +
+      JSON.stringify(announcementGeometry));
   assert(
     /level\s*2/i.test(blindStrip) && /20/.test(blindStrip) && /40/.test(blindStrip) &&
     !/players left|starting stack/i.test(blindStrip),

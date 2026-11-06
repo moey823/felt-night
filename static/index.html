@@ -150,6 +150,8 @@
                 </div>
                 <label for="elimination-announcement-seconds">Elimination announcement (seconds)</label>
                 <input id="elimination-announcement-seconds" name="elimination_announcement_seconds" type="number" min="0" max="60" step="1" value="5" required>
+                <label for="showdown-seconds">Showdown result hold (seconds)</label>
+                <input id="showdown-seconds" name="showdown_seconds" type="number" min="0" max="60" step="1" value="5" required>
                 <button class="button button-primary button-wide" type="submit">
                   <span>Create table</span><span aria-hidden="true">↗</span>
                 </button>
@@ -207,15 +209,33 @@
                   <button id="close-table-button" class="button button-quiet button-small" type="button" aria-label="Back to all tables">All tables <span aria-hidden="true">↗</span></button>
                 </div>
               </div>
-              <div class="table-surface panel">
+              <div id="chat-topline" class="chat-topline" hidden>
+                <div id="chat-preview" class="chat-preview" role="region" aria-label="Latest table chat" aria-live="polite" hidden>
+                  <div class="chat-preview-line" data-chat-preview-line="0">No messages yet.</div>
+                  <div class="chat-preview-line" data-chat-preview-line="1">No earlier messages.</div>
+                  <div class="chat-preview-line" data-chat-preview-line="2">No earlier messages.</div>
+                </div>
+                <form id="chat-quick-form" class="chat-quick-form" hidden>
+                  <label class="visually-hidden" for="chat-quick-input">Message to this table, up to 500 characters</label>
+                  <input id="chat-quick-input" name="message" type="text" maxlength="500" autocomplete="off" placeholder="Message the table…" aria-describedby="chat-quick-error chat-quick-status">
+                  <button id="chat-quick-send" class="button button-primary button-small" type="submit">Send</button>
+                </form>
+                <p id="chat-quick-error" class="chat-error" role="alert" aria-live="assertive" hidden></p>
+                <span id="chat-quick-status" class="visually-hidden" role="status" aria-live="polite"></span>
+              </div>
+              <div id="table-announcements" class="table-announcements" aria-label="Table updates" hidden>
                 <div id="paused-banner" class="paused-view" role="status" aria-live="polite" hidden></div>
                 <div id="announcement-banner" class="announcement-view" role="status" aria-live="polite" hidden></div>
+                <div id="blind-announcement" class="blind-announcement" role="status" aria-live="polite" hidden></div>
+                <div id="showdown-summary" class="showdown-summary" role="status" aria-live="polite" hidden></div>
+                <div id="action-feedback" class="action-feedback" role="alert" aria-live="assertive" hidden></div>
+              </div>
+              <div id="table-surface" class="table-surface panel">
                 <div class="felt-topline">
                   <span class="live-indicator"><span></span><span id="hand-status-label">TABLE LOBBY</span></span>
                   <span id="hand-number" class="hand-number"></span>
                 </div>
                 <div id="felt" class="felt">
-                  <div id="blind-announcement" class="blind-announcement" role="status" aria-live="polite" hidden></div>
                   <div id="blind-strip" class="blind-strip"></div>
                   <div id="seat-grid" class="seat-grid"></div>
                   <div class="board-center">
@@ -229,18 +249,14 @@
                 <section id="action-panel" class="action-panel" aria-labelledby="action-title" hidden>
                   <h3 id="action-title" class="visually-hidden">Betting actions</h3>
                   <div id="action-controls" class="action-controls"></div>
+                  <p id="action-finished-status" class="action-finished-status" role="status" hidden></p>
                 </section>
-                <div id="action-feedback" class="action-feedback" role="alert" aria-live="assertive" hidden></div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
                   <span id="button-caption"></span>
                 </div>
               </div>
 
-              <div id="chat-preview" class="chat-preview" role="region" aria-label="Latest table chat" aria-live="polite" hidden>
-                <div class="chat-preview-line" data-chat-preview-line="0">No messages yet.</div>
-                <div class="chat-preview-line" data-chat-preview-line="1">Open chat to start the conversation.</div>
-              </div>
               <section id="chat-panel" class="panel chat-panel" role="region" aria-labelledby="chat-title" hidden>
                 <div class="chat-panel-heading">
                   <div><div class="panel-kicker">TABLE CHAT</div><h3 id="chat-title">Live chat</h3></div>
@@ -325,6 +341,7 @@
                   </div>
                   <div class="settings-field" data-runtime-only><label for="settings-blind-announcement-seconds">Blind announcement (seconds)</label><input id="settings-blind-announcement-seconds" type="number" min="0" max="60" step="1" required></div>
                   <div class="settings-field" data-runtime-only><label for="settings-elimination-announcement-seconds">Elimination announcement (seconds)</label><input id="settings-elimination-announcement-seconds" type="number" min="0" max="60" step="1" required></div>
+                  <div class="settings-field" data-runtime-only><label for="settings-showdown-seconds">Showdown result hold (seconds)</label><input id="settings-showdown-seconds" type="number" min="0" max="60" step="1" required></div>
                 </div>
                 <div class="settings-footer">
                   <p id="settings-lock-note" class="muted">Save changes before starting the freezeout.</p>
