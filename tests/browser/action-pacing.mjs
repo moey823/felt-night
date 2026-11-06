@@ -148,11 +148,15 @@ export default async function actionPacing([tablePage, adminPage], sleep, roomPa
       const turn=document.querySelector(".seat-card.is-acting");
       const sr=summary.getBoundingClientRect(),dr=detail.getBoundingClientRect();
       const style=getComputedStyle(turn);
-      return {summary:summary.textContent,visible:sr.height>0 && getComputedStyle(summary).visibility==="visible",
+      const felt=document.querySelector("#felt").getBoundingClientRect();
+      const overlap=r=>sr.left<r.right && sr.right>r.left && sr.top<r.bottom && sr.bottom>r.top;
+      const blocked=[...document.querySelectorAll("#seat-grid .seat-card, #board-cards, #pot-display, .reaction-shortcuts")].some(n=>overlap(n.getBoundingClientRect()));
+      const onFelt=Boolean(summary.closest("#felt")) && sr.left>=felt.left && sr.right<=felt.right && sr.top>=felt.top && sr.bottom<=felt.bottom;
+      return {onFelt,blocked,summary:summary.textContent,visible:sr.height>0 && getComputedStyle(summary).visibility==="visible",
         fits:dr.left>=sr.left-1 && dr.right<=sr.right+1 && dr.bottom<=sr.bottom+1,
         outline:style.outlineWidth,glow:style.boxShadow,scroll:document.documentElement.scrollWidth<=innerWidth};
     });
-    assert(layout.visible && layout.fits && layout.scroll && layout.outline==="3px" && layout.glow!=="none",
+    assert(layout.onFelt && !layout.blocked && layout.visible && layout.fits && layout.scroll && layout.outline==="3px" && layout.glow!=="none",
       "Last-action/turn layout "+width+"x"+height+" "+JSON.stringify(layout));
     await tablePage.screenshot("action-"+width+"x"+height);
   }

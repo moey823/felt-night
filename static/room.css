@@ -2542,15 +2542,37 @@ body .mini-card .mini-suit {
 }
 body .mini-card .mini-rank { font-size: min(17px, 36cqh) !important; line-height: 1; }
 
-/* Keep the latest player action readable without opening the activity menu. */
-.last-action-summary { display: flex; justify-content: center; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; color: #fff2cc; font-size: 12px; line-height: 15px; }
+/* Keep play-by-play beside the board without moving cards as actions change. */
+.last-action-summary {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 4;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 170px;
+  height: 38px;
+  padding: 3px 8px;
+  border: 1px solid rgba(224, 237, 183, .3);
+  border-radius: 9px;
+  background: rgba(9, 28, 20, .94);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .22);
+  color: #fff2cc;
+  font-size: 12px;
+  line-height: 14px;
+  pointer-events: none;
+}
 .last-action-summary[hidden] { display: none; }
-.last-action-actor { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
-.last-action-detail { flex: 0 0 auto; color: #d4f59a; white-space: nowrap; font-size: 11px; }
-body.gameplay-active .table-shell-title:has(.last-action-summary:not([hidden])) .table-title-row { display: none !important; }
-body.gameplay-active .last-action-summary:not([hidden]) { display: flex; flex-direction: column; align-items: center; gap: 0; line-height: 13px; }
-body.gameplay-active .last-action-actor { max-width: 100%; }
-body.gameplay-active .last-action-detail { font-size: 11px; }
+.last-action-actor { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 800; }
+.last-action-detail { color: #d4f59a; white-space: nowrap; font-size: 12px; }
+@media (max-height: 500px), (max-width: 360px) {
+  .last-action-summary { width: 154px; height: 20px; padding: 0 5px; gap: 0; font-size: 10px; line-height: 10px; }
+  .last-action-detail { font-size: 10px; }
+}
 
 /* Strong static rings remain visible for reduced motion and between polls. */
 body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-acting:not(.seat-empty) {
@@ -2613,7 +2635,7 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
 .reaction-particle {
   position: absolute;
   display: block;
-  font-size: 22px;
+  font-size: 32px;
   line-height: 1;
   text-shadow: 0 2px 7px rgba(0, 0, 0, .52);
   pointer-events: none;
@@ -2653,4 +2675,9 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
 .seat-hand-strength > span { display: block; text-wrap: balance; }
 @media (min-width: 1024px) and (min-height: 650px) {
   #table-surface #seat-grid .seat-local-markers > .seat-hand-strength { font-size: 11px; line-height: 12px; }
+}
+
+
+@media (max-height: 500px), (max-width: 360px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt .board-center { gap: 0 !important; }
 }

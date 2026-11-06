@@ -1721,6 +1721,52 @@
     node.setAttribute("aria-label", node.title);
   }
 
+  // Only the announcement moves: keep the established card and seat geometry.
+  function positionLastAction() {
+    var node = byId("last-action-summary"), felt = byId("felt");
+    var board = felt.querySelector(".board-center");
+    var bounds = felt.getBoundingClientRect();
+    if (!bounds.width || !bounds.height || !board) return;
+    var style = window.getComputedStyle(node);
+    var width = parseFloat(style.width), height = parseFloat(style.height);
+    var b = board.getBoundingClientRect();
+    var centerX = (b.left + b.right) / 2, centerY = (b.top + b.bottom) / 2;
+    var blockers = Array.from(felt.querySelectorAll(".seat-card, .reaction-shortcuts, .board-center, #blind-strip")).map(function (n) {
+      return n.getBoundingClientRect();
+    }).filter(function (r) { return r.width && r.height; });
+    function fits(point) {
+      var x = point[0], y = point[1];
+      return x >= bounds.left + 4 && x + width <= bounds.right - 4 &&
+        y >= bounds.top + 4 && y + height <= bounds.bottom - 4 &&
+        !blockers.some(function (r) {
+          return x < r.right + .5 && x + width > r.left - .5 && y < r.bottom + .5 && y + height > r.top - .5;
+        });
+    }
+    var candidates = [
+      [centerX - width / 2, b.bottom + 5],
+      [centerX - width / 2, b.top - height - 1],
+      [b.right + 8, centerY - height / 2],
+      [b.left - width - 8, centerY - height / 2]
+    ];
+    var point = candidates.find(fits);
+    if (!point) {
+      // Short mobile viewports can leave a gap offset from the board center.
+      var gaps = [];
+      for (var y = bounds.top + 4; y + height < bounds.bottom - 4; y += 4) {
+        for (var x = bounds.left + 4; x + width < bounds.right - 4; x += 4) {
+          if (fits([x, y])) gaps.push([x, y]);
+        }
+      }
+      gaps.sort(function (a, c) {
+        function distance(p) { return Math.pow(p[0] + width / 2 - centerX, 2) + Math.pow(p[1] + height / 2 - centerY, 2); }
+        return distance(a) - distance(c);
+      });
+      point = gaps[0] || candidates[0];
+    }
+    node.style.left = (point[0] - bounds.left - felt.clientLeft) + "px";
+    node.style.top = (point[1] - bounds.top - felt.clientTop) + "px";
+  }
+
   function rememberTableEvent(event) {
     var fx = state.tableFx;
     if (!event || typeof event !== "object") return;
@@ -1979,7 +2025,7 @@
       var count = moving ? 16 : 8;
       for (var i = 0; i < count; i += 1) {
         var angle = Math.PI * 2 * i / count + Math.PI / 8;
-        var distance = moving ? 40 + (i % 4) * 10 : 28;
+        var distance = moving ? 58 + (i % 4) * 12 : 38;
         var particle = document.createElement("span");
         particle.className = "reaction-particle";
         particle.textContent = String(reaction.emoji || "");
@@ -1989,7 +2035,7 @@
         layer.appendChild(particle);
         if (!moving) {
           particle.classList.add("reaction-particle-static");
-          window.setTimeout(function (node) { return function () { node.remove(); }; }(particle), 1200);
+          window.setTimeout(function (node) { return function () { node.remove(); }; }(particle), 2600);
           continue;
         }
         var endX = Math.max(20, Math.min(layerRect.width - 20, startX + Math.cos(angle) * distance));
@@ -1998,9 +2044,11 @@
         var dy = endY - startY;
         var rotation = (i % 2 ? 1 : -1) * (20 + (i % 5) * 8);
         var animation = particle.animate([
-          { transform: "translate(-50%, -50%) scale(.52) rotate(0deg)", opacity: .98 },
-          { transform: "translate(calc(-50% + " + dx + "px), calc(-50% + " + dy + "px)) scale(1.08) rotate(" + rotation + "deg)", opacity: 0 }
-        ], { duration: 980 + (i % 4) * 55, easing: "cubic-bezier(.16,.72,.29,1)", fill: "forwards" });
+          { transform: "translate(-50%, -50%) scale(.7) rotate(0deg)", opacity: 1, offset: 0 },
+          { transform: "translate(calc(-50% + " + dx * .8 + "px), calc(-50% + " + dy * .8 + "px)) scale(1.12) rotate(" + rotation * .8 + "deg)", opacity: 1, offset: .35 },
+          { transform: "translate(calc(-50% + " + dx + "px), calc(-50% + " + dy + "px)) scale(1.08) rotate(" + rotation + "deg)", opacity: 1, offset: .75 },
+          { transform: "translate(calc(-50% + " + dx + "px), calc(-50% + " + (dy - 12) + "px)) scale(.95) rotate(" + rotation + "deg)", opacity: 0, offset: 1 }
+        ], { duration: 2800 + (i % 4) * 120, easing: "ease-out", fill: "forwards" });
         animation.finished.catch(function () {}).then(function (node) { return function () { node.remove(); }; }(particle));
       }
     });
@@ -2397,6 +2445,7 @@
       });
     }
 
+    positionLastAction();
     fx.wagerPositions = {};
     grid.querySelectorAll(".seat-wager").forEach(function (node) {
       var seatNo = String(node.getAttribute("data-seat-no"));

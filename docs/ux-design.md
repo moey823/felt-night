@@ -8,7 +8,7 @@ The table is the primary workspace. A player needs their cards, opponents and st
 - Payout sliders redistribute the remaining shares so their total stays at 100%. The number of occupied seats determines the tournament size at Start.
 - The dedicated admin account configures shared bet presets, all-in pacing, announcement durations, result holds, and test bots.
 - Host End game requires two deliberate confirmations. An ended game has no invented winner or payout.
-- Gameplay announcements use the header title area without changing the felt or card positions.
+- Player action announcements sit on the felt beside the board in a fixed-size panel without changing card or seat positions. Reactions use larger emoji bursts that stay visible for about three seconds; reduced-motion viewers see a static burst.
 - The betting dock reserves three equal, stationary primary-action slots for Fold, Check or Call, and Bet or Raise. Presets and the sizing slider use separate rows, so changing the action label or amount does not move a primary button.
 - The blind-level strip shows a live countdown. A paused clock stays frozen, and a pending level change reads “Next hand.”
 - Showdown winners get a compact Won + amount badge beside their seat, with a brief gold pulse that respects reduced-motion preferences. Eliminated players retain an OUT label in the stack row.

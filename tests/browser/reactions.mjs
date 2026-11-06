@@ -115,13 +115,41 @@ export default async function reactions([one,two], sleep, roomPassword) {
   assert(!layout.intersectsHero&&!layout.intersectsOtherSeat&&!layout.intersectsMarker&&!layout.intersectsAction,
     'Reaction shortcuts overlap a seat, marker, or action control at nine seats on mobile: '+JSON.stringify(layout));
   await one.screenshot('reactions-mobile-nine-seat');
+  for (const [width,height] of [[1440,900],[1024,768],[390,844],[320,568],[844,390],[667,375]]) {
+    await one.resize(width,height);
+    await sleep(150);
+    const result=await evaluate(one,()=>{
+      const summary=document.querySelector('#last-action-summary');
+      const hidden=summary.hidden, content=summary.innerHTML;
+      summary.hidden=false;
+      summary.innerHTML='<span class="last-action-actor">ReactionPlayer</span><strong class="last-action-detail">ALL IN · 1,200 chips</strong>';
+      const r=summary.getBoundingClientRect(),felt=document.querySelector('#felt').getBoundingClientRect();
+      const overlap=n=>{const b=n.getBoundingClientRect();return b.width>0&&b.height>0&&r.left<b.right&&r.right>b.left&&r.top<b.bottom&&r.bottom>b.top;};
+      const blocked=[...document.querySelectorAll('#seat-grid .seat-card, #board-cards, #pot-display, .reaction-shortcuts')].filter(overlap).map(n=>n.className);
+      const onFelt=r.left>=felt.left&&r.right<=felt.right&&r.top>=felt.top&&r.bottom<=felt.bottom;
+      summary.hidden=hidden;summary.innerHTML=content;
+      return {board:document.querySelector(".board-center").getBoundingClientRect().toJSON(),blind:document.querySelector("#blind-strip").getBoundingClientRect().toJSON(),blocked,onFelt,summary:{x:r.x,y:r.y,width:r.width,height:r.height},seats:[...document.querySelectorAll('#seat-grid .seat-card')].map(n=>{const b=n.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};})};
+    });
+    assert(result.onFelt&&!result.blocked.length,'Nine-seat felt announcement '+width+'x'+height+': '+JSON.stringify(result));
+    await one.screenshot('felt-nine-seat-'+width+'x'+height);
+  }
+  await one.resize(390,844);
+
 
   await click(one,'#hero-seat [data-send-reaction="🔥"]');
   await wait(two,()=>document.querySelectorAll('#reaction-burst-layer .reaction-particle').length>=12);
   const burst=await evaluate(two,()=>({count:document.querySelectorAll('#reaction-burst-layer .reaction-particle').length,
     emoji:document.querySelector('#reaction-burst-layer .reaction-particle')?.textContent}));
   assert(burst.count>=12&&burst.emoji==='🔥','The other client did not render the reaction burst.');
+  await sleep(1300);
+  const held=await evaluate(two,()=>[...document.querySelectorAll('#reaction-burst-layer .reaction-particle')].filter(n=>
+    parseFloat(getComputedStyle(n).opacity)>.9 && parseFloat(getComputedStyle(n).fontSize)>=30).length);
+  assert(held>=12,'The reaction faded or stayed too small before viewers could notice it.');
   await two.screenshot('reactions-burst-on-recipient');
+  await sleep(2200);
+  assert(await evaluate(two,()=>!document.querySelector('#reaction-burst-layer .reaction-particle')),
+    'Reaction particles were not cleaned up after the burst.');
+
   await one.reload();
   await wait(one,()=>document.querySelector('#hero-seat [data-send-reaction]')?.offsetWidth);
   await wait(one,()=>[...document.querySelectorAll('#hero-seat [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥❤️🦈');

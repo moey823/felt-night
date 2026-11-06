@@ -169,6 +169,14 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
     const board=document.querySelector('#felt .board-center');
     const panel=document.querySelector('#action-panel'),felt=document.querySelector('#felt');
     const errors=[];
+    const summary=document.querySelector('#last-action-summary');
+    if(summary && !summary.hidden) {
+      const r=rect(summary),f=rect(felt);
+      if(r.left<f.left || r.right>f.right || r.top<f.top || r.bottom>f.bottom) errors.push('action announcement outside felt');
+      for(const n of document.querySelectorAll('#seat-grid .seat-card, #board-cards, #pot-display, .reaction-shortcuts')) {
+        if(area(r,rect(n))>.5) errors.push('action announcement overlaps '+n.className);
+      }
+    }
     const boardCollisions=[];
     const clippedNames=[];
     const winnerOverflows=[];
