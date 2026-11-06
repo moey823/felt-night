@@ -601,23 +601,43 @@
     return earliest ? Math.max(40, earliest - serverNow + 35) : 0;
   }
 
+  function blindAnnouncementHoldRemainingMs(view) {
+    if (!view || String(view.street || "").toLowerCase() !== "showdown") return 0;
+    var rows = Array.isArray(view.showdown) ? view.showdown : [];
+    var deadline = null;
+    if (rows.length) {
+      var hand = view.hand || {};
+      deadline = view.showdown_until || hand.showdown_until;
+    } else {
+      var winners = Array.isArray(view.winners) ? view.winners : [];
+      var hasUncontestedWinner = winners.some(function (winner) {
+        return number(winner && winner.amount, 0) > 0;
+      });
+      if (hasUncontestedWinner) {
+        var completedHand = view.hand || {};
+        deadline = view.hand_complete_at || completedHand.hand_complete_at;
+      }
+    }
+    return deadline == null ? 0 : deadlineRemainingMs(view, deadline);
+  }
+
   function announceBlindLevel(announcement, view) {
     var node = byId("blind-announcement");
     if (!node) return;
     var remainingMs = announcementRemainingMs(view, announcement);
-    if (!announcement || remainingMs <= 0) {
+    var winnerHoldMs = blindAnnouncementHoldRemainingMs(view);
+    if (!announcement || remainingMs <= 0 || winnerHoldMs > 0) {
       clearBlindAnnouncement(false);
       return;
     }
     if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
     var blindText = "Blind level " + number(announcement.level, 1) + ": small blind " +
-      chips(announcement.small) + " chips, big blind " + chips(announcement.big) +
-      " chips. The next hand waits until this announcement ends.";
+      chips(announcement.small) + " chips, big blind " +
+      chips(announcement.big) + " chips. The next hand waits until this announcement ends.";
     if (node.textContent !== blindText) node.textContent = blindText;
     node.dataset.secondsRemaining = String(Math.ceil(remainingMs / 1000));
     node.hidden = false;
     syncTableAnnouncementRegion();
-    if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
     state.blindAnnouncementTimer = 0;
     if (!view.paused) {
       var tableId = String(view && view.id || state.activeTableId || "");
