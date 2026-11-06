@@ -1493,11 +1493,11 @@
 
   function cardSuit(rawSuit) {
     var s = String(rawSuit || "").toLowerCase();
-    if (s === "s" || s === "spades" || s === "♠") return { symbol: "♠", red: false };
-    if (s === "h" || s === "hearts" || s === "♥") return { symbol: "♥", red: true };
-    if (s === "d" || s === "diamonds" || s === "♦") return { symbol: "♦", red: true };
-    if (s === "c" || s === "clubs" || s === "♣") return { symbol: "♣", red: false };
-    return { symbol: "", red: false };
+    if (s === "s" || s === "spades" || s === "♠") return { symbol: "♠", name: "spades" };
+    if (s === "h" || s === "hearts" || s === "♥") return { symbol: "♥", name: "hearts" };
+    if (s === "d" || s === "diamonds" || s === "♦") return { symbol: "♦", name: "diamonds" };
+    if (s === "c" || s === "clubs" || s === "♣") return { symbol: "♣", name: "clubs" };
+    return { symbol: "", name: "" };
   }
 
   function playingCardHTML(card, small) {
@@ -1506,7 +1506,7 @@
     var suit = cardSuit(info.suit);
     var rank = String(info.rank || "").toUpperCase();
     var cls = small ? "mini-card" : "playing-card";
-    if (suit.red) cls += " red";
+    if (suit.name) cls += " suit-" + suit.name;
     if (small) return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="mini-rank">' + esc(rank) + '</b><span class="mini-suit">' + esc(suit.symbol) + '</span></span>';
     return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="rank">' + esc(rank) + '</b><span class="suit">' + esc(suit.symbol) + '</span></span>';
   }

@@ -669,7 +669,7 @@ body.gameplay-active #table-surface #felt .board-center {
 }
 #table-surface #board-cards .playing-card.placeholder { display: none; }
 #table-surface #board-cards .playing-card .rank { font-size: 18px; }
-#table-surface #board-cards .playing-card .suit { font-size: 16px; }
+#table-surface #board-cards .playing-card .suit { font-size: min(48cqh, 90cqw); }
 #table-surface #pot-display {
   display: inline-flex;
   align-items: center;
@@ -893,7 +893,7 @@ body.gameplay-active #table-surface #felt .board-center {
   body.gameplay-active #table-surface #felt .board-center { width: min(calc(100% - 24px), 216px); padding: 6px; border-radius: 12px; }
   #table-surface #board-cards .playing-card { width: clamp(31px, 9vw, 38px); height: clamp(44px, 12vw, 54px); border-radius: 6px; }
   #table-surface #board-cards .playing-card .rank { font-size: 15px; }
-  #table-surface #board-cards .playing-card .suit { font-size: 14px; }
+  #table-surface #board-cards .playing-card .suit { font-size: min(48cqh, 90cqw); }
   #table-surface #pot-display { min-width: 106px; min-height: 28px; padding: 4px 9px; font-size: 10px; }
   #table-surface #pot-display strong { font-size: 13px; }
   #table-surface #street-label { font-size: 9px; }
@@ -2251,7 +2251,7 @@ body.gameplay-active #app-panel #table-view #table-surface #board-cards {
 body.gameplay-active #app-panel #table-view #table-surface #board-cards:empty { visibility: hidden !important; }
 body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card { flex: 0 0 auto !important; width: 32px !important; height: 45px !important; border-radius: 5px !important; }
 body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .rank { font-size: 15px !important; }
-body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: 14px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: min(48cqh, 90cqw) !important; }
 body.gameplay-active #app-panel #table-view #table-surface #pot-display {
   display: inline-flex !important; align-items: center !important; justify-content: center !important; min-width: 88px !important;
   height: 22px !important; min-height: 22px !important; max-height: 22px !important; margin-top: 3px !important;
@@ -2383,7 +2383,7 @@ body.gameplay-active #chat-panel .chat-messages { min-height: 0 !important; heig
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers .seat-wager .wager-unit { display: none !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card { width: clamp(44px, 4.4vw, 58px) !important; height: clamp(60px, 5.6vw, 74px) !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .rank { font-size: 22px !important; }
-  body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: 20px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: min(48cqh, 90cqw) !important; }
   body.gameplay-active #app-panel #table-view #table-surface #board-cards { height: 78px !important; min-height: 78px !important; max-height: 78px !important; gap: 7px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt #blind-strip { width: min(340px, calc(100% - 18px)) !important; height: 26px !important; min-height: 26px !important; max-height: 26px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt #blind-strip .blind-tile { height: 26px !important; min-height: 26px !important; max-height: 26px !important; }
@@ -2414,7 +2414,7 @@ body.gameplay-active #chat-panel .chat-messages { min-height: 0 !important; heig
   body.gameplay-active #app-panel #table-view #table-surface #felt #board-cards { height: 48px !important; min-height: 48px !important; max-height: 48px !important; margin-top: 0 !important; gap: 2px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card { width: 32px !important; height: 45px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .rank { font-size: 13px !important; }
-  body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: 12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: min(48cqh, 90cqw) !important; }
   body.gameplay-active #app-panel #table-view #table-surface > #action-panel:not([hidden]) { grid-row: 1 !important; grid-column: 2 !important; align-self: center !important; width: 100% !important; height: 108px !important; min-height: 108px !important; max-height: 108px !important; padding: 0 !important; }
   body.gameplay-active #app-panel #table-view #table-surface > #action-panel[hidden] { display: none !important; }
   body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls { grid-template-rows: 44px 28px 32px !important; height: 108px !important; min-height: 108px !important; max-height: 108px !important; }
@@ -2519,5 +2519,25 @@ body.gameplay-active #chat-panel .chat-messages { min-height: 0 !important; heig
   body.gameplay-active #app-panel #table-view #table-surface #felt #board-cards { justify-content: center !important; gap: 2px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card { width: 26px !important; height: 37px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .rank { font-size: 13px !important; }
-  body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: 12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt .playing-card .suit { font-size: min(48cqh, 90cqw) !important; }
 }
+
+/* Four-color deck, shared by the board, hole cards, and hand replays. */
+:is(.playing-card, .mini-card).suit-spades { color: #202923 !important; }
+:is(.playing-card, .mini-card).suit-hearts { color: #b42d36 !important; }
+:is(.playing-card, .mini-card).suit-clubs { color: #146b43 !important; }
+:is(.playing-card, .mini-card).suit-diamonds { color: #245bb5 !important; }
+
+/* Scale the suit to the actual card, including compact landscape layouts. */
+.playing-card:not(.placeholder), .mini-card:not(.back):not(.placeholder) { container-type: size; }
+body .playing-card .suit {
+  font-size: min(48cqh, 90cqw) !important;
+  font-weight: 900;
+  line-height: .9;
+}
+body .mini-card .mini-suit {
+  font-size: min(50cqh, 90cqw) !important;
+  font-weight: 900;
+  line-height: .9;
+}
+body .mini-card .mini-rank { font-size: min(17px, 36cqh) !important; line-height: 1; }
