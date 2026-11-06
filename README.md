@@ -50,7 +50,16 @@ Changing the room invite and restarting invalidates existing sessions. Player ac
 
 ## Private-room admin
 
-Set `FELT_NIGHT_ADMIN_USERNAME=admin` only behind a trusted private network such as tailnet-only Tailscale Serve. Sign in as `admin` with an empty password. This is a configuration account, not a player account. Leave the variable unset on a public deployment; do not enable it through Tailscale Funnel. An existing player account with the configured admin username causes startup to fail rather than changing that player's permissions.
+Set `FELT_NIGHT_ADMIN_USERNAME=admin` only behind a trusted private network such as tailnet-only Tailscale Serve. Sign in as `admin` with an empty password. This is a configuration account, not a player account. For a public player deployment, either leave the variable unset or configure the separate private admin listener below. Never expose an admin-enabled listener through Tailscale Funnel. An existing player account with the configured admin username causes startup to fail rather than changing that player's permissions.
+
+For public players and private admin in the same room, add both
+`--admin-port 18944 --admin-origin https://room.example.com:9465` to the server command.
+Keep `--port 18943 --public-origin https://room.example.com:8443` for players.
+The primary listener then rejects admin login and admin sessions, including sessions
+copied from the private listener. The second listener shares the same room store and
+uses a separate session cookie. Publish only the player listener; route the admin
+listener exclusively through your private network. See [the deployment guide](deploy/README.md)
+for a Tailscale example.
 
 Global configuration is stored with the room database. Normal players cannot change it. Removing the environment setting disables admin access and revokes its sessions.
 

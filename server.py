@@ -1138,7 +1138,7 @@ class Handler(BaseHTTPRequestHandler):
         found = []
         for part in raw.split(";"):
             name, sep, value = part.strip().partition("=")
-            if sep and name.strip() == COOKIE_NAME:
+            if sep and name.strip() == self.app.cookie_name:
                 found.append(value.strip().strip('"'))
         if len(found) != 1:
             return None
@@ -1154,7 +1154,10 @@ class Handler(BaseHTTPRequestHandler):
                 not re.fullmatch(r"[0-9a-f]{64}", proof) or
                 not hmac.compare_digest(proof, self.app.store.session_proof(cookie_token))):
             return None
-        return self.app.store.authenticate(cookie_token), cookie_token
+        player = self.app.store.authenticate(cookie_token)
+        if player and player.get("is_admin") and not self.app.allow_admin:
+            return None
+        return player, cookie_token
 
     def _require_player(self, require_account=True):
         session = self._player()
@@ -1253,7 +1256,7 @@ class Handler(BaseHTTPRequestHandler):
         headers = None
         if set_cookie:
             cookie = ("%s=%s; Path=/poker/; HttpOnly; SameSite=Strict; Max-Age=%d" %
-                      (COOKIE_NAME, token, SESSION_TTL))
+                      (self.app.cookie_name, token, SESSION_TTL))
             if self.app.secure_cookie:
                 cookie += "; Secure"
             headers = {"Set-Cookie": cookie}
@@ -1467,7 +1470,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(password, str) or len(password) > 256:
                     password = ""
                 if (self.app.admin_username is not None and
-                        username == self.app.admin_username and password == ""):
+                        username == self.app.admin_username and password == "" and
+                        self.app.allow_admin):
                     result = self.app.store.login_admin(now)
                 elif username == self.app.admin_username:
                     result = None
@@ -1512,7 +1516,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/poker/api/logout":
                 self.app.store.logout(token)
                 self._json(200, {"ok": True},
-                           {"Set-Cookie": COOKIE_NAME +
+                           {"Set-Cookie": self.app.cookie_name +
                             "=; Path=/poker/; HttpOnly; SameSite=Strict; Max-Age=0" +
                             ("; Secure" if self.app.secure_cookie else "")})
                 return
@@ -1842,6 +1846,21 @@ class App:
         )
         self.public_origin, self.public_netloc, self.secure_cookie = _parse_origin(args.public_origin)
         self.store = Store(args.data_dir, self.room_password, self.admin_username)
+        self.allow_admin = True
+        self.cookie_name = COOKIE_NAME
+
+    def private_admin_app(self, origin):
+        """Share one store and ticker; enforce privileges by listener, never headers."""
+        if self.admin_username is None:
+            raise RuntimeError("--admin-origin requires FELT_NIGHT_ADMIN_USERNAME")
+        private = copy.copy(self)
+        private.public_origin, private.public_netloc, private.secure_cookie = _parse_origin(origin)
+        if private.public_netloc == self.public_netloc:
+            raise RuntimeError("admin and player origins must use different hosts or ports")
+        private.allow_admin = True
+        private.cookie_name = COOKIE_NAME + "_admin"
+        self.allow_admin = False
+        return private
 
 
 def _background_ticks(store, stop_event):
@@ -1858,6 +1877,10 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=18943)
     parser.add_argument("--public-origin", required=True,
                         help="exact browser origin, e.g. https://host:8443")
+    parser.add_argument("--admin-port", type=int,
+                        help="separate loopback listener for private room administration")
+    parser.add_argument("--admin-origin",
+                        help="exact private HTTPS origin; never expose this listener publicly")
     parser.add_argument("--data-dir", required=True,
                         help="protected runtime data directory for SQLite")
     args = parser.parse_args(argv)
@@ -1868,17 +1891,35 @@ def main(argv=None):
         parser.error("--host must be a numeric loopback address")
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
+    if (args.admin_port is None) != (args.admin_origin is None):
+        parser.error("--admin-port and --admin-origin must be supplied together")
+    if args.admin_port is not None and (
+            not 1 <= args.admin_port <= 65535 or args.admin_port == args.port):
+        parser.error("--admin-port must be a distinct port between 1 and 65535")
     os.umask(0o077)
+    servers = []
     try:
         app = App(args)
         server = LimitedThreadingHTTPServer((args.host, args.port), Handler, app)
+        servers.append(server)
+        if args.admin_port is not None:
+            private = app.private_admin_app(args.admin_origin)
+            servers.append(LimitedThreadingHTTPServer(
+                (args.host, args.admin_port), Handler, private))
     except Exception as exc:
+        for listener in servers:
+            listener.server_close()
         print("Felt Night startup failed: %s" % exc, file=sys.stderr)
         return 1
 
     stop_event = threading.Event()
     ticker = threading.Thread(target=_background_ticks, args=(app.store, stop_event), daemon=True)
     ticker.start()
+    private_threads = []
+    for listener in servers[1:]:
+        thread = threading.Thread(target=listener.serve_forever, daemon=True)
+        thread.start()
+        private_threads.append(thread)
     print("Felt Night listening on %s:%d for %s" %
           (args.host, args.port, app.public_origin), flush=True)
     try:
@@ -1887,7 +1928,12 @@ def main(argv=None):
         pass
     finally:
         stop_event.set()
-        server.server_close()
+        for listener in servers[1:]:
+            listener.shutdown()
+        for listener in servers:
+            listener.server_close()
+        for thread in private_threads:
+            thread.join(timeout=2.0)
         ticker.join(timeout=2.0)
     return 0
 
