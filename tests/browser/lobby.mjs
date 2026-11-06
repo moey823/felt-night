@@ -70,7 +70,8 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
     window.fetch = async function(input, init) {
       const response = await originalFetch(input, init);
       const url = typeof input === 'string' ? input : input.url;
-      if (url === '/poker/api/tables' && response.ok) {
+      const method = String((init && init.method) || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+      if (url === '/poker/api/tables' && method === 'GET' && response.ok) {
         const payload = await response.clone().json();
         payload.tables.push(
           {id:'e'.repeat(32), status:'playing', name:'In-progress fixture', host_name:'Test', max_seats:2, seated_count:1, small_blind:10, big_blind:20},
@@ -122,8 +123,8 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
     sourceAfterNewGame.tableHidden,
     'New game replaced the source lobby with inline gameplay: ' + JSON.stringify(sourceAfterNewGame));
   await setupPage.close();
-  await wait(hostPage, () => [...document.querySelectorAll('[data-open-table]')]
-    .some(node => node.textContent.includes(tableName)));
+  await wait(hostPage, name => [...document.querySelectorAll('[data-open-table]')]
+    .some(node => node.textContent.includes(name)), tableName);
 
   await clickTrusted(hostPage, '[data-open-table="' + routeTableId + '"]');
   const cardPage = await hostPage.waitForPopup();

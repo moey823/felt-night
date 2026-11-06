@@ -146,7 +146,9 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   await wait(hostPage, () => document.querySelector('#table-settings-dialog')?.open === true &&
     Boolean(document.querySelector('#settings-table-name')?.offsetWidth));
   const tableName = await evaluate(hostPage, () => document.querySelector('#settings-table-name').value);
-  const tableId = await evaluate(hostPage, () => new URLSearchParams(location.hash.slice(1)).get('table'));
+  const tableId = await evaluate(hostPage, () =>
+    new URLSearchParams(location.search).get('table') ||
+    new URLSearchParams(location.hash.slice(1)).get('table'));
   assert(tableId && tableName, 'New game did not open its host setup dialog immediately.');
   assert(await visible(hostPage, '#settings-buy-in') && await visible(hostPage, '#settings-small-blind') &&
     await visible(hostPage, '#settings-big-blind') && await visible(hostPage, '#settings-starting-stack'),
