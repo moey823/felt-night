@@ -2188,6 +2188,31 @@
     return names[action] || [action.toUpperCase() + value, action.toUpperCase() + value];
   }
 
+  function actionBadgeParts(actionState) {
+    var event = actionState && actionState.rawEvent;
+    if (!event) return { verb: String(actionState && (actionState.compactLabel || actionState.label) || ""), amount: "" };
+    var action = String(event.action || "action").toLowerCase().replace(/[ -]+/g, "_");
+    var paid = number(event.amount, 0);
+    var streetTotal = number(event.street_contribution, paid);
+    var actionTotal = action === "bet" || action === "raise" || action === "raise_to" || action === "all_in" || action === "allin" ? streetTotal : paid;
+    var verbs = {
+      fold: "FOLD",
+      check: "CHECK",
+      call: "CALL",
+      bet: "BET",
+      raise: "RAISE",
+      raise_to: "RAISE",
+      all_in: "ALL-IN",
+      allin: "ALL-IN",
+      small_blind: "SB",
+      big_blind: "BB",
+      ante: "ANTE"
+    };
+    var amount = actionTotal > 0 ? tableChipValue(actionTotal, state.tableView) : "";
+    if (amount.length > 4 && !tableUsesBigBlinds(state.tableView)) amount = winnerChipValue(actionTotal, state.tableView);
+    return { verb: verbs[action] || action.toUpperCase(), amount: amount };
+  }
+
   function lastPlayerAction(view) {
     return (Array.isArray(view && view.events) ? view.events : []).slice().reverse().find(function (event) {
       return event.type === "action" && /^(fold|check|call|bet|raise|raise_to|all_in|allin)$/.test(String(event.action || ""));
@@ -2736,9 +2761,7 @@
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
       var seatNo = String(Math.floor(number(rawSeatNo, i)));
-      var actionState = actionForSeat(seat, seatNo);
-      if (acting) actionState = { label: "TO ACT", compactLabel: "TO ACT", kind: "turn" };
-      else if (!actionState && allIn) actionState = { label: "ALL-IN", compactLabel: "ALL-IN", kind: "all_in" };
+      var actionState = currentHand && !showdown ? actionForSeat(seat, seatNo) : null;
       var cards = [];
       if (isMe) {
         cards = cardArray(viewer.hole_cards);
@@ -2789,15 +2812,18 @@
       }
       if (!equityHtml) equityHtml = '<div class="seat-equity is-empty" aria-hidden="true"></div>';
 
-      var stackContents = '<span class="seat-stack-amount">' + esc(tableChipValue(stack)) + '</span> <span class="seat-number">' + esc(tableChipUnit()) + '</span>';
+      var stackDisplayValue = tableChipValue(stack, view);
+      if (stackDisplayValue.length > 4) stackDisplayValue = winnerChipValue(stack, view);
+      var stackExactLabel = "Stack: " + tableChips(stack, view);
+      var stackContents = '<span class="seat-stack-amount">' + esc(stackDisplayValue) + '</span> <span class="seat-number">' + esc(tableChipUnit(view)) + '</span>';
       var stackHtml = "";
       if (isMe) {
         var nextChipDisplay = tableUsesBigBlinds() ? "chips" : "big blinds";
         var stackLabel = "Your stack: " + tableChips(stack) + ". Activate to display all table chip amounts in " + nextChipDisplay + ".";
         stackHtml = '<button class="seat-stack" type="button" data-chip-display-toggle aria-pressed="' +
-          String(tableUsesBigBlinds()) + '" aria-label="' + esc(stackLabel) + '">' + stackContents + '</button>';
+          String(tableUsesBigBlinds(view)) + '" aria-label="' + esc(stackLabel) + '" title="' + esc(stackExactLabel) + '">' + stackContents + '</button>';
       } else {
-        stackHtml = '<div class="seat-stack">' + stackContents + '</div>';
+        stackHtml = '<div class="seat-stack" aria-label="' + esc(stackExactLabel) + '" title="' + esc(stackExactLabel) + '">' + stackContents + '</div>';
       }
       var cardContents = "";
       var cardRowClass = "seat-cards";
@@ -2812,10 +2838,6 @@
       }
       var cardHtml = '<div class="' + cardRowClass + '"' + (cardRowClass.indexOf("is-empty") >= 0 ? ' aria-hidden="true"' : '') + '>' + cardContents + '</div>';
 
-      var tags = (bot ? '<span class="seat-label bot-label">TEST BOT</span>' : '') +
-        (sittingOut ? '<span class="seat-label sit-out-label">SITTING OUT</span>' : '') +
-        (eliminated ? '<span class="seat-label eliminated-label">OUT</span>' : '');
-      var tagsMarkup = '<div class="seat-tags"' + (tags ? '' : ' aria-hidden="true"') + '>' + tags + '</div>';
       var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
       var seatAvatarUrl = Object.prototype.hasOwnProperty.call(seat, "avatar_url")
         ? String(seat.avatar_url || "") : (isMe && state.player ? String(state.player.avatar_url || "") : "");
@@ -2827,11 +2849,26 @@
         ? '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>'
         : "";
       var markerHtml = "";
+      var actionMarkup = "";
+      var statusText = label === "Sitting out" ? "Sit out" : label;
+      var statusAccessible = label + (bot ? (label ? ", " : "") + "Test bot" : "");
+      if (bot) statusText += (statusText ? " · " : "") + "BOT";
+      if (statusText) markerHtml = '<span class="seat-status" aria-label="' + esc(statusAccessible || statusText) + '" title="' + esc(statusAccessible || statusText) + '">' + esc(statusText) + '</span>';
+      var turnMarkup = "";
       if (actionState) {
-        var turnClockMarkup = acting && state.seatTurnClockKey
+        var badge = actionBadgeParts(actionState);
+        var badgeText = badge.verb + (badge.amount ? " " + badge.amount : "");
+        var actionDescription = String(actionState.label || actionState.compactLabel || badgeText);
+        actionMarkup = '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionDescription) + '" title="' + esc(actionDescription) + '">' +
+          '<span class="seat-action-verb">' + esc(badge.verb) + '</span>' +
+          (badge.amount ? '<span class="seat-action-value">' + esc(badge.amount) + '</span>' : '') + '</span>';
+      }
+      if (acting) {
+        var turnClockMarkup = state.seatTurnClockKey
           ? '<span class="seat-turn-clock" data-turn-clock-seat="' + esc(seatNo) + '" aria-label="Time left">' + esc(turnClockLabel()) + '</span>'
           : '';
-        markerHtml += '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionState.label) + '"><span class="seat-action-full">' + esc(actionState.label) + '</span><span class="seat-action-short">' + esc(actionState.compactLabel || actionState.label) + '</span>' + turnClockMarkup + '</span>';
+        turnMarkup = '<span class="seat-turn-indicator' + (turnClockMarkup ? ' has-clock' : '') + '" data-turn-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + " to act") + '">' +
+          '<span class="seat-turn-label">TO ACT</span>' + turnClockMarkup + '</span>';
       }
       var wager = number(fx.displayWagers[seatNo], 0);
       if (!fx.eventAware && !wager) wager = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
@@ -2843,17 +2880,19 @@
       }
       var shownRank = showdown && showdownRow && cards.length
         ? handRankName(showdownRow, view.hand_ranks || {}) : "";
-      if (shownRank) {
+      if (shownRank && !statusText) {
         markerHtml = '<span class="seat-hand-strength" data-hand-strength="' + esc(id) +
           '" aria-label="' + esc(seatName + ": " + shownRank) + '"><span>' + esc(shownRank) + '</span></span>';
       }
-      var markerLane = '<div class="seat-local-markers">' + seatAvatar + markerHtml + '</div>';
+      var markerLane = '<div class="seat-local-markers">' + markerHtml + '</div>';
+      var playerInfo = '<div class="seat-player-info">' + seatAvatar +
+        '<div class="seat-player-meta">' + stackHtml + markerLane + '</div></div>';
+      var footerContent = actionMarkup || equityHtml;
+      var playerFooter = '<div class="seat-footer' + (actionMarkup ? ' has-action' : '') + '">' + footerContent + '</div>';
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
-        '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' + dealerChip +
-        tagsMarkup +
-        stackHtml +
-        '<div class="seat-detail"><span>' + esc(label) + '</span></div>' +
-        cardHtml + markerLane + equityHtml +
+        cardHtml +
+        '<div class="seat-top' + (acting ? ' has-turn' : '') + '"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span>' + turnMarkup + '</div>' + dealerChip +
+        playerInfo + playerFooter +
       '</div>';
     }
 
@@ -2927,7 +2966,6 @@
       });
     }
 
-    positionLastAction();
     fx.wagerPositions = {};
     grid.querySelectorAll(".seat-wager").forEach(function (node) {
       var seatNo = String(node.getAttribute("data-seat-no"));

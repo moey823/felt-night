@@ -2991,3 +2991,1066 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers .seat-wager .wager-stack { display: none !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers > .seat-wager { gap: 1px !important; padding-inline: 1px !important; }
 }
+
+
+/* Player-container display: larger cards, portraits and readable seat-local state. */
+@media (min-width: 821px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: 56px 13px minmax(40px, 1fr) 14px !important;
+    row-gap: 0 !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 56px 13px minmax(44px, 1fr) 14px !important;
+  }
+}
+@media (max-width: 820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: 40px 12px minmax(32px, 1fr) 12px !important;
+    row-gap: 0 !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 42px 12px minmax(34px, 1fr) 12px !important;
+  }
+}
+@media (max-width: 340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 35px 12px minmax(34px, 1fr) 12px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 38px 12px minmax(36px, 1fr) 12px !important;
+  }
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+  grid-row: 1 !important;
+  grid-column: 1 / -1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 3px !important;
+  width: 100% !important;
+  height: 56px !important;
+  min-height: 56px !important;
+  max-height: 56px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards.is-empty {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top {
+  grid-row: 2 !important;
+  grid-column: 1 / -1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name {
+  max-width: 100% !important;
+  overflow: hidden !important;
+  color: #f6f4e7 !important;
+  font-size: 11px !important;
+  font-weight: 760 !important;
+  line-height: 1 !important;
+  text-align: center !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info {
+  grid-row: 3 !important;
+  grid-column: 1 / -1 !important;
+  display: grid !important;
+  grid-template-columns: 42px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 4px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar {
+  box-sizing: border-box !important;
+  position: relative !important;
+  display: grid !important;
+  place-items: center !important;
+  justify-self: center !important;
+  align-self: center !important;
+  width: 42px !important;
+  height: 42px !important;
+  border: 2px solid rgba(235, 203, 135, .9) !important;
+  border-radius: 50% !important;
+  background: rgba(18, 37, 28, .98) !important;
+  color: #f0d89e !important;
+  font-size: 17px !important;
+  line-height: 1 !important;
+  box-shadow: 0 2px 7px rgba(0, 0, 0, .5), 0 0 0 2px rgba(18, 37, 28, .72) !important;
+  transform: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar .avatar-image {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  border-radius: 50% !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta {
+  display: grid !important;
+  grid-template-rows: 14px minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 1px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta > .seat-stack {
+  grid-row: 1 !important;
+  grid-column: 1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: 14px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 14px !important;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  overflow: visible !important;
+  color: #f1e4bf !important;
+  font-size: 12px !important;
+  font-weight: 780 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) .seat-player-meta > .seat-stack[data-chip-display-toggle] {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer {
+  grid-row: 4 !important;
+  grid-column: 1 / -1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 3px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-detail {
+  grid-column: 1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 2px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  color: #e5dfc6 !important;
+  font-size: 9px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-detail-text {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-tags[aria-hidden="true"] {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-tags {
+  display: inline-flex !important;
+  align-items: center !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-label {
+  color: #e6d7ad !important;
+  font-size: 7px !important;
+  line-height: 1 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-equity,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-result {
+  grid-column: 2 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 1px 2px !important;
+  overflow: hidden !important;
+  border-radius: 5px !important;
+  font-size: 8px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-equity.is-empty {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-label { font-size: 9px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-amount { font-size: 10px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-equity-win strong { font-size: 10px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers {
+  grid-row: 2 !important;
+  grid-column: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-template-rows: repeat(3, minmax(0, 1fr)) !important;
+  align-content: stretch !important;
+  align-items: center !important;
+  gap: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action:not(.kind-turn),
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action.kind-turn {
+  grid-row: 1 !important;
+  grid-column: 1 !important;
+  position: static !important;
+  inset: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 2px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  overflow: visible !important;
+  border: 1px solid rgba(225, 237, 227, .25) !important;
+  border-radius: 4px !important;
+  background: rgba(6, 17, 12, .88) !important;
+  box-shadow: none !important;
+  color: #f4f3df !important;
+  font-size: 8px !important;
+  font-weight: 850 !important;
+  line-height: 1 !important;
+  letter-spacing: 0 !important;
+  text-shadow: none !important;
+  white-space: nowrap !important;
+  transform: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action.kind-fold {
+  color: #cbd2c8 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action.kind-all_in {
+  border-color: rgba(230, 197, 141, .7) !important;
+  color: #fff0c3 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-action-verb,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-action-value {
+  display: inline !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  clip: auto !important;
+  clip-path: none !important;
+  color: inherit !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-action-value { font-variant-numeric: tabular-nums !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-turn-indicator {
+  grid-row: 2 !important;
+  grid-column: 1 !important;
+  position: static !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 3px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(197, 227, 124, .54) !important;
+  border-radius: 4px !important;
+  background: rgba(37, 63, 38, .96) !important;
+  color: #e2f1bd !important;
+  font-size: 8px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-turn-indicator .seat-turn-clock {
+  display: inline !important;
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  color: #fff1c9 !important;
+  font-size: 8px !important;
+  font-variant-numeric: tabular-nums !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-turn-indicator.has-clock .seat-turn-label { display: none !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-wager {
+  grid-row: 3 !important;
+  grid-column: 1 !important;
+  position: static !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 2px !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  overflow: visible !important;
+  border: 1px solid rgba(241, 207, 130, .34) !important;
+  border-radius: 4px !important;
+  background: rgba(44, 35, 21, .94) !important;
+  color: #f0d89e !important;
+  font-size: 8px !important;
+  line-height: 1 !important;
+  transform: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers .seat-wager .wager-stack,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers .seat-wager .wager-unit { display: none !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers .seat-wager strong {
+  display: inline !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+  color: inherit !important;
+  font-size: 9px !important;
+  font-weight: 850 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-hand-strength {
+  grid-row: 1 / span 3 !important;
+  grid-column: 1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 2px !important;
+  overflow: hidden !important;
+  color: #f2dea9 !important;
+  font-size: 8px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card {
+  position: relative !important;
+  display: block !important;
+  flex: 0 0 auto !important;
+  width: 40px !important;
+  height: 56px !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  border-radius: 5px !important;
+  font-size: 15px !important;
+  line-height: 1 !important;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, .34) !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left: -4px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card:nth-child(1) { z-index: 1 !important; transform: rotate(-2deg) !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card:nth-child(2) { z-index: 2 !important; transform: rotate(2deg) !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card:not(.back):not(.placeholder) {
+  display: block !important;
+  padding: 0 !important;
+  background: #fbfaf1 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card .mini-rank {
+  position: absolute !important;
+  top: 3px !important;
+  left: 4px !important;
+  display: block !important;
+  color: inherit !important;
+  font-family: Georgia, serif !important;
+  font-size: 15px !important;
+  font-weight: 900 !important;
+  line-height: .95 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+  position: absolute !important;
+  top: 18px !important;
+  left: 4px !important;
+  display: block !important;
+  color: inherit !important;
+  font-size: 12px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+}
+@media (max-width: 820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards {
+    height: 40px !important; min-height: 40px !important; max-height: 40px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    height: 42px !important; min-height: 42px !important; max-height: 42px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card {
+    width: 28px !important; height: 40px !important; font-size: 12px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card {
+    width: 30px !important; height: 42px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info { grid-template-columns: 30px minmax(0, 1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width: 30px !important; height: 30px !important; font-size: 13px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta { grid-template-rows: 11px minmax(0, 1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta > .seat-stack {
+    height: 11px !important; min-height: 11px !important; max-height: 11px !important; font-size: 10px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-detail { font-size: 8px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-equity,
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-result { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-label { font-size: 8px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-amount { font-size: 9px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-equity-win strong { font-size: 9px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action:not(.kind-turn),
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action.kind-turn { font-size: 7.5px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-turn-indicator { font-size: 7.5px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers .seat-turn-clock { font-size: 7.5px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-wager { font-size: 7.5px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers .seat-wager strong { font-size: 8px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card .mini-rank { top: 3px !important; left: 3px !important; font-size: 12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card .mini-suit { top: 16px !important; left: 3px !important; font-size: 10px !important; }
+}
+@media (max-width: 340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards { height: 35px !important; min-height: 35px !important; max-height: 35px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { height: 38px !important; min-height: 38px !important; max-height: 38px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card { width: 26px !important; height: 35px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card { width: 28px !important; height: 38px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info { grid-template-columns: 27px minmax(0, 1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar { width: 27px !important; height: 27px !important; font-size: 12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta { grid-template-rows: 10px minmax(0, 1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta > .seat-stack { height: 10px !important; min-height: 10px !important; max-height: 10px !important; font-size: 9px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top .seat-name { font-size: 10px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action:not(.kind-turn),
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action.kind-turn { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-turn-indicator { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers .seat-turn-clock { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-wager { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card .mini-rank { top: 2px !important; left: 3px !important; font-size: 11px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card .mini-suit { top: 15px !important; left: 3px !important; font-size: 9px !important; }
+}
+@media (max-width: 360px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size: 10px !important; }
+}
+/* Keep screen-reader play-by-play without a visible panel over the felt. */
+body.gameplay-active #app-panel #table-view #table-surface #felt .last-action-summary:not([hidden]) {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  z-index: -1 !important;
+  display: block !important;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 1px !important;
+  min-height: 1px !important;
+  max-width: 1px !important;
+  max-height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: 0 !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt .last-action-summary:not([hidden]) > * {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
+}
+
+
+/* Screenshot pass: keep turn timing next to names and give action/wager two rows. */
+@media (min-width: 821px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 56px 13px minmax(40px, 1fr) 14px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 62px 13px minmax(40px, 1fr) 14px !important;
+  }
+}
+@media (max-width: 820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 40px 12px minmax(30px, 1fr) 12px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 45px 12px minmax(30px, 1fr) 12px !important;
+  }
+}
+@media (max-width: 340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 35px 12px minmax(30px, 1fr) 12px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 42px 12px minmax(32px, 1fr) 12px !important;
+  }
+}
+@media (max-height: 450px) and (orientation: landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) {
+    grid-template-rows: 40px 12px minmax(32px, 1fr) 12px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) {
+    grid-template-rows: 45px 12px minmax(31px, 1fr) 12px !important;
+  }
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+  height: 62px !important;
+  min-height: 62px !important;
+  max-height: 62px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card {
+  width: 44px !important;
+  height: 62px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name-wrap {
+  width: auto !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  justify-content: center !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .seat-top {
+  padding-right: 0 !important;
+  justify-content: center !important;
+  gap: 3px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .seat-top .seat-name-wrap {
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: 1 1 auto !important;
+  margin: 0 !important;
+  justify-content: center !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+  position: static !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 25px !important;
+  max-width: 42px !important;
+  height: 11px !important;
+  min-height: 11px !important;
+  max-height: 11px !important;
+  margin: 0 !important;
+  padding: 0 3px !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(197, 227, 124, .62) !important;
+  border-radius: 4px !important;
+  background: rgba(20, 39, 27, .94) !important;
+  color: #f0e5c6 !important;
+  font-size: 7.5px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35) !important;
+  transform: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator.has-clock .seat-turn-label {
+  display: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top .seat-turn-clock {
+  display: inline !important;
+  flex: 0 0 auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  color: #fff1c9 !important;
+  font-size: inherit !important;
+  font-variant-numeric: tabular-nums !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card { width: 44px !important; height: 62px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers {
+  grid-template-rows: repeat(2, minmax(0, 1fr)) !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-wager {
+  grid-row: 2 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-hand-strength {
+  grid-row: 1 / span 2 !important;
+}
+@media (max-width: 820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    height: 45px !important; min-height: 45px !important; max-height: 45px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card {
+    width: 32px !important; height: 45px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info {
+    grid-template-columns: 32px minmax(0, 1fr) !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width: 32px !important; height: 32px !important; font-size: 14px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+    min-width: 23px !important; max-width: 32px !important; height: 10px !important; min-height: 10px !important; max-height: 10px !important;
+    padding-inline: 2px !important; font-size: 7px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top .seat-turn-clock { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action:not(.kind-turn),
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-action.kind-turn {
+    font-size: 8px !important;
+    letter-spacing: -.025em !important;
+  }
+}
+@media (max-width: 340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    height: 42px !important; min-height: 42px !important; max-height: 42px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card {
+    width: 30px !important; height: 42px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info {
+    grid-template-columns: 30px minmax(0, 1fr) !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width: 30px !important; height: 30px !important; font-size: 13px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+    min-width: 21px !important; max-width: 27px !important; height: 10px !important; min-height: 10px !important; max-height: 10px !important;
+    font-size: 6.5px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top .seat-turn-clock { font-size: 6.5px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size: 9px !important; }
+}
+@media (max-height: 450px) and (orientation: landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards {
+    height: 45px !important; min-height: 45px !important; max-height: 45px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card {
+    width: 32px !important; height: 45px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info {
+    grid-template-columns: 32px minmax(0, 1fr) !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width: 32px !important; height: 32px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card {
+    width: 28px !important; height: 40px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info {
+    grid-template-columns: 30px minmax(0, 1fr) !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width: 30px !important; height: 30px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+    min-width: 22px !important; max-width: 30px !important; height: 10px !important; min-height: 10px !important; max-height: 10px !important;
+    padding-inline: 2px !important; font-size: 7px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top .seat-turn-clock { font-size: 7px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size: 9px !important; }
+}
+
+
+/* Keep larger seat content within the original player-container bounds. */
+
+@media (min-width:821px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:56px 13px minmax(0,1fr) 18px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:62px 13px minmax(0,1fr) 18px !important; }
+}
+@media (max-width:820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:40px 12px minmax(0,1fr) 16px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:45px 12px minmax(0,1fr) 16px !important; }
+}
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:35px 12px minmax(0,1fr) 18px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:42px 12px minmax(0,1fr) 18px !important; }
+}
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:40px 12px minmax(0,1fr) 16px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:45px 12px minmax(0,1fr) 16px !important; }
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-info { min-height:0 !important; overflow:visible !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta { min-height:0 !important; grid-template-rows:14px minmax(0,1fr) !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta > .seat-stack {
+  justify-content:flex-start !important; padding:0 !important; overflow:hidden !important;
+  font-size:11px !important; text-align:left !important; text-overflow:ellipsis !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-stack-amount { min-width:0 !important; overflow:hidden !important; text-overflow:ellipsis !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers {
+  grid-template-columns:minmax(0,1fr) !important; grid-template-rows:repeat(2,minmax(0,1fr)) !important;
+  align-items:center !important; gap:0 !important; min-height:0 !important; overflow:hidden !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-status {
+  grid-row:1 !important; grid-column:1 !important; display:block !important; min-width:0 !important;
+  overflow:hidden !important; color:#e8e1ca !important; font-size:8px !important; font-weight:780 !important;
+  line-height:1 !important; text-align:left !important; text-overflow:ellipsis !important; white-space:nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-wager {
+  grid-row:2 !important; grid-column:1 !important; justify-self:start !important; max-width:100% !important; overflow:hidden !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer {
+  display:flex !important; align-items:center !important; justify-content:center !important; width:100% !important;
+  min-width:0 !important; min-height:0 !important; height:100% !important; margin:0 !important; padding:0 !important; overflow:visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-action {
+  box-sizing:border-box !important; display:flex !important; align-items:center !important; justify-content:center !important;
+  gap:4px !important; width:100% !important; max-width:100% !important; min-width:0 !important; height:100% !important;
+  max-height:100% !important; margin:0 !important; padding:0 5px !important; overflow:visible !important;
+  border:1px solid rgba(225,237,227,.34) !important; border-radius:5px !important; background:rgba(6,17,12,.88) !important;
+  color:#f4f3df !important; font-size:10px !important; font-weight:850 !important; line-height:1 !important;
+  letter-spacing:0 !important; white-space:nowrap !important; box-shadow:none !important; position:static !important; transform:none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-action-verb,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-action-value { display:inline !important; min-width:0 !important; margin:0 !important; padding:0 !important; overflow:visible !important; font-size:inherit !important; font-weight:inherit !important; line-height:1 !important; white-space:nowrap !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-equity,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-result {
+  display:flex !important; align-items:center !important; justify-content:center !important; gap:5px !important;
+  width:100% !important; height:100% !important; min-width:0 !important; min-height:0 !important; max-height:none !important;
+  margin:0 !important; padding:0 4px !important; overflow:hidden !important; border-radius:5px !important;
+  font-size:10px !important; line-height:1 !important; white-space:nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-equity.is-empty { display:none !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-label { font-size:10px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-amount { font-size:12px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:11px !important; line-height:1.1 !important; text-align:center !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn { justify-content:space-between !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn .seat-name-wrap { flex:1 1 auto !important; width:100% !important; min-width:0 !important; justify-content:flex-start !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn .seat-name { text-align:left !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+  flex:0 0 auto !important; width:auto !important; min-width:0 !important; max-width:38px !important;
+  height:12px !important; min-height:12px !important; max-height:12px !important; margin:0 !important; padding:0 3px !important;
+  overflow:hidden !important; border:1px solid rgba(197,227,124,.62) !important; border-radius:4px !important;
+  background:rgba(20,39,27,.94) !important; color:#f0e5c6 !important; font-size:9px !important; font-weight:800 !important; line-height:1 !important;
+  white-space:nowrap !important; box-shadow:0 1px 3px rgba(0,0,0,.35) !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator.has-clock .seat-turn-label { display:none !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top .seat-turn-clock { display:inline !important; flex:0 0 auto !important; margin:0 !important; color:#fff1c9 !important; font-size:inherit !important; font-variant-numeric:tabular-nums !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards { padding-right:32px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left:-16px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards { min-width:0 !important; }
+@media (max-width:820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info { grid-template-columns:30px minmax(0,1fr) !important; gap:3px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info { grid-template-columns:32px minmax(0,1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar { width:30px !important; height:30px !important; font-size:13px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info > .seat-avatar { width:32px !important; height:32px !important; font-size:14px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta { grid-template-rows:12px minmax(0,1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta > .seat-stack { font-size:10px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:10px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-action { font-size:9px !important; padding-inline:4px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left:-12px !important; }
+}
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards { height:35px !important; min-height:35px !important; max-height:35px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { height:42px !important; min-height:42px !important; max-height:42px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-cards .mini-card { width:26px !important; height:35px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards .mini-card { width:30px !important; height:42px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info { grid-template-columns:27px minmax(0,1fr) !important; gap:2px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar { width:27px !important; height:27px !important; font-size:12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info { grid-template-columns:30px minmax(0,1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info > .seat-avatar { width:30px !important; height:30px !important; font-size:13px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards { padding-right:22px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left:-10px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .dealer-marker { top:-7px !important; right:-3px !important; width:20px !important; min-width:20px !important; max-width:20px !important; height:20px !important; min-height:20px !important; max-height:20px !important; font-size:8px !important; border-width:1px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-action { font-size:8.5px !important; gap:3px !important; }
+}
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards { padding-right:24px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left:-12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .dealer-marker { top:-7px !important; right:-3px !important; width:24px !important; min-width:24px !important; max-width:24px !important; height:24px !important; min-height:24px !important; max-height:24px !important; font-size:9px !important; border-width:1px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info { grid-template-columns:30px minmax(0,1fr) !important; gap:2px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar { width:30px !important; height:30px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:9px !important; }
+}
+
+
+/* Keep names at baseline size; the independent turn clock sits in the card gutter. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top { position:static !important; justify-content:center !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn .seat-name-wrap { width:100% !important; max-width:100% !important; justify-content:center !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn .seat-name { text-align:center !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:12px !important; line-height:1.1 !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+  position:absolute !important; z-index:7 !important; top:41px !important; right:2px !important; width:auto !important;
+  min-width:0 !important; max-width:34px !important; height:12px !important; min-height:12px !important; max-height:12px !important;
+  padding:0 3px !important; overflow:hidden !important; font-size:9px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:47px !important; }
+@media (max-width:820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:11px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:25px !important; max-width:32px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:30px !important; }
+}
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:20px !important; max-width:30px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:27px !important; }
+}
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:25px !important; max-width:32px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:30px !important; }
+}
+
+
+/* Match the established row budgets while giving the full-width footer its original space. */
+@media (min-width:821px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:56px 13px minmax(0,1fr) 14px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:62px 13px minmax(0,1fr) 14px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info { grid-template-columns:40px minmax(0,1fr) !important; gap:4px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar { width:40px !important; height:40px !important; font-size:16px !important; }
+}
+@media (max-width:820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:40px 12px minmax(0,1fr) 13px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:45px 12px minmax(0,1fr) 13px !important; }
+}
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:35px 12px minmax(0,1fr) 14px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:42px 12px minmax(0,1fr) 14px !important; }
+}
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) { grid-template-rows:40px 12px minmax(0,1fr) 13px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) { grid-template-rows:45px 12px minmax(0,1fr) 13px !important; }
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards {
+  justify-content:flex-start !important; padding-left:2px !important; padding-right:32px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .dealer-marker {
+  top:-10px !important; right:-4px !important; width:32px !important; min-width:32px !important; max-width:32px !important;
+  height:32px !important; min-height:32px !important; max-height:32px !important; border-width:2px !important; font-size:11px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top {
+  position:static !important; justify-content:center !important; overflow:visible !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn .seat-name-wrap {
+  width:100% !important; max-width:100% !important; justify-content:center !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top.has-turn .seat-name { text-align:center !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:12px !important; line-height:1.1 !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+  position:absolute !important; z-index:7 !important; top:40px !important; right:2px !important; width:auto !important;
+  min-width:0 !important; max-width:34px !important; height:12px !important; min-height:12px !important; max-height:12px !important;
+  padding:0 3px !important; overflow:hidden !important; font-size:9px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:46px !important; }
+@media (max-width:820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-name { font-size:11px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:24px !important; max-width:32px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:29px !important; }
+}
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:19px !important; max-width:30px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:26px !important; }
+}
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:24px !important; max-width:32px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:29px !important; }
+}
+
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-action { min-height:0 !important; padding-block:0 !important; }
+
+
+/* Dealer seats use the unused left card gutter; remove row gap before the fan. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards {
+  justify-content:flex-start !important; gap:0 !important; padding:0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer.is-me:not(.seat-empty) > .seat-cards .mini-card + .mini-card {
+  margin-left:-16px !important;
+}
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer.is-me:not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left:-14px !important; }
+}
+
+
+/* On the narrowest phone, give the dealer chip a clear corner without hiding either index. */
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card {
+    width:23px !important; height:33px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card + .mini-card {
+    margin-left:-11px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card .mini-rank {
+    top:2px !important; left:1px !important; font-size:9px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+    top:13px !important; left:1px !important; font-size:8px !important;
+  }
+}
+
+
+/* The older narrow-phone opponent selector is more specific than the base seat rule. */
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.is-me):not(.seat-empty) { grid-template-rows:35px 12px minmax(0,1fr) 14px !important; }
+}
+
+
+/* Resolve higher-specificity narrow-seat overrides without changing any outer bounds. */
+@media (max-width:340px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.is-me):not(.seat-empty) > .seat-top .seat-name,
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top .seat-name { font-size:11px !important; }
+}
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.is-me):not(.seat-empty) > .seat-cards { height:40px !important; min-height:40px !important; max-height:40px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-cards { height:45px !important; min-height:45px !important; max-height:45px !important; }
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-result {
+  box-sizing:border-box !important; gap:2px !important; padding:0 2px !important; overflow:hidden !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-label { flex:0 0 auto !important; font-size:9px !important; line-height:1 !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-amount {
+  flex:0 0 auto !important; min-width:0 !important; overflow:visible !important; font-size:10px !important;
+  line-height:1 !important; text-overflow:clip !important;
+}
+
+
+/* Preserve the winner text size while giving the label and payout their full measured width. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-footer > .seat-result { gap:1px !important; padding:0 !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-label { flex:0 0 auto !important; font-size:10px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-result-amount { flex:0 0 auto !important; font-size:12px !important; }
+
+
+/* Keep OUT status at the existing minimum readable size within the profile lane. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated:not(.seat-empty) .seat-local-markers { grid-template-rows:minmax(10px,1fr) minmax(0,1fr) !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated:not(.seat-empty) .seat-local-markers > .seat-status {
+  min-height:10px !important; font-size:10px !important; line-height:10px !important;
+}
+
+
+/* Compact-landscape dealer cards keep both corners clear of the full-size chip. */
+@media (max-width:820px) and (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card {
+    width:23px !important; height:33px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card + .mini-card {
+    margin-left:-12px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card .mini-rank {
+    top:2px !important; left:1px !important; font-size:9px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+    top:13px !important; left:1px !important; font-size:8px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer.is-me:not(.seat-empty) > .seat-cards .mini-card + .mini-card {
+    margin-left:-18px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer.is-me:not(.seat-empty) > .seat-cards .mini-card .mini-rank {
+    left:2px !important; font-size:10px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer.is-me:not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+    left:2px !important; font-size:9px !important;
+  }
+}
+
+
+@media (max-width:820px) and (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.seat-empty) > .seat-cards { transform:translateX(-1px) !important; }
+}
+
+
+/* Fit the full mm:ss clock string and allocate the local marker lane to its two content rows. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-top > .seat-turn-indicator {
+  box-sizing:border-box !important; flex:0 0 36px !important; width:36px !important;
+  min-width:36px !important; max-width:36px !important; padding-left:0 !important; padding-right:0 !important;
+  font-size:9px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers {
+  grid-template-rows:repeat(2,minmax(0,1fr)) !important;
+}
+
+
+/* Give compact-landscape wager/status markers measured rows inside the profile lane. */
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta { grid-template-rows:11px minmax(0,1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta > .seat-stack {
+    height:11px !important; min-height:11px !important; max-height:11px !important; font-size:10px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers {
+    grid-template-rows:minmax(10px,1fr) minmax(11px,1fr) !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers > .seat-wager {
+    box-sizing:border-box !important; width:100% !important; height:100% !important; min-height:0 !important;
+    max-height:100% !important; padding:0 1px !important; overflow:hidden !important; transform:none !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers .seat-wager .wager-stack,
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers .seat-wager .wager-unit { display:none !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info .seat-local-markers .seat-wager strong {
+    min-width:0 !important; overflow:hidden !important; font-size:9px !important; line-height:1 !important;
+    white-space:nowrap !important; text-overflow:clip !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:34px !important; }
+}
+@media (min-width:341px) and (max-width:380px) and (min-height:451px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card { width:23px !important; height:33px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card + .mini-card { margin-left:-10px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card .mini-rank {
+    top:2px !important; left:1px !important; font-size:9px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer:not(.is-me):not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+    top:13px !important; left:1px !important; font-size:8px !important;
+  }
+}
+
+
+/* Desktop-width avatar rules must not force an extra 40px profile track in short landscape. */
+@media (max-height:450px) and (orientation:landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info {
+    grid-template-columns:30px minmax(0,1fr) !important; grid-template-rows:minmax(0,1fr) !important;
+    gap:2px !important; height:100% !important; min-height:0 !important; align-items:center !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width:30px !important; min-width:30px !important; max-width:30px !important;
+    height:30px !important; min-height:30px !important; max-height:30px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info { grid-template-columns:32px minmax(0,1fr) !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-me:not(.seat-empty) > .seat-player-info > .seat-avatar {
+    width:32px !important; min-width:32px !important; max-width:32px !important;
+    height:32px !important; min-height:32px !important; max-height:32px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-player-meta {
+    height:100% !important; min-height:0 !important; grid-template-rows:11px minmax(0,1fr) !important;
+  }
+}

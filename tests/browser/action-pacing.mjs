@@ -133,31 +133,39 @@ export default async function actionPacing([tablePage, adminPage], sleep, roomPa
   const actor=byId.get(current.actor_id);
   current=await request(path+"/action",actor,{action:"raise",amount:80,
     expected_hand:current.hand_no,expected_turn_version:current.turn_version});
-  await wait(tablePage, (name,id) => {
-    const summary=document.querySelector("#last-action-summary");
-    const turn=document.querySelector(".seat-card.is-acting");
-    return !summary?.hidden && summary.textContent.includes(name) &&
-      summary.textContent.includes("80") && turn?.dataset.playerId===id;
-  },actor.player.name || actor.username,current.actor_id);
+  const raiserId=actor.player.id, turnId=current.actor_id;
+  await wait(tablePage,(raiser,turning)=>{
+    const seatFor=id=>[...document.querySelectorAll("#seat-grid .seat-card[data-player-id]")].find(node=>node.dataset.playerId===id);
+    const owner=seatFor(raiser),turnSeat=seatFor(turning),badge=owner?.querySelector(".seat-action.kind-raise");
+    const indicator=turnSeat?.querySelector(".seat-turn-indicator[data-turn-seat]");
+    const text=badge?.textContent||"";
+    const center=document.querySelector("#last-action-summary");
+    const style=center&&getComputedStyle(center),box=center&&center.getBoundingClientRect();
+    const centerVisible=Boolean(center&&!center.hidden&&style.display!=="none"&&style.visibility!=="hidden"&&Number(style.opacity)!==0&&box.width>1&&box.height>1);
+    return badge&&text.includes("80")&&indicator&&turnSeat.classList.contains("is-acting")&&!centerVisible;
+  },raiserId,turnId);
   for (const [width,height] of [[1440,900],[1024,768],[390,844],[320,568],[844,390],[667,375]]) {
     await tablePage.resize(width,height);
     await sleep(150);
-    const layout=await ev(tablePage,()=>{
-      const summary=document.querySelector("#last-action-summary");
-      const detail=summary.querySelector(".last-action-detail");
-      const turn=document.querySelector(".seat-card.is-acting");
-      const sr=summary.getBoundingClientRect(),dr=detail.getBoundingClientRect();
-      const style=getComputedStyle(turn);
-      const felt=document.querySelector("#felt").getBoundingClientRect();
-      const overlap=r=>sr.left<r.right && sr.right>r.left && sr.top<r.bottom && sr.bottom>r.top;
-      const blocked=[...document.querySelectorAll("#seat-grid .seat-card, #board-cards, #pot-display, .reaction-shortcuts")].some(n=>overlap(n.getBoundingClientRect()));
-      const onFelt=Boolean(summary.closest("#felt")) && sr.left>=felt.left && sr.right<=felt.right && sr.top>=felt.top && sr.bottom<=felt.bottom;
-      return {onFelt,blocked,summary:summary.textContent,visible:sr.height>0 && getComputedStyle(summary).visibility==="visible",
-        fits:dr.left>=sr.left-1 && dr.right<=sr.right+1 && dr.bottom<=sr.bottom+1,
-        outline:style.outlineWidth,glow:style.boxShadow,scroll:document.documentElement.scrollWidth<=innerWidth};
-    });
-    assert(layout.onFelt && !layout.blocked && layout.visible && layout.fits && layout.scroll && layout.outline==="3px" && layout.glow!=="none",
-      "Last-action/turn layout "+width+"x"+height+" "+JSON.stringify(layout));
+    const layout=await ev(tablePage,(raiser,turning)=>{
+      const seatFor=id=>[...document.querySelectorAll("#seat-grid .seat-card[data-player-id]")].find(node=>node.dataset.playerId===id);
+      const owner=seatFor(raiser),turnSeat=seatFor(turning),badge=owner?.querySelector(".seat-action.kind-raise");
+      const indicator=turnSeat?.querySelector(".seat-turn-indicator[data-turn-seat]");
+      const rect=node=>{const r=node.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+      const action=badge&&rect(badge),ownerBox=owner&&rect(owner),turnBox=turnSeat&&rect(turnSeat),indicatorBox=indicator&&rect(indicator);
+      const contains=(outer,inner)=>outer&&inner&&inner.left>=outer.left-1&&inner.right<=outer.right+1&&inner.top>=outer.top-1&&inner.bottom<=outer.bottom+1;
+      const center=document.querySelector("#last-action-summary"),cs=center&&getComputedStyle(center),cr=center&&center.getBoundingClientRect();
+      const centerVisible=Boolean(center&&!center.hidden&&cs.display!=="none"&&cs.visibility!=="hidden"&&Number(cs.opacity)!==0&&cr.width>1&&cr.height>1);
+      return {actionText:badge?.textContent.trim()||"",actionInOwner:contains(ownerBox,action),
+        turnInOwner:contains(turnBox,indicatorBox),separate:badge!==indicator&&owner!==turnSeat,
+        turnIndicator:indicator?.textContent.trim()||"",centerVisible,
+        outline:getComputedStyle(turnSeat).outlineWidth,glow:getComputedStyle(turnSeat).boxShadow,
+        scroll:document.documentElement.scrollWidth<=innerWidth};
+    },raiserId,turnId);
+    assert(/RAISE/i.test(layout.actionText)&&layout.actionText.includes("80")&&layout.actionInOwner&&
+      layout.turnInOwner&&layout.separate&&!layout.centerVisible&&layout.scroll&&
+      layout.outline==="3px"&&layout.glow!=="none",
+      "Player action/turn layout "+width+"x"+height+" "+JSON.stringify(layout));
     await tablePage.screenshot("action-"+width+"x"+height);
   }
   current=await request(path,host);
@@ -185,7 +193,13 @@ export default async function actionPacing([tablePage, adminPage], sleep, roomPa
   await request("/admin/config",admin,{uncontested_seconds:0});
   assert((await request(path,host)).hand_no===current.hand_no,"Dealt before winner hold finished");
   await until(async()=> (await request(path,host)).hand_no===current.hand_no+1,"next deal after winner hold",12000);
-  await wait(tablePage,()=> !document.querySelector(".seat-card.is-hand-winner") &&
-    document.querySelector("#last-action-summary")?.hidden);
+  await wait(tablePage,()=>{
+    const center=document.querySelector("#last-action-summary");
+    const centerHidden=!center||center.hidden||(()=>{
+      const style=getComputedStyle(center),box=center.getBoundingClientRect();
+      return style.display==="none"||style.visibility==="hidden"||Number(style.opacity)===0||box.width<=1||box.height<=1;
+    })();
+    return centerHidden&&!document.querySelector(".seat-card.is-hand-winner");
+  });
   console.log("Action clarity, six viewport layouts, turn/winner rings, admin persistence and exact winner-hold redeal passed.");
 }

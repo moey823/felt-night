@@ -170,11 +170,22 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
     const panel=document.querySelector('#action-panel'),felt=document.querySelector('#felt');
     const errors=[];
     const summary=document.querySelector('#last-action-summary');
-    if(summary && !summary.hidden) {
-      const r=rect(summary),f=rect(felt);
-      if(r.left<f.left || r.right>f.right || r.top<f.top || r.bottom>f.bottom) errors.push('action announcement outside felt');
-      for(const n of document.querySelectorAll('#seat-grid .seat-card, #board-cards, #pot-display, .reaction-shortcuts')) {
-        if(area(r,rect(n))>.5) errors.push('action announcement overlaps '+n.className);
+    if(summary) {
+      const style=getComputedStyle(summary),r=rect(summary);
+      if(!summary.hidden&&style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&r.width>1&&r.height>1)
+        errors.push('central action message is visible');
+    }
+    for(const badge of document.querySelectorAll('#seat-grid .seat-action[data-action-seat]')) {
+      const owner=badge.closest('.seat-card[data-player-id]'),b=rect(badge);
+      if(!owner)errors.push('action badge has no owning player seat');
+      else {
+        const seatBox=rect(owner);
+        if(b.left<seatBox.left-1||b.right>seatBox.right+1||b.top<seatBox.top-1||b.bottom>seatBox.bottom+1)
+          errors.push('player action escaped its seat');
+        if(area(b,rect(board))>.5)errors.push('player action overlaps board');
+        for(const other of seats)if(other!==owner&&area(b,rect(other))>.5)errors.push('player action overlaps another seat');
+        for(const text of badge.querySelectorAll('.seat-action-verb,.seat-action-value'))
+          if(text.scrollWidth>text.clientWidth+1)errors.push('player action text clipped');
       }
     }
     const boardCollisions=[];
@@ -209,11 +220,11 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
         }
       }
       if(seat.classList.contains('is-eliminated')) {
-        const outTag=seat.querySelector('.seat-tags .eliminated-label'),outStyle=outTag?getComputedStyle(outTag):null;
+        const outTag=seat.querySelector('.seat-status,.seat-detail-text'),outStyle=outTag?getComputedStyle(outTag):null;
         const stack=seat.querySelector('.seat-stack'),tagRect=outTag?rect(outTag):null,stackRect=stack?rect(stack):null;
-        const visible=Boolean(outTag&&outStyle.display!=='none'&&outStyle.visibility!=='hidden'&&tagRect.height>=10);
+        const visible=Boolean(outTag&&/OUT/i.test(outTag.textContent||'')&&outStyle.display!=='none'&&outStyle.visibility!=='hidden'&&tagRect.height>=10);
         eliminatedTags.push({index:i,relative:seat.dataset.relativeSeat,visible,text:outTag?.textContent,tag:tagRect,stack:stackRect});
-        if(!visible||!stack||getComputedStyle(stack).visibility!=='hidden') errors.push('eliminated OUT tag missing or stack row not replaced '+i);
+        if(!visible||!stack||getComputedStyle(stack).visibility==='hidden') errors.push('eliminated OUT status or stack amount missing '+i);
       }
       if(rect(board).width>4&&area(rect(seat),rect(board))>5) {
         errors.push('board overlaps seat '+i);

@@ -159,16 +159,20 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
       };
       const felt=rect(document.querySelector("#felt"));
       const center={x:(felt.left+felt.right)/2,y:(felt.top+felt.bottom)/2};
-      const selector=".seat-card > .dealer-marker,.seat-local-markers > .seat-action.kind-turn,.seat-local-markers .seat-turn-clock,.seat-local-markers > .seat-wager";
+      const selector=".seat-card > .dealer-marker,.seat-action[data-action-seat],.seat-turn-indicator[data-turn-seat],.seat-turn-clock[data-turn-clock-seat],.seat-local-markers .seat-wager";
       const rows=[...document.querySelectorAll(selector)].filter(node=>node.offsetWidth).map(node=>{
         const seat=node.closest(".seat-card"), mr=rect(node), sr=rect(seat);
         const own=node.classList.contains("dealer-marker")?node.dataset.markerSeat:
           node.classList.contains("seat-wager")?node.dataset.seatNo:
+          node.classList.contains("seat-turn-indicator")?node.dataset.turnSeat:
           node.classList.contains("seat-turn-clock")?node.dataset.turnClockSeat:node.dataset.actionSeat;
         const mx=(mr.left+mr.right)/2,my=(mr.top+mr.bottom)/2;
         const sx=(sr.left+sr.right)/2,sy=(sr.top+sr.bottom)/2;
         return {kind:node.className,own,seatNo:seat?.dataset.seatNo||"",
           lane:node.classList.contains("dealer-marker")?node.parentElement===seat:
+            node.classList.contains("seat-action")?Boolean(seat?.querySelector(".seat-footer")?.contains(node)):
+            node.classList.contains("seat-turn-indicator")?Boolean(seat?.contains(node)):
+            node.classList.contains("seat-turn-clock")?Boolean(seat?.contains(node)):
             Boolean(seat?.querySelector(".seat-local-markers")?.contains(node)),
           mr,sr,seatDistance:Math.hypot(mx-sx,my-sy),
           cornerDistance:Math.hypot(mx-sr.right,my-sr.top),
@@ -178,7 +182,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
         rows,
         dealers:rows.filter(row=>row.kind.includes("dealer-marker")).length,
         wagers:rows.filter(row=>row.kind.includes("seat-wager")).length,
-        turns:rows.filter(row=>row.kind.includes("kind-turn")).length,
+        turns:rows.filter(row=>row.kind.includes("seat-turn-indicator")).length,
       };
     });
   }
@@ -284,7 +288,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
   await wait(playerPage,()=>document.querySelectorAll(".seat-card[data-player-id]").length===9&&
     document.querySelectorAll(".seat-card > .dealer-marker").length===1&&
     document.querySelectorAll(".seat-local-markers .seat-wager").length>=2&&
-    document.querySelector(".seat-local-markers .seat-action.kind-turn"));
+    document.querySelector(".seat-turn-indicator[data-turn-seat]"));
   const markerData=await markerSnapshot(playerPage), markerErrors=[];
   if(markerData.dealers!==1)markerErrors.push("dealer count "+markerData.dealers);
   if(markerData.wagers<2)markerErrors.push("wager count "+markerData.wagers);

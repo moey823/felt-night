@@ -8,10 +8,10 @@ The table is the primary workspace. A player needs their cards, opponents and st
 - Payout sliders redistribute the remaining shares so their total stays at 100%. The number of occupied seats determines the tournament size at Start.
 - The dedicated admin account configures shared bet presets, all-in pacing, announcement durations, result holds, and test bots.
 - Host End game requires two deliberate confirmations. An ended game has no invented winner or payout.
-- Player action announcements sit on the felt beside the board in a fixed-size panel without changing card or seat positions. Reactions use larger emoji bursts that stay visible for about three seconds; reduced-motion viewers see a static burst.
+- Each player’s latest action and wager stay beside their seat through the betting round; the turn ring and timer remain separate, and the accessible play-by-play announcer stays visually hidden so it does not cover the felt. Reactions use larger emoji bursts that stay visible for about three seconds; reduced-motion viewers see a static burst.
 - The betting dock reserves three equal, stationary primary-action slots for Fold, Check or Call, and Bet or Raise. Presets and the sizing slider use separate rows, so changing the action label or amount does not move a primary button.
 - The blind-level strip shows a live countdown. A paused clock stays frozen, and a pending level change reads “Next hand.”
-- Showdown winners get a compact Won + amount badge beside their seat, with a brief gold pulse that respects reduced-motion preferences. Eliminated players retain an OUT label in the stack row.
+- Showdown winners get a compact Won + amount badge in the seat footer, with a brief gold pulse that respects reduced-motion preferences. Eliminated players retain an Out status beside their stack.
 - Table controls live in a compact menu. Settings use a native modal dialog with a visible close control and scrolling content.
 - Gameplay stays inside a fixed viewport without document scrolling: a compact, readable chat preview and quick-send rail stays visible, and the full original seat ring keeps stable positions as players leave. Dealer, turn clock, action, and wager markers stay beside their owning seat. Short landscape places actions in a side dock; portrait keeps the dock below the felt. Modal content scrolls internally with its close control kept reachable.
 - Admins can inspect archived finished games and delete them through a separate confirmation step.

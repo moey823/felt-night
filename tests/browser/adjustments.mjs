@@ -587,10 +587,7 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   await Promise.all([openTable(one, pauseConfig.name), openTable(two, pauseConfig.name)]);
   await evaluate(one, () => {
     window.adjustmentsPauseTimer = window.setInterval(() => {
-      const marker = document.querySelector('#seat-grid .seat-action.kind-turn');
-      const seatNo = marker?.dataset.actionSeat;
-      const actorId = [...document.querySelectorAll('#seat-grid .seat-card')]
-        .find(node => node.dataset.seatNo === String(seatNo))?.dataset.playerId || '';
+      const actorId = document.querySelector('#seat-grid .seat-card.is-acting')?.dataset.playerId || '';
       if (actorId.startsWith('bot:')) {
         const pause = document.querySelector('#pause-button');
         if (pause && !pause.hidden && !pause.disabled) {

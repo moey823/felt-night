@@ -135,12 +135,15 @@ export default async function reactions([one,two], sleep, roomPassword) {
     }
     const otherSeats=owner&&dealerBox?[...document.querySelectorAll('#seat-grid .seat-card')].filter(n=>
       n!==owner&&overlaps(dealerBox,rect(n))).length:0;
-    const ownContentOverlaps=owner&&dealerBox?[
-      ['name',nameTextBox],
-      ...[['stack',owner.querySelector('.seat-stack')],['cards',owner.querySelector('.seat-cards')],
-        ['action',owner.querySelector('.seat-action')],['wager',owner.querySelector('.seat-wager')],
-        ['clock',owner.querySelector('.seat-turn-clock')]].map(([label,n])=>[label,n?rect(n):null])
-    ].filter(([,box])=>box&&overlaps(dealerBox,box)).map(([label])=>label):[];
+    const cardBoxes=owner?[...owner.querySelectorAll('.seat-cards .mini-card')].map((n,index)=>['card-'+index,rect(n)]):[];
+    const dealerContentBoxes=owner&&dealerBox?[
+      ['name',nameTextBox],...cardBoxes,
+      ...[['avatar',owner.querySelector('.seat-avatar')],['stack',owner.querySelector('.seat-stack')],
+        ['status',owner.querySelector('.seat-status')],['action',owner.querySelector('.seat-action')],
+        ['wager',owner.querySelector('.seat-wager')],['clock',owner.querySelector('.seat-turn-clock')]]
+        .map(([label,n])=>[label,n?rect(n):null])
+    ].filter(([,box])=>box):[];
+    const ownContentOverlaps=dealerContentBoxes.filter(([,box])=>overlaps(dealerBox,box)).map(([label])=>label);
     const ordered=buttonBoxes.length===3&&buttonBoxes[0].top<buttonBoxes[1].top&&buttonBoxes[1].top<buttonBoxes[2].top;
     const verticalGaps=buttonBoxes.slice(1).map((box,index)=>box.top-buttonBoxes[index].bottom);
     return {width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,
@@ -152,7 +155,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
       dealerSize:dealerBox?{width:dealerBox.width,height:dealerBox.height}:null,
       dealerAtCorner:dealerBox&&ownerBox?Math.hypot((dealerBox.left+dealerBox.right)/2-ownerBox.right,
         (dealerBox.top+dealerBox.bottom)/2-ownerBox.top)<=17:false,
-      dealerContentOverlaps:ownContentOverlaps,dealerOtherSeatOverlap:otherSeats,
+      dealerContentOverlaps:ownContentOverlaps,dealerContentRects:dealerContentBoxes,dealerOtherSeatOverlap:otherSeats,
       dealerInFelt:dealerBox&&dealerBox.left>=felt.left-1&&dealerBox.right<=felt.right+1&&
         dealerBox.top>=felt.top-1&&dealerBox.bottom<=felt.bottom+1,
       dealerInViewport:dealerBox&&dealerBox.left>=-1&&dealerBox.right<=innerWidth+1&&
@@ -185,11 +188,13 @@ export default async function reactions([one,two], sleep, roomPassword) {
       const overlap=(x,y)=>x&&y&&x.left<y.right&&x.right>y.left&&x.top<y.bottom&&x.bottom>y.top;
       const otherSeatRows=owner&&d?[...document.querySelectorAll('#seat-grid .seat-card')].filter(n=>n!==owner&&overlap(d,rect(n))).map(n=>({seatNo:n.dataset.seatNo,box:rect(n)})):[];
       const otherSeats=otherSeatRows.length;
-      const ownOverlaps=owner&&d?[['name',text],...[
-        ['stack',owner.querySelector('.seat-stack')],['cards',owner.querySelector('.seat-cards')],
-        ['action',owner.querySelector('.seat-action')],['wager',owner.querySelector('.seat-wager')],
-        ['clock',owner.querySelector('.seat-turn-clock')]].map(([label,n])=>[label,n?rect(n):null])
-      ].filter(([,b])=>b&&overlap(d,b)).map(([label])=>label):[];
+      const cardBoxes=owner?[...owner.querySelectorAll('.seat-cards .mini-card')].map((n,index)=>['card-'+index,rect(n)]):[];
+      const dealerContentBoxes=owner&&d?[['name',text],...cardBoxes,...[
+        ['avatar',owner.querySelector('.seat-avatar')],['stack',owner.querySelector('.seat-stack')],
+        ['status',owner.querySelector('.seat-status')],['action',owner.querySelector('.seat-action')],
+        ['wager',owner.querySelector('.seat-wager')],['clock',owner.querySelector('.seat-turn-clock')]
+      ].map(([label,n])=>[label,n?rect(n):null])].filter(([,b])=>b):[];
+      const ownOverlaps=dealerContentBoxes.filter(([,b])=>overlap(d,b)).map(([label])=>label);
       const gaps=buttons.slice(1).map((b,i)=>b.top-buttons[i].bottom);
       return {width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,
         clientWidth:document.documentElement.clientWidth,count:buttons.length,buttons,rail:r,controls:a,
@@ -203,7 +208,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
         dealerCorner:d&&s?Math.hypot((d.left+d.right)/2-s.right,(d.top+d.bottom)/2-s.top)<=17:false,
         dealerInFelt:d&&d.left>=f.left-1&&d.right<=f.right+1&&d.top>=f.top-1&&d.bottom<=f.bottom+1,
         dealerInViewport:d&&d.left>=-1&&d.right<=innerWidth+1&&d.top>=-1&&d.bottom<=innerHeight+1,
-        dealerContentOverlaps:ownOverlaps,dealerOtherSeatOverlap:otherSeats,dealerBox:d,ownerBox:s,otherSeatRows};
+        dealerContentOverlaps:ownOverlaps,dealerContentRects:dealerContentBoxes,dealerOtherSeatOverlap:otherSeats,dealerBox:d,ownerBox:s,otherSeatRows};
     });
     assert(dock.count===3&&dock.vertical&&dock.leftOfActions&&dock.documentWidth<=dock.clientWidth+1,
       'Reaction rail geometry failed at '+width+'x'+height+': '+JSON.stringify(dock));
@@ -212,18 +217,26 @@ export default async function reactions([one,two], sleep, roomPassword) {
       !dock.dealerContentOverlaps.length&&!dock.dealerOtherSeatOverlap&&dock.dealerInFelt&&dock.dealerInViewport,
       'Dealer chip geometry failed at '+width+'x'+height+': '+JSON.stringify(dock));
     const result=await evaluate(one,()=>{
-      const summary=document.querySelector('#last-action-summary');
-      const hidden=summary.hidden, content=summary.innerHTML;
-      summary.hidden=false;
-      summary.innerHTML='<span class="last-action-actor">ReactionPlayer</span><strong class="last-action-detail">ALL IN · 1,200 chips</strong>';
-      const r=summary.getBoundingClientRect(),felt=document.querySelector('#felt').getBoundingClientRect();
-      const overlap=n=>{const b=n.getBoundingClientRect();return b.width>0&&b.height>0&&r.left<b.right&&r.right>b.left&&r.top<b.bottom&&r.bottom>b.top;};
-      const blocked=[...document.querySelectorAll('#seat-grid .seat-card, #board-cards, #pot-display, .reaction-shortcuts')].filter(overlap).map(n=>n.className);
-      const onFelt=r.left>=felt.left&&r.right<=felt.right&&r.top>=felt.top&&r.bottom<=felt.bottom;
-      summary.hidden=hidden;summary.innerHTML=content;
-      return {board:document.querySelector(".board-center").getBoundingClientRect().toJSON(),blind:document.querySelector("#blind-strip").getBoundingClientRect().toJSON(),blocked,onFelt,summary:{x:r.x,y:r.y,width:r.width,height:r.height},seats:[...document.querySelectorAll('#seat-grid .seat-card')].map(n=>{const b=n.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height};})};
+      const center=document.querySelector('#last-action-summary'),style=center&&getComputedStyle(center),cr=center&&center.getBoundingClientRect();
+      const centralVisible=Boolean(center&&!center.hidden&&style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&cr.width>1&&cr.height>1);
+      const rect=n=>{const r=n.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};};
+      const overlaps=(a,b)=>a&&b&&a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
+      const board=rect(document.querySelector('.board-center'));
+      const seats=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
+      const errors=[];
+      const actions=[...document.querySelectorAll('#seat-grid .seat-action[data-action-seat]')].map(badge=>{
+        const owner=badge.closest('.seat-card[data-player-id]'),b=rect(badge),s=owner&&rect(owner);
+        const inside=Boolean(owner&&b.left>=s.left-1&&b.right<=s.right+1&&b.top>=s.top-1&&b.bottom<=s.bottom+1);
+        if(!inside)errors.push('action escaped owner seat');
+        if(overlaps(b,board))errors.push('action overlaps board');
+        for(const other of seats)if(other!==owner&&overlaps(b,rect(other)))errors.push('action overlaps adjacent seat');
+        for(const text of badge.querySelectorAll('.seat-action-verb,.seat-action-value'))if(text.scrollWidth>text.clientWidth+1)errors.push('action text clipped');
+        return {seatNo:owner?.dataset.seatNo||'',text:badge.textContent.trim(),inside};
+      });
+      return {centralVisible,actionCount:actions.length,actions,errors,
+        turnVisible:Boolean(document.querySelector('.seat-turn-indicator[data-turn-seat]'))};
     });
-    assert(result.onFelt&&!result.blocked.length,'Nine-seat felt announcement '+width+'x'+height+': '+JSON.stringify(result));
+    assert(!result.centralVisible&&!result.errors.length,'Per-player action display failed around the nine-seat table: '+JSON.stringify(result));
     await one.screenshot('felt-nine-seat-'+width+'x'+height);
   }
   await one.resize(390,844);

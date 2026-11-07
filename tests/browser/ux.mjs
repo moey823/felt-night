@@ -217,13 +217,14 @@ export default async function ux([one, two], sleep, roomPassword) {
     const primarySlots = [...document.querySelectorAll('#action-panel .action-buttons [data-action-slot]')];
     const seats = [...document.querySelectorAll('#seat-grid .seat-card[data-seat-no]')];
     const markers = [...document.querySelectorAll(
-      '#seat-grid .seat-local-markers .seat-action, ' +
-      '#seat-grid .seat-local-markers .seat-turn-clock, ' +
-      '#seat-grid .seat-local-markers .seat-wager, ' +
+      '#seat-grid .seat-action[data-action-seat], ' +
+      '#seat-grid .seat-turn-indicator, ' +
+      '#seat-grid .seat-turn-clock, ' +
+      '#seat-grid .seat-wager, ' +
       '#seat-grid .seat-card > .dealer-marker'
     )].filter(marker => marker.offsetWidth && marker.offsetHeight);
     const blindNumbers = [...(blindStrip?.querySelectorAll('.blind-tile strong') || [])];
-    const turnMarker = document.querySelector('#seat-grid .seat-action.kind-turn');
+    const turnMarker = document.querySelector('#seat-grid .seat-turn-indicator[data-turn-seat]');
     const turnClock = document.querySelector('#seat-grid .seat-turn-clock');
     const heroSeat = document.querySelector('#seat-grid .seat-card.is-me');
     const heroCards = [...document.querySelectorAll(
@@ -329,6 +330,19 @@ export default async function ux([one, two], sleep, roomPassword) {
     }
     const gridBox = seatGrid && rect(seatGrid);
     const stripBox = blindStrip && rect(blindStrip);
+    const blindTextBoxes = blindStrip ? (() => {
+      const walker=document.createTreeWalker(blindStrip,NodeFilter.SHOW_TEXT),boxes=[];
+      for(let text=walker.nextNode();text;text=walker.nextNode()){
+        if(!text.textContent.trim())continue;
+        const style=text.parentElement&&getComputedStyle(text.parentElement);
+        if(style&&(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0))continue;
+        const range=document.createRange();range.selectNodeContents(text);
+        for(const value of range.getClientRects())if(value.width>0&&value.height>0)
+          boxes.push({left:value.left,top:value.top,right:value.right,bottom:value.bottom,
+            width:value.width,height:value.height,text:text.textContent.trim()});
+      }
+      return boxes;
+    })() : [];
     const potBox = document.querySelector('#pot-display') && rect(document.querySelector('#pot-display'));
     const seatBoxes = seats.map(seat => ({
       seatNo: seat.dataset.seatNo,
@@ -342,10 +356,13 @@ export default async function ux([one, two], sleep, roomPassword) {
     }
     const markerBoxes = markers.map(marker => ({
       type: marker.classList.contains('seat-turn-clock') ? 'clock' :
+        marker.classList.contains('seat-turn-indicator') ? 'turn' :
         marker.classList.contains('seat-action') ? 'action' :
         marker.classList.contains('seat-wager') ? 'wager' : 'dealer',
       seatNo: marker.getAttribute('data-seat-no') ||
         marker.getAttribute('data-action-seat') ||
+        marker.getAttribute('data-turn-seat') ||
+        marker.getAttribute('data-turn-clock-seat') ||
         marker.getAttribute('data-marker-seat') || '',
       ownerSeatNo: marker.closest('.seat-card[data-seat-no]')?.dataset.seatNo || '',
       ...rect(marker),
@@ -395,10 +412,13 @@ export default async function ux([one, two], sleep, roomPassword) {
       const marker = markers[index];
       const markerBox = markerBoxes[index];
       const ownerSeat = marker.closest('.seat-card[data-seat-no]');
-      const localLane = marker.closest('.seat-local-markers');
+      const localLane = marker.closest('.seat-local-markers') || marker.closest('.seat-footer') ||
+        marker.closest('.seat-top') || marker.closest('.seat-turn-indicator');
+      const turnMarker = marker.classList.contains('seat-turn-indicator') || marker.classList.contains('seat-turn-clock');
       const ownerBox = ownerSeat && rect(ownerSeat);
       const laneBox = localLane && rect(localLane);
-      if (!ownerSeat || (marker.classList.contains('dealer-marker') ? marker.parentElement !== ownerSeat : !localLane?.contains(marker))) errors.push(markerBox.type + ' marker is not attached to its owner seat');
+      if (!ownerSeat || (marker.classList.contains('dealer-marker') ? marker.parentElement !== ownerSeat :
+          turnMarker ? !ownerSeat.contains(marker) : !localLane?.contains(marker))) errors.push(markerBox.type + ' marker is not attached to its owner seat');
       if (ownerSeat && markerBox.seatNo && markerBox.seatNo !== ownerSeat.dataset.seatNo) {
         errors.push(markerBox.type + ' marker seat id does not match its containing seat');
       }
@@ -407,7 +427,7 @@ export default async function ux([one, two], sleep, roomPassword) {
           markerBox.top < ownerBox.top - 1 || markerBox.bottom > ownerBox.bottom + 1)) {
         errors.push(markerBox.type + ' marker escaped its seat ' + ownerSeat.dataset.seatNo);
       }
-      if (!dealerChip && laneBox && (markerBox.left < laneBox.left - 1 || markerBox.right > laneBox.right + 1 ||
+      if (!dealerChip && !turnMarker && laneBox && (markerBox.left < laneBox.left - 1 || markerBox.right > laneBox.right + 1 ||
           markerBox.top < laneBox.top - 1 || markerBox.bottom > laneBox.bottom + 1)) {
         errors.push(markerBox.type + ' marker escaped its fixed local lane');
       }
@@ -448,11 +468,33 @@ export default async function ux([one, two], sleep, roomPassword) {
           }
         }
       }
-      const ownerCards = ownerSeat?.querySelector('.seat-cards');
-      if (ownerCards && overlap(markerBox, rect(ownerCards)) > 1) errors.push(markerBox.type + ' marker overlaps cards in seat ' + ownerSeat.dataset.seatNo);
-      const markerBlockers = [['board',boardBox],['pot',potBox],['blind strip',stripBox]]
+      const ownerCards = ownerSeat ? [...ownerSeat.querySelectorAll('.seat-cards .mini-card')].filter(card => {
+        const style=getComputedStyle(card);
+        return style.display!=='none'&&style.visibility!=='hidden'&&card.getClientRects().length>0;
+      }) : [];
+      if (turnMarker) {
+        const rankSuitText = ownerSeat ? [...ownerSeat.querySelectorAll(
+          '.seat-cards .mini-card:not(.back) .mini-rank, .seat-cards .mini-card:not(.back) .mini-suit'
+        )].filter(node => {
+          const style=getComputedStyle(node);
+          return style.display!=='none'&&style.visibility!=='hidden'&&node.getClientRects().length>0;
+        }) : [];
+        if (rankSuitText.some(node=>overlap(markerBox,rect(node))>1))
+          errors.push(markerBox.type+' marker overlaps card rank/suit text in seat '+ownerSeat.dataset.seatNo);
+      } else if (ownerCards.some(card=>overlap(markerBox,rect(card))>1)) {
+        errors.push(markerBox.type+' marker overlaps an actual card in seat '+ownerSeat.dataset.seatNo);
+      }
+      // The original 837201f dealer chip sits at top:-10/right:-4 and may touch only
+      // the blind strip's blank lower/right padding at 320px; guard its visible text instead.
+      const markerBlockers = [['board',boardBox],['pot',potBox]]
         .filter(([,blocker]) => blocker && overlap(markerBox, blocker) > 1)
         .map(([name,blocker]) => ({name,rect:blocker}));
+      if(dealerChip){
+        markerBlockers.push(...blindTextBoxes.filter(textBox=>overlap(markerBox,textBox)>1)
+          .map(textBox=>({name:'blind strip text: '+textBox.text,rect:textBox})));
+      }else if(stripBox&&overlap(markerBox,stripBox)>1){
+        markerBlockers.push({name:'blind strip',rect:stripBox});
+      }
       if (markerBlockers.length) errors.push(markerBox.type + ' marker overlaps blockers: ' +
         JSON.stringify({marker:markerBox,blockers:markerBlockers}));
       if (!markerBox.width || !markerBox.height) {
@@ -572,7 +614,7 @@ export default async function ux([one, two], sleep, roomPassword) {
   }
 
   async function checkViewports(page, seatCount, label, canAct = true) {
-    await wait(page, visible, '#seat-grid .seat-action.kind-turn:not(.is-unplaced)');
+    await wait(page, visible, '#seat-grid .seat-turn-indicator[data-turn-seat]');
     await wait(page, visible, '#seat-grid .seat-turn-clock:not(.is-unplaced)');
     const viewports = [
       {width: 320, height: 740},
@@ -974,24 +1016,40 @@ export default async function ux([one, two], sleep, roomPassword) {
 
   const losingUser = findUser(multiway.entrants, current.seats.find(seat => seat.in_hand && seat.stack === 0).id);
   await switchUser(one, losingUser);
-  await openTable(one, multiway.name);
+  await evaluate(one, tableId => window.location.assign('/poker/table?table=' + encodeURIComponent(tableId)), multiway.id);
+  await wait(one, tableName => !document.querySelector('#table-view')?.hidden &&
+    document.querySelector('#view-table-name')?.textContent === tableName, multiway.name);
   await one.resize(390, 844);
   await wait(one, () => /complete/i.test(document.querySelector('#view-status')?.innerText || ''));
-  const finalLoser = await evaluate(one, () => {
+  const expectedParticipantIds=multiway.entrants.map(entrant=>entrant.player.id).sort();
+  const finalLoser = await evaluate(one, expectedLoserId => {
     const felt = document.querySelector('#felt').getBoundingClientRect();
-    const hero = document.querySelector('.seat-card.is-me')?.getBoundingClientRect();
+    const heroNode = document.querySelector('.seat-card.is-me');
+    const hero = heroNode?.getBoundingClientRect();
+    const cardRow=document.querySelector('.seat-card.is-me .seat-cards.is-viewer-cards');
+    const cards=[...(cardRow?.querySelectorAll('.mini-card:not(.back)')||[])];
+    const visibleCards=cards.filter(card=>{
+      const style=getComputedStyle(card),box=card.getBoundingClientRect();
+      return style.display!=='none'&&style.visibility!=='hidden'&&box.width>0&&box.height>0;
+    });
     return {
       board: document.querySelector('#board-cards')?.innerText,
-      cards: document.querySelector('.seat-card.is-me .seat-cards')?.innerText,
+      cards: cardRow?.innerText.trim()||'',
+      cardCount:visibleCards.length,
+      heroId:heroNode?.dataset.playerId||'',expectedLoserId,
       x: hero ? (hero.left + hero.right - felt.left - felt.right) / 2 : null,
       bottom: hero ? felt.bottom - hero.bottom : null,
-      participantCount: document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length,
+      participantIds:[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')]
+        .map(node=>node.dataset.playerId).sort(),
     };
-  });
+  },losingUser.player.id);
   assert(finalLoser.x !== null && Math.abs(finalLoser.x) <= 2 && finalLoser.bottom >= 0 && finalLoser.bottom < 40,
     'Eliminated viewer lost their six oclock position: ' + JSON.stringify(finalLoser));
-  assert(finalLoser.participantCount === current.seats.filter(seat => seat.in_hand).length && finalLoser.cards?.trim(),
-    'Eliminated viewer lost their final cards or opponents: ' + JSON.stringify(finalLoser));
+  assert(finalLoser.heroId===losingUser.player.id&&finalLoser.expectedLoserId===losingUser.player.id&&
+    finalLoser.cardCount===2&&finalLoser.cards&&finalLoser.participantIds.length===expectedParticipantIds.length&&
+    finalLoser.participantIds.every((id,index)=>id===expectedParticipantIds[index]),
+    'Completed table did not preserve the original participant ID set or the losing viewer cards: ' +
+      JSON.stringify({expectedParticipantIds,finalLoser}));
   await one.screenshot('completed-losing-viewer-390x844');
 
 
@@ -1288,29 +1346,40 @@ export default async function ux([one, two], sleep, roomPassword) {
   const blindStrip = await evaluate(one, () => document.querySelector('#blind-strip')?.innerText || '');
   const announcementGeometry = await evaluate(one, () => {
     const node = document.querySelector('#blind-announcement');
-    const region = document.querySelector('#table-announcements');
-    const surface = document.querySelector('.table-surface');
     const felt = document.querySelector('#felt');
-    const preview = document.querySelector('#chat-topline');
-    const box = n => { const r=n.getBoundingClientRect(); return {left:r.left,top:r.top,right:r.right,bottom:r.bottom}; };
-    const overlaps = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
-    const n=box(node), r=box(region), s=box(surface), f=box(felt), c=box(preview);
+    const box = element => {
+      if(!element)return null;
+      const r=element.getBoundingClientRect();
+      return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height};
+    };
+    const overlaps = (a,b) => a&&b&&a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const visible = element => {
+      if(!element)return false;
+      const style=getComputedStyle(element),r=element.getBoundingClientRect();
+      return style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&r.width>0&&r.height>0;
+    };
+    const n=box(node), f=box(felt);
+    const controls=[...document.querySelectorAll('#action-panel button,#chat-button,#pause-button,.reaction-shortcuts')]
+      .filter(visible).map(box);
+    const chat=[...document.querySelectorAll('#chat-topline,#chat-preview,#chat-quick-form')]
+      .filter(visible).map(box);
     return {
-      inReservedRegion: region.contains(node),
-      outsideSurface: !surface.contains(node) && n.bottom <= s.top + 1,
-      outsideFelt: !overlaps(n,f),
-      separateFromChat: !overlaps(n,c),
-      inViewport: n.left >= -1 && n.top >= -1 && n.right <= innerWidth + 1 && n.bottom <= innerHeight + 1,
-      announcement:n,region:r,surface:s,felt:f,chat:c
+      directChild:Boolean(node&&node.parentElement===felt),
+      centered:Boolean(n&&f&&Math.abs((n.left+n.right-f.left-f.right)/2)<=4&&
+        Math.abs((n.top+n.bottom-f.top-f.bottom)/2)<=4),
+      inViewport:Boolean(n&&n.left>=0&&n.top>=0&&n.right<=innerWidth&&n.bottom<=innerHeight),
+      controlOverlaps:controls.some(control=>overlaps(n,control)),
+      chatOverlaps:chat.some(row=>overlaps(n,row)),
+      announcement:n,felt:f,controls,chat
     };
   });
-  assert(
-    /level\s*2/i.test(announcement) && /20/.test(announcement) && /40/.test(announcement),
-    'Blind announcement missed level 2 and new 20/40 blinds: ' + announcement
-  );
-  assert(announcementGeometry.inReservedRegion && announcementGeometry.outsideSurface &&
-    announcementGeometry.outsideFelt && announcementGeometry.separateFromChat && announcementGeometry.inViewport,
-    'Blind announcement must stay in its reserved region outside the felt and fully in view: ' +
+  const announcementLines=announcement.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  assert(announcementLines.length===3&&announcementLines[0]==='Blinds going up'&&
+    announcementLines[1]==='Small: 20'&&announcementLines[2]==='Big: 40',
+    'Blind announcement did not use the requested three lines: '+JSON.stringify(announcementLines));
+  assert(announcementGeometry.directChild&&announcementGeometry.centered&&announcementGeometry.inViewport&&
+    !announcementGeometry.controlOverlaps&&!announcementGeometry.chatOverlaps,
+    'Blind announcement must be centered in the felt, in view, and clear of controls/chat: '+
       JSON.stringify(announcementGeometry));
   assert(
     /level\s*2/i.test(blindStrip) && /20/.test(blindStrip) && /40/.test(blindStrip) &&
