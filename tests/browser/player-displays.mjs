@@ -276,7 +276,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
         const children=[...seat.querySelectorAll('.seat-avatar,.seat-avatar img,.seat-cards .mini-card,.seat-action[data-action-seat],.seat-turn-indicator[data-turn-seat],.seat-turn-clock[data-turn-clock-seat],.seat-wager,.seat-blind-badge')].filter(visible);
         for(const child of children){
           const childBox=rect(child),label=child.className||child.tagName;
-          if(!contains(outer,childBox)){
+          if(!child.matches(".seat-contribution") && !contains(outer,childBox)){
             const footer=seat.querySelector('.seat-footer');
             const overflow=[childBox.left<outer.left-1?'left':'',childBox.right>outer.right+1?'right':'',
               childBox.top<outer.top-1?'top':'',childBox.bottom>outer.bottom+1?'bottom':''].filter(Boolean).join(',');
@@ -293,7 +293,14 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
             if(visible(text)&&!contains(childBox,rect(text)))errors.push('seat '+seatNo+' action text escaped its badge: '+text.className);
             if(text.clientWidth>0&&text.scrollWidth>text.clientWidth+1)errors.push('seat '+seatNo+' action text clipped: '+text.className);
           }
-          if(child.matches('.seat-wager')){const value=child.querySelector('strong');if(value&&value.clientWidth>0&&value.scrollWidth>value.clientWidth+1)errors.push('seat '+seatNo+' wager text clipped');}
+          if(child.matches('.seat-wager')){
+            if(overlaps(outer,childBox))errors.push('seat '+seatNo+' contribution is inside its owner '+JSON.stringify({outer,childBox,style:child.getAttribute('style'),board}));
+            const felt=rect(document.querySelector('#felt'));
+            if(!contains(felt,childBox))errors.push('seat '+seatNo+' contribution escaped the felt');
+            const chips=child.querySelector('.wager-stack');
+            if(!chips||!visible(chips)||chips.querySelectorAll('i').length!==3)errors.push('seat '+seatNo+' contribution has no visible chips');
+            for(const other of document.querySelectorAll('.seat-contribution'))if(other!==child&&visible(other)&&overlaps(childBox,rect(other)))errors.push('contribution stacks overlap');
+            const value=child.querySelector('strong');if(value&&value.clientWidth>0&&value.scrollWidth>value.clientWidth+1)errors.push('seat '+seatNo+' wager text clipped');}
           if(child.matches('.seat-turn-clock')){
             const clockFont=parseFloat(getComputedStyle(child).fontSize);
             if(clockFont<9)errors.push('seat '+seatNo+' turn clock font below 9px: '+clockFont);
@@ -332,6 +339,16 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
       }
       return {errors,seats:seats.length};
     });
+  }
+  async function expectContributions(page,view) {
+    const expected=Object.fromEntries((view.seats||[])
+      .filter(seat=>Number(seat.bet??seat.street_bet??0)>0)
+      .map(seat=>[String(seat.seat_no),Number(seat.bet??seat.street_bet)]));
+    await wait(page, wanted=>{
+      const nodes=[...document.querySelectorAll('.seat-contribution:not(.is-reserved)')];
+      return nodes.length===Object.keys(wanted).length&&nodes.every(node=>
+        Number(node.dataset.contribution)===wanted[node.dataset.seatNo]);
+    },expected);
   }
   async function readableCards(page,ids) {
     return ev(page,playerIds => {
@@ -412,6 +429,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   assert(positions.some(row=>row.text==='Small blind'&&row.player===started.small_blind_id)&&
     positions.some(row=>row.text==='Big blind'&&row.player===started.big_blind_id),
     'Preflop blind badges do not identify the actual blind players: '+JSON.stringify(positions));
+  await expectContributions(playerPage,started);
   const geometry = {};
   for (const [width,height] of viewports) {
     const key=width+'x'+height;
@@ -427,6 +445,11 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     if(process.env.PLAYER_DISPLAY_BASELINE_CAPTURE!=='1'){
       if(['1366x768','390x844','320x568','667x375'].includes(key))
         await playerPage.screenshot('player-displays-'+key);
+      const suits=await ev(playerPage,()=>[...document.querySelectorAll('#hero-seat .mini-suit')].map(node=>({
+        font:parseFloat(getComputedStyle(node).fontSize),height:node.closest('.mini-card').clientHeight
+      })));
+      assert(suits.length===2&&suits.every(row=>row.font>=row.height*.5),
+        'Hole-card suits are too small at '+key+': '+JSON.stringify(suits));
       const containment=await checkSeatChildren(playerPage);
 
       assert(!containment.errors.length,'Seat child containment failed at '+key+': '+containment.errors.slice(0,12).join('; '));
@@ -472,7 +495,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
 
   const ownCards = await readableCards(playerPage,[initialActor.player.id]);
   assert(ownCards.length === 1 && ownCards[0].count === 2 &&
-    ownCards[0].cards.every(card => card.visible && card.label && card.rankSize >= 9 && card.suitSize >= 9),
+    ownCards[0].cards.every(card => card.visible && card.label && card.rankSize >= 9 && card.suitSize >= 16),
     'The viewer rank/suit text is not legible: ' + JSON.stringify(ownCards));
 
   const centralHidden = await ev(playerPage,() => {
@@ -497,11 +520,21 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
           Boolean(seat.querySelector('.seat-action.kind-call'));
       };
       await wait(playerPage,blindActed,started.small_blind_id);
+      await expectContributions(playerPage,view);
+      assert(await ev(playerPage,()=>document.querySelectorAll('.seat-contribution:not(.is-reserved)').length)===9,
+        'All nine preflop contributions must remain visible until collection.');
+      for(const [width,height] of viewports){
+        await playerPage.resize(width,height);await sleep(200);
+        const result=await checkSeatChildren(playerPage);
+        assert(!result.errors.length,'Nine chip stacks at '+width+'x'+height+': '+result.errors.slice(0,12).join('; '));
+        if(width===320||width===1366)await playerPage.screenshot('nine-chip-stacks-'+width+'x'+height);
+      }
       await playerPage.reload();
       await wait(playerPage,blindActed,started.small_blind_id);
     }
   }
   await blindBadges(playerPage,0);
+  await expectContributions(playerPage,view);
   assert(view.street === 'flop','The nine-player hand did not reach a flop: ' +
     JSON.stringify({street:view.street,actor:view.actor_id}));
 
@@ -600,6 +633,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     const avatars=[...document.querySelectorAll('#seat-grid .seat-card .seat-avatar')];
     return avatars.length===9 && avatars.every(node=>node.classList.contains('has-avatar')&&node.querySelector('img')?.naturalWidth===256);
   });
+  await expectContributions(actionPage,await getView(tablePath,initialActor));
   for(const [w,h] of viewports){
     await actionPage.resize(w,h);await sleep(200);
     const result=await checkSeatChildren(actionPage);
@@ -623,6 +657,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     'The prior caller did not get a chance to respond to the raise.');
   const afterBCall = await act(tablePath,beforeClose,playersById,'call');
   assert(afterBCall.street !== 'flop','The final call did not close the betting round.');
+  await expectContributions(actionPage,afterBCall);
   await wait(actionPage,() => /TURN/i.test(document.querySelector('#street-label')?.textContent || '') &&
     document.querySelectorAll('#seat-grid .seat-action[data-action-seat]').length === 0);
   assert(await ev(actionPage,() => {
@@ -720,6 +755,6 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     return !stale.length&&(document.querySelector('#hand-number')?.textContent||'').includes(String(hand))?{hand,stale}:false;
   },nextHand,oldActionIds);
   assert(!cleared.stale.length,'The new hand retained a previous Bet/Call/Raise: '+JSON.stringify(cleared));
-  console.log('Player displays passed: stable board/dock geometry and contained seats at seven viewports, preflop-only blind positions, larger protected JPEG portraits/cards, per-player Bet/Raise/Call persistence, reconnect recovery, street/new-hand clearing, and readable showdown cards.');
+  console.log('Player displays passed: stable board/dock geometry and contained seats at seven viewports, preflop-only blind positions, larger protected JPEG portraits/cards, per-player Bet/Raise/Call persistence, reconnect recovery, street/new-hand clearing, larger hole-card suits, nine outside chip stacks with exact street amounts and pot collection, and readable showdown cards.');
   console.log('Display growth from 837201f: ' + JSON.stringify(growth));
 }

@@ -3439,13 +3439,14 @@
         turnMarkup = '<span class="seat-turn-indicator' + (turnClockMarkup ? ' has-clock' : '') + '" data-turn-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + " to act") + '">' +
           '<span class="seat-turn-label">TO ACT</span>' + turnClockMarkup + '</span>';
       }
+      var wagerMarkup = "";
       var wager = number(fx.displayWagers[seatNo], 0);
       if (!fx.eventAware && !wager) wager = number(seat.bet != null ? seat.bet : seat.street_bet, 0);
       if (wager > 0) {
-        markerHtml += '<span class="seat-wager" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + esc(tableChips(wager)) + '" title="Street wager ' + esc(tableChips(wager)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChipValue(wager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
+        wagerMarkup += '<span class="seat-wager seat-contribution" data-contribution="' + esc(wager) + '" data-seat-no="' + esc(seatNo) + '" aria-label="Street wager ' + esc(tableChips(wager)) + '" title="Street wager ' + esc(tableChips(wager)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(winnerChipValue(wager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
       } else if (number(pendingWagers[seatNo], 0) > 0) {
         var pendingWager = number(pendingWagers[seatNo], 0);
-        markerHtml += '<span class="seat-wager is-reserved" data-seat-no="' + esc(seatNo) + '" aria-label="Pending street wager ' + esc(tableChips(pendingWager, view)) + '" title="Pending street wager ' + esc(tableChips(pendingWager, view)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(tableChipValue(pendingWager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
+        wagerMarkup += '<span class="seat-wager seat-contribution is-reserved" data-contribution="' + esc(pendingWager) + '" data-seat-no="' + esc(seatNo) + '" aria-label="Pending street wager ' + esc(tableChips(pendingWager, view)) + '" title="Pending street wager ' + esc(tableChips(pendingWager, view)) + '"><span class="wager-stack" aria-hidden="true"><i></i><i></i><i></i></span><strong>' + esc(winnerChipValue(pendingWager, view)) + '</strong><span class="wager-unit">' + esc(tableChipUnit(view)) + '</span></span>';
       }
       var shownRank = showdown && showdownRow && cards.length
         ? handRankName(showdownRow, view.hand_ranks || {}) : "";
@@ -3463,7 +3464,7 @@
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         cardHtml +
         '<div class="seat-top' + (acting ? ' has-turn' : '') + '"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span>' + turnMarkup + '</div>' + dealerChip +
-        playerInfo + playerFooter + blindMarkup +
+        playerInfo + playerFooter + blindMarkup + wagerMarkup +
       '</div>';
     }
 
@@ -3599,12 +3600,68 @@
       }
     }
 
+    placeSeatContributions(grid, felt);
+
     fx.wagerPositions = {};
     grid.querySelectorAll(".seat-wager").forEach(function (node) {
       var seatNo = String(node.getAttribute("data-seat-no"));
       var rect = node.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         fx.wagerPositions[seatNo] = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+    });
+  }
+
+  // Keep each street's chips on the felt, near their owner and clear of
+  // every seat, the board, and other stacks. Positions feed the existing
+  // bet-to-seat and sweep-to-pot animations.
+  function placeSeatContributions(grid, felt) {
+    var bounds = felt.getBoundingClientRect();
+    var seats = Array.from(grid.querySelectorAll(".seat-card"));
+    var obstacles = seats.concat(Array.from(felt.querySelectorAll(
+      ".board-center, #blind-strip, .dealer-marker"
+    ))).filter(function (node) {
+      var style = window.getComputedStyle(node), box = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+    }).map(function (node) { return node.getBoundingClientRect(); });
+    var gap = window.innerWidth <= 340 ? 1 : 2;
+    var center = { x:(bounds.left + bounds.right) / 2, y:(bounds.top + bounds.bottom) / 2 };
+    grid.querySelectorAll(".seat-contribution").forEach(function (node) {
+      var owner = node.closest(".seat-card"), box = owner.getBoundingClientRect();
+      var width = node.offsetWidth, height = node.offsetHeight;
+      var ox = (box.left + box.right) / 2, oy = (box.top + box.bottom) / 2;
+      var dx = center.x - ox, dy = center.y - oy;
+      var horizontal = Math.abs(dx) / Math.max(1, bounds.width) > Math.abs(dy) / Math.max(1, bounds.height);
+      var preferred = horizontal
+        ? { x:dx > 0 ? box.right + 5 : box.left - width - 5, y:oy - height / 2 }
+        : { x:ox - width / 2, y:dy > 0 ? box.bottom + 5 : box.top - height - 5 };
+      var best = null, bestScore = Infinity;
+      function consider(x, y) {
+        var right = x + width, bottom = y + height;
+        if (x < bounds.left + 2 || right > bounds.right - 2 ||
+            y < bounds.top + 2 || bottom > bounds.bottom - 2) return;
+        if (obstacles.some(function (other) {
+          return x < other.right + gap && right > other.left - gap &&
+            y < other.bottom + gap && bottom > other.top - gap;
+        })) return;
+        var score = Math.pow(x - preferred.x, 2) + Math.pow(y - preferred.y, 2);
+        if (score < bestScore) { bestScore = score; best = { x:x, y:y }; }
+      }
+      consider(preferred.x, preferred.y);
+      // Search only the owner's neighborhood first; a crowded small screen can
+      // need a corner or outward-facing stack instead of the inward edge.
+      for (var y = box.top - height - 28; y <= box.bottom + 28; y += 3) {
+        for (var x = box.left - width - 28; x <= box.right + 28; x += 3) consider(x, y);
+      }
+      if (!best) {
+        for (var fy = bounds.top + 2; fy < bounds.bottom - height; fy += 4) {
+          for (var fx = bounds.left + 2; fx < bounds.right - width; fx += 4) consider(fx, fy);
+        }
+      }
+      if (best) {
+        node.style.left = (best.x - box.left - owner.clientLeft) + "px";
+        node.style.top = (best.y - box.top - owner.clientTop) + "px";
+        obstacles.push({ left:best.x, top:best.y, right:best.x + width, bottom:best.y + height });
       }
     });
   }

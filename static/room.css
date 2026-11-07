@@ -4634,3 +4634,96 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
   body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden]) { animation:none !important; }
 }
 body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden])[data-paused="true"] { animation:none !important; }
+
+/* Readable, prominent suits inside every exposed hole card. The second card
+   overlaps only the first card's right edge, so keep the suit in its left lane. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+  top: auto !important;
+  bottom: 2px !important;
+  left: 2px !important;
+  width: auto !important;
+  height: auto !important;
+  font-size: min(52cqh, 80cqw) !important;
+  line-height: .9 !important;
+  font-weight: 900 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-rank {
+  top: 2px !important;
+  left: 2px !important;
+  font-size: min(17px, 35cqh) !important;
+  line-height: .95 !important;
+}
+
+/* Street contributions belong on the felt, outside the player's container.
+   JavaScript fits the marker beside its owner after the seat ring is laid out. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card > .seat-contribution {
+  position: absolute !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  box-sizing: border-box !important;
+  width: max-content !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  height: 25px !important;
+  min-height: 25px !important;
+  max-height: 25px !important;
+  padding: 2px 6px !important;
+  margin: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  border: 1px solid #d7b96b !important;
+  border-radius: 8px !important;
+  background: #101e17 !important;
+  color: #fff0bd !important;
+  overflow: visible !important;
+  opacity: 1 !important;
+  z-index: 8 !important;
+  pointer-events: none !important;
+}
+body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-unit { display: none !important; }
+body.gameplay-active #seat-grid .seat-card > .seat-contribution strong {
+  display: block !important;
+  font: 850 12px/1 system-ui, sans-serif !important;
+}
+body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack {
+  display: inline-block !important;
+  width: 21px !important;
+  height: 17px !important;
+  flex: 0 0 21px !important;
+  transform: none !important;
+}
+body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i {
+  box-sizing: border-box;
+  width: 15px !important;
+  height: 9px !important;
+  left: 2px !important;
+  top: 0 !important;
+  border: 2px dashed #ffe7a3 !important;
+  box-shadow: 0 2px 0 #533e1c !important;
+}
+body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(2) { left: 0 !important; top: 4px !important; }
+body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(3) { left: 5px !important; top: 8px !important; }
+@media (max-width: 820px), (max-height: 450px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card > .seat-contribution {
+    height: 20px !important; min-height: 20px !important; max-height: 20px !important;
+    padding: 1px 3px !important; gap: 2px !important;
+  }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution strong { font-size: 10px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack { width: 17px !important; height: 15px !important; flex-basis: 17px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i { width: 12px !important; height: 7px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(3) { left: 4px !important; top: 7px !important; }
+}
+
+@media (max-width: 340px) and (max-height: 600px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card > .seat-contribution {
+    height: 14px !important; min-height: 14px !important; max-height: 14px !important;
+    padding: 0 1px !important; gap: 0 !important; border-radius: 5px !important;
+  }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution strong { font-size: 9px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack { width: 14px !important; height: 12px !important; flex-basis: 14px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i { width: 11px !important; height: 6px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(2) { top: 3px !important; }
+  body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(3) { top: 6px !important; }
+}
