@@ -2997,6 +2997,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "current_bet": hand["current_bet"] if hand else 0,
         "min_raise": hand["min_raise"] if hand else blinds["big"],
         "button_id": state["button_id"],
+        "small_blind_id": hand.get("small_blind_id") if hand else None,
+        "big_blind_id": hand.get("big_blind_id") if hand else None,
         "actor_id": actor_id,
         "turn_deadline": public_deadline(hand["turn_deadline"]) if hand else None,
         "server_now": timestamp,

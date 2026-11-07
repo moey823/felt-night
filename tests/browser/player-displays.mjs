@@ -57,6 +57,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   }
   async function signIn(page,user,path) {
     await ev(page,next => window.location.assign(next),path);
+    await wait(page,next => location.pathname + location.search === next,path);
     await wait(page,(username,password,invite) => {
       const form=document.querySelector('#login-form');
       const name=document.querySelector('#login-name'),passwordField=document.querySelector('#login-password');
@@ -218,7 +219,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     for (const row of afterSeats) {
       const prior = beforeSeats.find(item => item.relative === row.relative);
       if (!prior) errors.push('missing baseline relative seat ' + row.relative);
-      else compareRect(prior.rect,row.rect,'seat.relative-' + row.relative);
+      // Seat boxes intentionally grow; the board, dock and primary buttons retain their geometry.
     }
     const beforeActions = baseline.parts.primaryActions || [], afterActions = actual.parts.primaryActions || [];
     if (beforeActions.length !== afterActions.length) errors.push('primary action slot count ' + beforeActions.length + ' -> ' + afterActions.length);
@@ -244,9 +245,11 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
       const overlaps=(a,b)=>a.left<b.right-.5&&a.right>b.left+.5&&a.top<b.bottom-.5&&a.bottom>b.top+.5;
       const boardNode=document.querySelector('#felt .board-center'),board=boardNode&&visible(boardNode)?rect(boardNode):null;
       const seats=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
+      for(let i=0;i<seats.length;i++)for(let j=i+1;j<seats.length;j++)
+        if(overlaps(rect(seats[i]),rect(seats[j])))errors.push('seat boxes overlap: '+seats[i].dataset.seatNo+' / '+seats[j].dataset.seatNo);
       for(const seat of seats){
         const outer=rect(seat),seatNo=seat.dataset.seatNo||'';
-        const children=[...seat.querySelectorAll('.seat-avatar,.seat-avatar img,.seat-cards .mini-card,.seat-action[data-action-seat],.seat-turn-indicator[data-turn-seat],.seat-turn-clock[data-turn-clock-seat],.seat-wager')].filter(visible);
+        const children=[...seat.querySelectorAll('.seat-avatar,.seat-avatar img,.seat-cards .mini-card,.seat-action[data-action-seat],.seat-turn-indicator[data-turn-seat],.seat-turn-clock[data-turn-clock-seat],.seat-wager,.seat-blind-badge')].filter(visible);
         for(const child of children){
           const childBox=rect(child),label=child.className||child.tagName;
           if(!contains(outer,childBox)){
@@ -256,7 +259,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
             errors.push('seat '+seatNo+' child escaped '+overflow+': '+label+' seat='+JSON.stringify(outer)+
               ' child='+JSON.stringify(childBox)+' footer='+(footer?JSON.stringify(rect(footer)):'null'));
           }
-          if(board&&overlaps(board,childBox))errors.push('seat '+seatNo+' child overlaps board: '+label);
+          if(board&&overlaps(board,childBox))errors.push('seat '+seatNo+' child overlaps board: '+label+' '+JSON.stringify({board,child:childBox}));
           for(const other of seats)if(other!==seat&&overlaps(rect(other),childBox))errors.push('seat '+seatNo+' child overlaps another seat: '+label);
           if(child.matches('.mini-card:not(.back)'))for(const text of child.querySelectorAll('.mini-rank,.mini-suit')){
             if(visible(text)&&!contains(childBox,rect(text)))errors.push('seat '+seatNo+' card text escaped its face: '+text.className);
@@ -290,6 +293,8 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
         if(avatar&&stack&&visible(avatar)&&visible(stack)&&overlaps(rect(avatar),rect(stack)))errors.push('seat '+seatNo+' avatar overlaps stack');
         if(avatar&&name&&visible(avatar)&&visible(name)&&overlaps(rect(avatar),rect(name)))errors.push('seat '+seatNo+' avatar overlaps name');
         const critical=[name,stack,seat.querySelector('.seat-status,.seat-detail-text')].filter(node=>node&&visible(node));
+        for(const text of critical)if(board&&overlaps(board,rect(text)))
+          errors.push('seat '+seatNo+' text obscures board: '+text.className);
         const markers=[...seat.querySelectorAll('.seat-action[data-action-seat],.seat-turn-indicator[data-turn-seat],.seat-turn-clock[data-turn-clock-seat],.seat-wager')].filter(visible);
         for(const marker of markers)for(const text of critical)if(marker!==text&&overlaps(rect(marker),rect(text)))
           errors.push('seat '+seatNo+' marker obscures '+(text.className||text.tagName));
@@ -370,6 +375,19 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     return cards.length === 2 && cards.every(node => /^[2-9TJQKA]+ .$/.test(node.getAttribute('aria-label') || ''));
   });
 
+  async function blindBadges(page, expected) {
+    return wait(page, count => {
+      const badges=[...document.querySelectorAll('#seat-grid .seat-blind-badge')];
+      return badges.length===count ? badges.map(node=>({
+        text:node.textContent,player:node.closest('.seat-card').dataset.playerId,
+        font:parseFloat(getComputedStyle(node).fontSize),
+      })) : false;
+    }, expected);
+  }
+  const positions=await blindBadges(playerPage,2);
+  assert(positions.some(row=>row.text==='Small blind'&&row.player===started.small_blind_id)&&
+    positions.some(row=>row.text==='Big blind'&&row.player===started.big_blind_id),
+    'Preflop blind badges do not identify the actual blind players: '+JSON.stringify(positions));
   const geometry = {};
   for (const [width,height] of viewports) {
     const key=width+'x'+height;
@@ -378,6 +396,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
       if(['1366x768','390x844','320x568','667x375'].includes(key))
         await playerPage.screenshot('player-displays-'+key);
       const containment=await checkSeatChildren(playerPage);
+
       assert(!containment.errors.length,'Seat child containment failed at '+key+': '+containment.errors.slice(0,12).join('; '));
     }
   }
@@ -439,7 +458,18 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     const actor = playersById.get(view.actor_id);
     assert(actor,'No session for preflop actor ' + view.actor_id);
     view = await act(tablePath,view,playersById,Number(view.viewer?.to_call || 0) > 0 ? 'call' : 'check');
+    if(actor.player.id===started.small_blind_id && view.street==='preflop'){
+      const blindActed=id=>{
+        const seat=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')].find(node=>node.dataset.playerId===id);
+        return seat?.querySelector('.seat-blind-badge')?.textContent==='Small blind'&&
+          Boolean(seat.querySelector('.seat-action.kind-call'));
+      };
+      await wait(playerPage,blindActed,started.small_blind_id);
+      await playerPage.reload();
+      await wait(playerPage,blindActed,started.small_blind_id);
+    }
   }
+  await blindBadges(playerPage,0);
   assert(view.street === 'flop','The nine-player hand did not reach a flop: ' +
     JSON.stringify({street:view.street,actor:view.actor_id}));
 
@@ -520,6 +550,16 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     const avatars=[...document.querySelectorAll('#seat-grid .seat-card .seat-avatar')];
     return avatars.length===9 && avatars.every(node=>node.classList.contains('has-avatar')&&node.querySelector('img')?.naturalWidth===256);
   });
+  for(const [w,h] of viewports){
+    await actionPage.resize(w,h);await sleep(200);
+    const result=await checkSeatChildren(actionPage);
+    assert(!result.errors.length,'Action containment at '+w+'x'+h+': '+result.errors.slice(0,12).join('; '));
+    const badges=await ev(actionPage,()=>[...document.querySelectorAll('.seat-action.kind-raise,.seat-action.kind-bet')].map(node=>({
+      font:parseFloat(getComputedStyle(node).fontSize),background:getComputedStyle(node).backgroundColor,text:node.textContent,
+    })));
+    assert(badges.length&&badges.every(row=>row.font>=10&&row.background==='rgb(245, 207, 121)'),
+      'Aggressive actions lack readable emphasis: '+JSON.stringify(badges));
+  }
   await actionPage.resize(1366,768); await sleep(250); await actionPage.screenshot('player-displays-actions-desktop-1366x768');
   await actionPage.resize(390,844); await sleep(250); await actionPage.screenshot('player-displays-actions-phone-390x844');
 
@@ -594,8 +634,14 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   }),allInIds);
   assert(allInFallback.every(row=>row.detail&&row.statusVisible&&!row.badge),
     'A remaining zero-stack player lost its readable status or retained a stale action at showdown: '+JSON.stringify(allInFallback));
-  const showdownContainment=await checkSeatChildren(actionPage);
-  assert(!showdownContainment.errors.length,'Showdown cards or markers escaped their seats: '+showdownContainment.errors.slice(0,12).join('; '));
+  const showdownErrors=[];
+  for(const [w,h] of viewports){
+    await actionPage.resize(w,h);await sleep(200);
+    const result=await checkSeatChildren(actionPage);
+    showdownErrors.push(...result.errors.map(error=>w+'x'+h+': '+error));
+    await actionPage.screenshot('player-displays-showdown-'+w+'x'+h);
+  }
+  assert(!showdownErrors.length,'Showdown cards or markers escaped their seats: '+showdownErrors.slice(0,20).join('; '));
   const exposedCards = await readableCards(actionPage,showdownIds);
   assert(showdownIds.includes(aId)&&showdownIds.includes(callerId)&&
     exposedCards.length===showdownIds.length&&exposedCards.length>=2&&exposedCards.every(row=>row.count===2&&
@@ -619,6 +665,6 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     return !stale.length&&(document.querySelector('#hand-number')?.textContent||'').includes(String(hand))?{hand,stale}:false;
   },nextHand,oldActionIds);
   assert(!cleared.stale.length,'The new hand retained a previous Bet/Call/Raise: '+JSON.stringify(cleared));
-  console.log('Player displays passed: original geometry at seven viewports, larger protected JPEG portraits/cards, per-player Bet/Raise/Call persistence, reconnect recovery, street/new-hand clearing, and readable showdown cards.');
+  console.log('Player displays passed: stable board/dock geometry and contained seats at seven viewports, preflop-only blind positions, larger protected JPEG portraits/cards, per-player Bet/Raise/Call persistence, reconnect recovery, street/new-hand clearing, and readable showdown cards.');
   console.log('Display growth from 837201f: ' + JSON.stringify(growth));
 }

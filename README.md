@@ -12,7 +12,7 @@ The table uses a dedicated gameplay view with a seat ring, centered board and po
 
 Room admins can select loaded past games for bulk deletion with a count-specific confirmation; active games and accounts are preserved. Clicking outside a dialog dismisses it. Reaction choices include poop and facepalm.
 
-Players can upload or remove a cropped profile photo from the profile control. Photos are stored with the player account and shown at occupied seats; players without a photo use the existing fallback.
+Players can upload or remove a cropped profile photo from the profile control. Photos are stored with the player account and shown as larger portraits beside the card faces at occupied seats; players without a photo use the existing fallback. Exposed cards have larger ranks and suits. Small blind and big blind positions have separate, spelled-out badges throughout preflop, including after those players act; the badges disappear on later streets. Bet, raise, and all-in action badges use a high-contrast gold background with a clear amount.
 
 A separate, explicitly enabled room admin configures shared preflop/postflop bet presets, all-in street delay, blind/elimination announcements, showdown result holds, and the winner hold after everyone else folds. The no-showdown hold accepts 0–60 seconds and defaults to 1.5 seconds; blind and elimination announcements follow it. Admin changes apply to future pacing transitions without resetting an active deadline. Only admin can add or remove test bots. The admin account cannot create a game, take a seat, or submit poker actions. Normal players retain their personal accounts, reconnectable seats, and private tournament histories.
 

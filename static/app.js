@@ -2754,9 +2754,12 @@
       var eliminated = explicitEliminated ||
         (view.status === "playing" && !seatCountsAsTournamentRemaining(view, seat)) ||
         terminalBust || completedBust;
-      var classes = "seat-card" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") +
+      var classes = "seat-card seat-readable" + (isMe ? " is-me" : "") + (acting ? " is-acting" : "") +
         (folded ? " is-folded" : "") + (bot ? " is-bot" : "") + (eliminated ? " is-eliminated" : "") +
         (dealer ? " has-dealer" : "") + (id === lastActorId ? " is-last-actor" : "");
+      if (relativeIndex > max / 2) classes += " is-right-seat";
+      var sideSlots = max === 7 ? [2, 5] : (max >= 8 ? [2, 3, 6, 7] : []);
+      if (sideSlots.indexOf(relativeIndex) >= 0) classes += " is-side-seat";
       var label = eliminated ? "Out" : (sittingOut ? "Sitting out" : (folded ? "Folded" : (allIn ? "All in" : "")));
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
@@ -2845,6 +2848,12 @@
         seatAvatarUrl = profileAvatarOverride.url;
       }
       var seatAvatar = avatarMarkup(seatAvatarUrl, seatName, "seat-avatar");
+      // Blind position belongs to the hand, independently of the latest action.
+      var blindRole = currentHand && String(view.street || "").toLowerCase() === "preflop"
+        ? (id === String(view.small_blind_id || "") ? "Small blind" :
+          (id === String(view.big_blind_id || "") ? "Big blind" : "")) : "";
+      var blindMarkup = '<div class="seat-blind-position">' + (blindRole
+        ? '<span class="seat-blind-badge" aria-label="' + esc(seatName + ": " + blindRole) + '">' + esc(blindRole) + '</span>' : "") + '</div>';
       var dealerChip = dealer
         ? '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>'
         : "";
@@ -2892,7 +2901,7 @@
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         cardHtml +
         '<div class="seat-top' + (acting ? ' has-turn' : '') + '"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span>' + turnMarkup + '</div>' + dealerChip +
-        playerInfo + playerFooter +
+        playerInfo + playerFooter + blindMarkup +
       '</div>';
     }
 
@@ -2964,6 +2973,48 @@
         nodes[i].style.left = (point.x / gridRect.width * 100).toFixed(3) + "%";
         nodes[i].style.top = (point.y / gridRect.height * 100).toFixed(3) + "%";
       });
+    }
+
+    // Fit the dealer chip beside its owner without covering enlarged faces.
+    var dealerNode = grid.querySelector(".dealer-marker");
+    if (dealerNode) {
+      var owner = dealerNode.closest(".seat-card"), ownerBox = owner.getBoundingClientRect();
+      var feltBox = felt.getBoundingClientRect();
+      var markerSize = window.innerWidth <= 380 || window.innerHeight <= 450 ? 20 : 30;
+      var blockedNodes = Array.from(grid.querySelectorAll(".seat-card")).filter(function (node) { return node !== owner; })
+        .concat(Array.from(owner.querySelectorAll(".seat-name,.mini-card,.seat-avatar,.seat-stack,.seat-status,.seat-action,.seat-wager,.seat-turn-indicator")))
+        .concat(Array.from(felt.querySelectorAll(".board-center,#pot-display,#street-label,#blind-strip")));
+      var blocked = blockedNodes.filter(function (node) {
+        var style = window.getComputedStyle(node), rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      }).map(function (node) { return node.getBoundingClientRect(); });
+      var preferred = { x:ownerBox.right - markerSize + 5, y:ownerBox.top - markerSize + 2 };
+      var best = null, bestDistance = Infinity;
+      function considerDealer(x, y) {
+        var right = x + markerSize, bottom = y + markerSize;
+        if (x < feltBox.left || right > feltBox.right || y < feltBox.top || bottom > feltBox.bottom) return;
+        if (blocked.some(function (box) {
+          return x < box.right + 1 && right > box.left - 1 && y < box.bottom + 1 && bottom > box.top - 1;
+        })) return;
+        var distance = Math.pow(x - preferred.x, 2) + Math.pow(y - preferred.y, 2);
+        if (distance < bestDistance) { best = { x:x, y:y }; bestDistance = distance; }
+      }
+      considerDealer(preferred.x, preferred.y);
+      if (!best) {
+        for (var markerY = ownerBox.top - markerSize - 2; markerY <= ownerBox.bottom + 2; markerY += 2) {
+          for (var markerX = ownerBox.left - markerSize - 2; markerX <= ownerBox.right + 2; markerX += 2) {
+            considerDealer(markerX, markerY);
+          }
+        }
+      }
+      if (best) {
+        ["width","min-width","max-width","height","min-height","max-height"].forEach(function (property) {
+          dealerNode.style.setProperty(property, markerSize + "px", "important");
+        });
+        dealerNode.style.setProperty("left", (best.x - ownerBox.left - owner.clientLeft) + "px", "important");
+        dealerNode.style.setProperty("top", (best.y - ownerBox.top - owner.clientTop) + "px", "important");
+        dealerNode.style.setProperty("right", "auto", "important");
+      }
     }
 
     fx.wagerPositions = {};

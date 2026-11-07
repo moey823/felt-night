@@ -154,7 +154,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
       dealerAccessible:dealer?.getAttribute('aria-label')==='Dealer button',
       dealerSize:dealerBox?{width:dealerBox.width,height:dealerBox.height}:null,
       dealerAtCorner:dealerBox&&ownerBox?Math.hypot((dealerBox.left+dealerBox.right)/2-ownerBox.right,
-        (dealerBox.top+dealerBox.bottom)/2-ownerBox.top)<=17:false,
+        (dealerBox.top+dealerBox.bottom)/2-ownerBox.top)<=24:false,
       dealerContentOverlaps:ownContentOverlaps,dealerContentRects:dealerContentBoxes,dealerOtherSeatOverlap:otherSeats,
       dealerInFelt:dealerBox&&dealerBox.left>=felt.left-1&&dealerBox.right<=felt.right+1&&
         dealerBox.top>=felt.top-1&&dealerBox.bottom<=felt.bottom+1,
@@ -205,7 +205,8 @@ export default async function reactions([one,two], sleep, roomPassword) {
         dealerSeat:owner?.dataset.seatNo||'',dealerDeclared:dealer?.dataset.markerSeat||'',
         dealerAccessible:dealer?.getAttribute('aria-label')==='Dealer button',
         dealerSize:d?{width:d.width,height:d.height}:null,
-        dealerCorner:d&&s?Math.hypot((d.left+d.right)/2-s.right,(d.top+d.bottom)/2-s.top)<=17:false,
+        dealerNearSeat:d&&s?Math.hypot(Math.max(s.left-d.right,d.left-s.right,0),Math.max(s.top-d.bottom,d.top-s.bottom,0))<=22:false,
+        dealerCorner:d&&s?Math.hypot((d.left+d.right)/2-s.right,(d.top+d.bottom)/2-s.top)<=24:false,
         dealerInFelt:d&&d.left>=f.left-1&&d.right<=f.right+1&&d.top>=f.top-1&&d.bottom<=f.bottom+1,
         dealerInViewport:d&&d.left>=-1&&d.right<=innerWidth+1&&d.top>=-1&&d.bottom<=innerHeight+1,
         dealerContentOverlaps:ownOverlaps,dealerContentRects:dealerContentBoxes,dealerOtherSeatOverlap:otherSeats,dealerBox:d,ownerBox:s,otherSeatRows};
@@ -213,7 +214,9 @@ export default async function reactions([one,two], sleep, roomPassword) {
     assert(dock.count===3&&dock.vertical&&dock.leftOfActions&&dock.documentWidth<=dock.clientWidth+1,
       'Reaction rail geometry failed at '+width+'x'+height+': '+JSON.stringify(dock));
     assert(dock.dealerCount===1&&dock.dealerSeat===dock.dealerDeclared&&dock.dealerAccessible&&
-      dock.dealerSize.width>=30&&dock.dealerSize.height>=30&&dock.dealerCorner&&
+      dock.dealerSize.width>=(width<=380||height<=450?20:30)&&
+      dock.dealerSize.height>=(width<=380||height<=450?20:30)&&
+      (width<=380||height<=450 ? dock.dealerNearSeat : dock.dealerCorner)&&
       !dock.dealerContentOverlaps.length&&!dock.dealerOtherSeatOverlap&&dock.dealerInFelt&&dock.dealerInViewport,
       'Dealer chip geometry failed at '+width+'x'+height+': '+JSON.stringify(dock));
     const result=await evaluate(one,()=>{
@@ -236,7 +239,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
       return {centralVisible,actionCount:actions.length,actions,errors,
         turnVisible:Boolean(document.querySelector('.seat-turn-indicator[data-turn-seat]'))};
     });
-    assert(!result.centralVisible&&!result.errors.length,'Per-player action display failed around the nine-seat table: '+JSON.stringify(result));
+    assert(!result.centralVisible&&!result.errors.length,'Per-player action display failed at '+width+'x'+height+': '+JSON.stringify(result));
     await one.screenshot('felt-nine-seat-'+width+'x'+height);
   }
   await one.resize(390,844);

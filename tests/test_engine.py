@@ -34,6 +34,31 @@ def heads_up(now=100.0, starting_stack=1000):
 
 
 class EngineTests(unittest.TestCase):
+    def test_public_blind_positions_survive_actions_and_heads_up_button(self):
+        for count in (2, 3, 9):
+            with self.subTest(players=count):
+                state = engine.create_lobby("blind-positions", "p1", "Ada", config(max_seats=count), now=100)
+                for i in range(2, count + 1):
+                    engine.join(state, "p" + str(i), "Player " + str(i), now=101)
+                self.assertIsNone(engine.public_view(state, "p1")["small_blind_id"])
+                engine.start(state, "p1", now=102)
+                hand = state["hand"]
+                for viewer in ("p1", None):
+                    view = engine.public_view(state, viewer)
+                    self.assertEqual(view["small_blind_id"], hand["small_blind_id"])
+                    self.assertEqual(view["big_blind_id"], hand["big_blind_id"])
+                    self.assertNotEqual(view["small_blind_id"], view["big_blind_id"])
+                if count == 2:
+                    self.assertEqual(view["small_blind_id"], view["button_id"])
+                actor = engine.public_view(state, "p1")["actor_id"]
+                acting_view = engine.public_view(state, actor)
+                engine.apply_action(state, actor, "call" if acting_view["viewer"]["to_call"] else "check",
+                                    None, state["hand_no"], state["turn_version"], now=103)
+                updated = engine.public_view(state, None)
+                self.assertEqual(updated["small_blind_id"], view["small_blind_id"])
+                self.assertEqual(updated["big_blind_id"], view["big_blind_id"])
+
+
     def test_rank_descriptions_name_the_made_hand(self):
         cases = (
             ((0, 14, 12, 9, 5, 3), "Ace high"),
