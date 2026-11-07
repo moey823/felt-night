@@ -142,7 +142,25 @@ export default async function blindAnnouncement([desktop, mobile], sleep, roomPa
         return controlBox?.width > 0 && controlBox?.height > 0 &&
           controlStyle.display !== "none" && controlStyle.visibility !== "hidden";
       });
-      const text = (node?.innerText || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const lines = (node?.innerText || "").trim().split(/\n/).map(line => line.trim());
+      const textNode = node?.firstChild;
+      const renderedRows = new Set();
+      if (textNode?.nodeType === Node.TEXT_NODE) {
+        const range = document.createRange();
+        let offset = 0;
+        for (const line of (textNode.textContent || "").split("\n")) {
+          range.setStart(textNode, offset);
+          range.setEnd(textNode, offset + line.length);
+          for (const rect of range.getClientRects()) {
+            if (rect.width > 0 && rect.height > 0) renderedRows.add(Math.round(rect.top));
+          }
+          offset += line.length + 1;
+        }
+      }
+      const visualLineCount = renderedRows.size;
+      const formatChips = value => new Intl.NumberFormat("en-US", {
+        maximumFractionDigits: 0,
+      }).format(Number(value));
       const minWidth = innerWidth < 800 ? 250 : 320;
       return {
         visible,
@@ -159,10 +177,13 @@ export default async function blindAnnouncement([desktop, mobile], sleep, roomPa
         unclipped: Boolean(node && node.scrollWidth <= node.clientWidth + 1 &&
           node.scrollHeight <= node.clientHeight + 1),
         pointerEvents: style?.pointerEvents || "",
-        text,
-        expectedText: text.includes("level " + expectedValues.level) &&
-          text.includes("small blind " + expectedValues.small) &&
-          text.includes("big blind " + expectedValues.big),
+        whiteSpace: style?.whiteSpace || "",
+        lines,
+        visualLineCount,
+        expectedText: style?.whiteSpace === "pre-line" && visualLineCount === 3 &&
+          lines.length === 3 && lines[0] === "Blinds going up" &&
+          lines[1] === "Small: " + formatChips(expectedValues.small) &&
+          lines[2] === "Big: " + formatChips(expectedValues.big),
         controlOverlaps: controls.some(element => overlaps(box, rect(element))),
       };
     }, expected);

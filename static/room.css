@@ -2866,6 +2866,7 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
   line-height: 1.35 !important;
   letter-spacing: .01em !important;
   text-align: center !important;
+  white-space: pre-line !important;
   text-wrap: balance;
   pointer-events: none !important;
   backdrop-filter: blur(12px);
