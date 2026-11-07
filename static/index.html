@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#111c19">
-  <title>Felt Night — Private play-money poker</title>
+  <title>Felt Night — Private Poker Room</title>
   <link rel="icon" type="image/svg+xml" href="/poker/ace.svg">
   <link rel="manifest" href="/poker/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/poker/apple-touch-icon.png">
@@ -22,7 +22,7 @@
         <img class="ace-brand" src="/poker/ace.svg" alt="" width="42" height="42">
         <span class="brand-copy">
           <strong>Felt Night</strong>
-          <small>PRIVATE PLAY-MONEY POKER</small>
+          <small>DOLLAR BUY-INS · CHIP PLAY</small>
         </span>
       </a>
       <div class="topbar-right">
@@ -32,6 +32,7 @@
           <span class="identity-avatar" id="identity-avatar" aria-hidden="true"><span class="avatar-fallback-text">♠</span><img class="avatar-image" alt=""></span>
           <span id="welcome-name" class="welcome-name"></span>
           <button id="profile-photo-button" class="button button-quiet button-small" type="button">Profile photo</button>
+          <button id="profile-account-button" class="button button-quiet button-small" type="button">Edit account</button>
           <button id="lobby-history-button" class="button button-quiet button-small" type="button">My history</button>
           <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
         </div>
@@ -51,11 +52,18 @@
           <div class="profile-photo-controls">
             <button id="profile-photo-choose" type="button" class="button button-outline">Choose photo</button>
             <input id="profile-photo-file" class="visually-hidden" type="file" accept="image/jpeg,image/png" aria-describedby="profile-photo-help profile-photo-error">
-            <p id="profile-photo-help" class="muted">JPEG or PNG, up to 12 MB. The saved image is a 256 × 256 JPEG up to 256 KB.</p>
+            <p id="profile-photo-help" class="muted">JPEG or PNG, up to 12 MB. Your private seat image is saved as a 256 × 256 thumbnail plus a 1024 × 1024 full-size photo.</p>
             <p id="profile-photo-error" class="profile-photo-error" role="alert" hidden></p>
             <p id="profile-photo-status" class="profile-photo-status" role="status" aria-live="polite"></p>
           </div>
         </div>
+        <section class="avatar-presets-section" aria-labelledby="profile-photo-presets-title">
+          <div class="avatar-presets-heading">
+            <div><h3 id="profile-photo-presets-title">Cartoon portraits</h3><p class="muted">Pick a ready-made character, or use your own photo.</p></div>
+          </div>
+          <p id="profile-photo-presets-status" class="muted" role="status" aria-live="polite">Loading avatar choices…</p>
+          <div id="profile-photo-presets" class="avatar-preset-grid" role="group" aria-label="Choose a profile portrait"></div>
+        </section>
         <div id="profile-photo-editor" class="profile-photo-editor" hidden>
           <div class="profile-photo-crop-frame">
             <canvas id="profile-photo-canvas" width="256" height="256" tabindex="0" role="img" aria-label="Photo crop preview" aria-describedby="profile-photo-crop-help"></canvas>
@@ -76,6 +84,29 @@
           <button id="profile-photo-save" type="button" class="button button-primary button-small" disabled>Save photo</button>
         </div>
       </dialog>
+      <dialog id="profile-account-dialog" class="history-dialog profile-account-dialog" aria-labelledby="profile-account-title">
+        <div class="section-heading">
+          <div><div class="panel-kicker">YOUR ACCOUNT</div><h2 id="profile-account-title">Edit account</h2></div>
+          <button id="profile-account-close" type="button" class="button button-quiet button-small">Close</button>
+        </div>
+        <p class="muted">Your username is used to sign in. Your display name appears around the table.</p>
+        <form id="profile-account-form" class="profile-account-form">
+          <label for="profile-account-username">Username</label>
+          <input id="profile-account-username" name="username" type="text" minlength="3" maxlength="24" autocomplete="username" required>
+          <label for="profile-account-display-name">Display name</label>
+          <input id="profile-account-display-name" name="display_name" type="text" minlength="1" maxlength="24" autocomplete="nickname" required>
+          <label for="profile-account-current-password">Current password</label>
+          <input id="profile-account-current-password" name="current_password" type="password" maxlength="256" autocomplete="current-password" aria-describedby="profile-account-password-help">
+          <label for="profile-account-new-password">New password <span class="muted">(optional)</span></label>
+          <input id="profile-account-new-password" name="new_password" type="password" minlength="1" maxlength="256" autocomplete="new-password" aria-describedby="profile-account-password-help">
+          <small id="profile-account-password-help" class="muted">Enter your current password when changing your username or password. A new password can be any non-empty value up to 256 characters.</small>
+          <p id="profile-account-error" class="profile-photo-error" role="alert" hidden></p>
+          <p id="profile-account-status" class="profile-photo-status" role="status" aria-live="polite"></p>
+          <div class="profile-account-actions">
+            <button id="profile-account-save" type="submit" class="button button-primary button-small" disabled>Save account</button>
+          </div>
+        </form>
+      </dialog>
       <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title"><div class="section-heading"><div><div class="panel-kicker">PLAYER RECORD</div><h2 id="history-title">My history</h2></div><button type="button" class="button button-quiet button-small" id="history-close">Close</button></div><div id="history-content" aria-live="polite"></div></dialog>
 
 
@@ -83,10 +114,10 @@
         <div class="login-story">
           <div class="eyebrow"><span class="eyebrow-line"></span> A table for your people</div>
           <h1 id="login-title">Good cards.<br><em>Better company.</em></h1>
-          <p>A private place to run a no-limit Texas Hold’em sit-and-go. Play chips only, with the table and the cards handled here.</p>
+          <p>A private place to run a no-limit Texas Hold’em sit-and-go. Buy-ins and payouts are tracked in dollars; chips are used for gameplay. No external payments.</p>
           <div class="login-note">
             <span class="note-icon" aria-hidden="true">♧</span>
-            <span>Freezeout format <i>·</i> Play chips <i>·</i> No cash prizes</span>
+            <span>Freezeout format <i>·</i> Dollar buy-ins <i>·</i> Chip stacks</span>
           </div>
           <div class="decor-card decor-card-one" aria-hidden="true"><b>A</b><span>♠</span></div>
           <div class="decor-card decor-card-two" aria-hidden="true"><b>K</b><span>♥</span></div>
@@ -136,6 +167,21 @@
           <p id="admin-config-error" class="player-prefs-error" role="alert" hidden></p>
           <div class="settings-footer"><p id="admin-config-status" class="muted" role="status" aria-live="polite">These settings apply to all players.</p><button id="admin-config-save" class="button button-primary button-small" type="submit">Save room settings</button></div>
         </form>
+        <section id="admin-avatar-presets" class="panel admin-avatar-presets" aria-labelledby="admin-avatar-presets-title">
+          <div class="section-heading compact">
+            <div><div class="panel-kicker">SHARED PROFILE ART</div><h2 id="admin-avatar-presets-title">Add a cartoon portrait</h2></div>
+          </div>
+          <p class="muted">Add a portrait to the shared choices available to every player. Uploaded images are cropped and stored with the room data.</p>
+          <form id="admin-avatar-preset-form" class="admin-avatar-preset-form">
+            <div class="settings-field"><label for="admin-avatar-preset-name">Portrait name</label><input id="admin-avatar-preset-name" name="name" type="text" minlength="1" maxlength="40" required></div>
+            <div class="settings-field"><label for="admin-avatar-preset-file">Image</label><input id="admin-avatar-preset-file" name="image" type="file" accept="image/jpeg,image/png" required><small class="muted">JPEG or PNG up to 12 MB. The server stores a 256 × 256 thumbnail and a 1024 × 1024 master.</small></div>
+            <div id="admin-avatar-preset-preview-wrap" class="admin-avatar-preset-preview-wrap" hidden><img id="admin-avatar-preset-preview" alt=""><span id="admin-avatar-preset-preview-name"></span></div>
+            <p id="admin-avatar-preset-error" class="profile-photo-error" role="alert" hidden></p>
+            <p id="admin-avatar-preset-status" class="profile-photo-status" role="status" aria-live="polite"></p>
+            <button id="admin-avatar-preset-save" type="submit" class="button button-primary button-small">Add shared portrait</button>
+          </form>
+          <div id="admin-avatar-catalog-list" class="admin-avatar-catalog-list" aria-live="polite"></div>
+        </section>
         <details id="admin-tables-details" class="panel admin-tables-panel">
           <summary><span><span class="panel-kicker">SECONDARY TOOLS</span><strong>Inspect and test tables</strong></span><button id="admin-tables-refresh" class="button button-outline button-small" type="button">Refresh</button></summary>
           <div id="admin-tables-list" class="admin-tables-list"><p class="muted">Open this section to load tables.</p></div>
@@ -207,7 +253,10 @@
                   <div class="table-title-row"><h2 id="view-table-name"></h2><span id="view-status" class="status-pill"></span></div>
                   <p id="view-table-subtitle" class="muted"></p>
                 </div>
-                <details id="table-menu" class="table-menu">
+                <div id="table-header-actions" class="table-header-actions" aria-label="Table controls">
+                  <button id="sit-out-button" class="button button-quiet button-small" type="button" aria-pressed="false" hidden>Sit out</button>
+                  <button id="fullscreen-button" class="button button-quiet button-small" type="button">Full screen</button>
+                  <details id="table-menu" class="table-menu">
                   <summary class="button button-outline button-small" aria-label="Open table menu">Menu</summary>
                   <div class="table-menu-items" role="group" aria-label="Table options">
                     <button id="last-hand-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="last-hand-dialog" aria-expanded="false" hidden>Last hand</button>
@@ -216,9 +265,8 @@
                     <button id="runtime-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="table-settings-dialog" aria-expanded="false" hidden>Game setup</button>
                     <button id="reopen-results-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="results-panel" aria-expanded="false" hidden>Final standings</button>
                     <button id="chat-button" class="button button-quiet button-small" type="button" aria-controls="chat-panel" aria-expanded="false">Chat</button>
+                    <button id="rebuy-offer-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="rebuy-offer-dialog" hidden>Rebuy</button>
                     <button id="reaction-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="reaction-settings-dialog" aria-expanded="false">Reaction shortcuts</button>
-                    <button id="sit-out-button" class="button button-quiet button-small" type="button" aria-pressed="false" hidden>Sit out</button>
-                    <button id="fullscreen-button" class="button button-quiet button-small" type="button">Full screen</button>
                     <button id="profile-photo-menu-button" class="button button-quiet button-small" type="button">Profile photo</button>
                     <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
                     <button id="table-logout-button" class="button button-quiet button-small" type="button">Log out</button>
@@ -226,22 +274,10 @@
                     <button id="end-game-button" class="button button-danger button-small" type="button" hidden>End game</button>
                     <button id="table-install-button" class="button button-quiet button-small" type="button" hidden>Install Felt Night</button>
                   </div>
-                </details>
-              </div>
-              <div id="chat-topline" class="chat-topline" hidden aria-hidden="true">
-                <div id="chat-preview" class="chat-preview" role="region" aria-label="Latest table chat" aria-live="polite" hidden>
-                  <div class="chat-preview-line" data-chat-preview-line="0">No messages yet.</div>
-                  <div class="chat-preview-line" data-chat-preview-line="1">No earlier messages.</div>
-                  <div class="chat-preview-line" data-chat-preview-line="2">No earlier messages.</div>
+                  </details>
                 </div>
-                <form id="chat-quick-form" class="chat-quick-form" hidden>
-                  <label class="visually-hidden" for="chat-quick-input">Message to this table, up to 500 characters</label>
-                  <input id="chat-quick-input" name="message" type="text" maxlength="500" autocomplete="off" placeholder="Message" aria-describedby="chat-quick-error chat-quick-status">
-                  <button id="chat-quick-send" class="button button-primary button-small" type="submit">Send</button>
-                </form>
-                <p id="chat-quick-error" class="chat-error" role="alert" aria-live="assertive" hidden></p>
-                <span id="chat-quick-status" class="visually-hidden" role="status" aria-live="polite"></span>
               </div>
+              <div id="shot-clock-alert" class="shot-clock-alert" role="status" aria-live="assertive" aria-atomic="true" hidden><strong id="shot-clock-number" class="shot-clock-number"></strong><span id="shot-clock-copy" class="shot-clock-copy"></span></div>
               <div id="table-announcements" class="table-announcements" aria-label="Table updates" hidden>
                 <div id="paused-banner" class="paused-view" role="status" aria-live="polite" hidden></div>
                 <div id="announcement-banner" class="announcement-view" role="status" aria-live="polite" hidden></div>
@@ -279,6 +315,25 @@
                 </div>
               </div>
 
+              <dialog id="avatar-view-dialog" class="avatar-view-dialog" aria-label="Profile photo">
+                <button id="avatar-view-close" class="avatar-view-dismiss" type="button" aria-label="Close profile photo">×</button>
+                <p id="avatar-view-status" class="visually-hidden" role="status" aria-live="polite"></p>
+                <img id="avatar-view-image" alt="" hidden>
+              </dialog>
+              <dialog id="rebuy-offer-dialog" class="rebuy-offer-dialog" aria-labelledby="rebuy-offer-title" aria-describedby="rebuy-offer-summary">
+                <div class="section-heading compact">
+                  <div><div class="panel-kicker">RE-ENTRY OFFER</div><h2 id="rebuy-offer-title">Rebuy?</h2></div>
+                  <button id="rebuy-offer-close" class="button button-quiet button-small" type="button">Close</button>
+                </div>
+                <p id="rebuy-offer-countdown" class="rebuy-offer-countdown" role="timer" aria-live="off"></p>
+                <p id="rebuy-offer-summary" class="muted"></p>
+                <p class="rebuy-ledger-note">This updates the game ledger only; no external payment is processed or settled.</p>
+                <p id="rebuy-offer-status" class="rebuy-offer-status" role="status" aria-live="polite"></p>
+                <div class="rebuy-offer-actions">
+                  <button id="rebuy-offer-decline" class="button button-outline button-small" type="button">Decline</button>
+                  <button id="rebuy-offer-accept" class="button button-primary button-small" type="button">Confirm rebuy</button>
+                </div>
+              </dialog>
               <section id="chat-panel" class="panel chat-panel" role="region" aria-labelledby="chat-title" hidden>
                 <div class="chat-panel-heading">
                   <div><div class="panel-kicker">TABLE CHAT</div><h3 id="chat-title">Live chat</h3></div>
@@ -323,7 +378,7 @@
                   <button id="settings-dialog-close" class="button button-quiet button-small" type="button">Close</button>
                 </div>
                 <div class="settings-grid">
-                  <div class="settings-field" data-lobby-only><label for="settings-buy-in">Buy-in (play credits)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
+                  <div class="settings-field" data-lobby-only><label for="settings-buy-in">Buy-in ($)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
                   <div class="settings-field settings-payout-field" data-lobby-only>
                     <label for="payout-place-count">Paid places</label>
                     <select id="payout-place-count" aria-describedby="settings-payout-tip">
@@ -406,7 +461,7 @@
                   </div>
                   <button id="dismiss-results-button" class="button button-quiet button-small" type="button" aria-label="Dismiss final standings">Close</button>
                 </div>
-                <p id="results-description" class="muted">Final places and play-money payouts.</p>
+                <p id="results-description" class="muted">Final places, buy-ins, rebuys, and dollar payouts. The game ledger does not process external payments.</p>
                 <div id="results-list" class="results-list" role="list" tabindex="0"></div>
               </section>
 
@@ -450,7 +505,7 @@
       </dialog>
 
     <footer class="site-footer">
-      <span>Private tables. Play money only.</span>
+      <span>Private tables. Dollar buy-ins and payout tracking. No external payments.</span>
       <span>Texas Hold’em <i>·</i> No-limit <i>·</i> Freezeout</span>
     </footer>
   </div>

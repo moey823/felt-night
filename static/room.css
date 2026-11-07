@@ -4188,7 +4188,7 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
     grid-template-rows:14px minmax(0,1fr) !important; gap:0 !important;
   }
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) .seat-player-info .seat-local-markers { display:grid !important; gap:0 !important; }
-  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) .seat-player-info .seat-local-markers > .seat-wager { padding:0 !important; height:12px !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) .seat-player-info .seat-local-markers > .seat-wager { box-sizing:border-box !important; padding:0 !important; height:9px !important; min-height:9px !important; max-height:9px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) .seat-player-info .seat-local-markers .seat-wager strong { font-size:9px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-top > .seat-turn-indicator { top:26px !important; left:1px !important; }
   body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-footer > .seat-action { font-size:10px !important; gap:2px !important; padding:0 1px !important; }
@@ -4301,3 +4301,336 @@ body.gameplay-active #app-panel #table-view #table-surface #felt .board-center {
   .profile-photo-crop-frame { width:min(100%,220px); }
   .profile-photo-dialog > .section-heading { top:-1rem; }
 }
+
+/* Profile portrait chooser and shared catalog controls. */
+.avatar-presets-section { margin-top:1.1rem; }
+.avatar-presets-heading h3 { margin:0; font-size:15px; }
+.avatar-presets-heading p { margin:.25rem 0 0; font-size:12px; line-height:1.4; }
+#profile-photo-presets-status { min-height:1.2em; margin:.55rem 0; font-size:12px; }
+.avatar-preset-grid {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:.5rem;
+}
+.avatar-preset {
+  min-width:0;
+  min-height:92px;
+  display:grid;
+  justify-items:center;
+  align-content:start;
+  gap:.35rem;
+  padding:.45rem .25rem;
+  color:var(--text,#ede9d9);
+  background:rgba(5,14,10,.5);
+  border:1px solid rgba(225,237,227,.16);
+  border-radius:12px;
+  cursor:pointer;
+  font:inherit;
+}
+.avatar-preset:hover { border-color:rgba(197,227,124,.68); background:rgba(197,227,124,.08); }
+.avatar-preset[aria-pressed=true] { border-color:#c5e37c; background:rgba(197,227,124,.14); box-shadow:0 0 0 1px #c5e37c; }
+.avatar-preset:focus-visible,
+.avatar-photo-trigger:focus-visible { outline:3px solid #c5e37c; outline-offset:3px; z-index:2; }
+.avatar-preset:disabled { cursor:wait; opacity:.65; }
+.avatar-preset-image {
+  position:relative;
+  display:grid;
+  place-items:center;
+  width:56px;
+  height:56px;
+  overflow:hidden;
+  flex:0 0 auto;
+  border-radius:12px;
+  color:#d7e9ad;
+  background:rgba(197,227,124,.12);
+  font-size:19px;
+}
+.avatar-preset-image .avatar-image { border-radius:inherit; }
+.avatar-preset-name { display:block; width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center; font-size:11px; font-weight:700; }
+.avatar-photo-trigger {
+  appearance:none;
+  -webkit-appearance:none;
+  position:relative;
+  margin:0;
+  padding:0;
+  border:0;
+  color:inherit;
+  font:inherit;
+  cursor:zoom-in;
+  touch-action:manipulation;
+}
+.profile-account-dialog { box-sizing:border-box; width:min(32rem,94vw); max-height:88dvh; padding:clamp(1rem,4vw,1.5rem); overflow:auto; color:var(--text,#ede9d9); border:1px solid rgba(225,237,227,.18); border-radius:16px; background:#15251e; box-shadow:0 24px 72px rgba(0,0,0,.55); }
+.profile-account-dialog::backdrop { background:rgba(3,9,6,.76); backdrop-filter:blur(5px); }
+.profile-account-dialog .section-heading { gap:1rem; }
+.profile-account-dialog h2 { margin:.2rem 0 0; }
+.profile-account-dialog > .muted { margin:.8rem 0 1rem; font-size:13px; line-height:1.5; }
+.profile-account-form { display:grid; gap:.45rem; }
+.profile-account-form label { margin-top:.25rem; font-size:12px; font-weight:700; }
+.profile-account-form input { width:100%; min-height:44px; padding:.65rem .75rem; color:inherit; background:#0d1914; border:1px solid rgba(225,237,227,.22); border-radius:9px; font:inherit; }
+.profile-account-form input:focus-visible { outline:3px solid rgba(197,227,124,.65); outline-offset:2px; }
+.profile-account-form small { line-height:1.5; }
+.profile-account-actions { display:flex; justify-content:flex-end; margin-top:.55rem; }
+.profile-account-actions .button { min-height:44px; }
+.admin-avatar-presets { margin-top:1rem; }
+.admin-avatar-presets > p { max-width:52rem; font-size:13px; line-height:1.5; }
+.admin-avatar-preset-form { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:.75rem; align-items:end; }
+.admin-avatar-preset-form .settings-field { min-width:0; display:grid; gap:.35rem; }
+.admin-avatar-preset-form .settings-field label { font-size:12px; font-weight:700; }
+.admin-avatar-preset-form .settings-field input { min-width:0; max-width:100%; }
+.admin-avatar-preset-form .settings-field small { line-height:1.45; }
+.admin-avatar-preset-form > p,
+.admin-avatar-preset-form > button,
+.admin-avatar-preset-preview-wrap { grid-column:1/-1; }
+.admin-avatar-preset-preview-wrap { display:flex; align-items:center; gap:.65rem; color:#d2e3a7; font-size:13px; font-weight:700; }
+.admin-avatar-preset-preview-wrap img { width:64px; height:64px; object-fit:cover; border-radius:12px; border:1px solid rgba(197,227,124,.45); }
+.admin-avatar-catalog-list { margin-top:1rem; }
+.admin-avatar-catalog-list > p { margin:.3rem 0 .7rem; font-size:12px; }
+.admin-avatar-catalog-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(76px,1fr)); gap:.6rem; }
+.admin-avatar-catalog-item { display:grid; justify-items:center; gap:.3rem; min-width:0; text-align:center; font-size:11px; }
+.admin-avatar-catalog-item .avatar-preset-image { width:52px; height:52px; }
+@media (max-width:520px) {
+  .avatar-preset-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:.35rem; }
+  .avatar-preset { min-height:84px; padding:.35rem .15rem; }
+  .avatar-preset-image { width:48px; height:48px; }
+  .profile-account-dialog { width:calc(100vw - 16px); max-height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px); padding:1rem; }
+  .admin-avatar-preset-form { grid-template-columns:minmax(0,1fr); }
+  .admin-avatar-preset-form .settings-field > input[type=file] { min-height:44px; }
+}
+
+.profile-account-dialog #profile-account-close { min-width:64px; min-height:44px; }
+
+
+/* Table controls, menu-only chat and the reclaimed shot-clock lane. */
+#app-panel #table-view > .table-shell-header {
+  grid-template-columns: auto minmax(0, 1fr) auto !important;
+}
+#table-header-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+#table-header-actions > .button,
+#table-header-actions .table-menu > summary {
+  min-width: 42px;
+  min-height: 44px;
+  padding-inline: 8px;
+  white-space: nowrap;
+}
+#table-header-actions #fullscreen-button { max-width: 112px; font-size: 11px; }
+#table-header-actions #sit-out-button { max-width: 104px; font-size: 11px; }
+#table-header-actions .table-menu { flex: 0 0 auto; }
+
+body.gameplay-active #app-panel #table-view:not([hidden]) {
+  grid-template-rows: 44px auto minmax(0, 1fr) auto auto !important;
+}
+body.gameplay-active #app-panel #table-view > #shot-clock-alert[hidden] {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden]) {
+  position: relative !important;
+  z-index: 5 !important;
+  grid-row: 2 !important;
+  grid-column: 1 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: clamp(8px, 2vw, 18px) !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  min-height: 48px !important;
+  padding: 2px 10px !important;
+  overflow: hidden !important;
+  border: 1px solid #ffe184 !important;
+  border-radius: 10px !important;
+  background: #6a1d17 !important;
+  color: #fff8e7 !important;
+  box-shadow: 0 0 18px rgba(255, 73, 45, .36) !important;
+  pointer-events: none !important;
+  animation: shot-clock-pulse .42s steps(2, end) infinite alternate !important;
+}
+.shot-clock-number {
+  display: block;
+  flex: 0 0 auto;
+  color: #fff08b;
+  font-size: clamp(34px, 6vh, 58px);
+  font-weight: 1000;
+  font-variant-numeric: tabular-nums;
+  line-height: .86;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, .45);
+}
+.shot-clock-copy {
+  max-width: 60vw;
+  color: #fff8e7;
+  font-size: clamp(11px, 1.8vh, 17px);
+  font-weight: 900;
+  letter-spacing: .12em;
+  line-height: 1.1;
+}
+#shot-clock-alert[data-paused="true"] { animation: none !important; }
+@keyframes shot-clock-pulse {
+  from { filter: brightness(1); }
+  to { filter: brightness(.66); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #shot-clock-alert:not([hidden]) { animation: none !important; }
+}
+@media (max-height: 450px) and (orientation: landscape) {
+  body.gameplay-active #app-panel #table-view:not([hidden]) {
+    grid-template-rows: 28px auto minmax(0, 1fr) auto auto !important;
+  }
+  body.gameplay-active #app-panel #table-view > .table-shell-header {
+    height: 28px !important;
+    min-height: 28px !important;
+    max-height: 28px !important;
+  }
+  body.gameplay-active #table-header-actions > .button,
+  body.gameplay-active #table-header-actions .table-menu > summary {
+    min-width: 32px !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    max-height: 28px !important;
+    padding-inline: 4px !important;
+    font-size: 9px !important;
+  }
+  body.gameplay-active #table-header-actions { gap: 2px !important; }
+  body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden]) {
+    min-height: 28px !important;
+    padding-block: 0 !important;
+    border-radius: 6px !important;
+  }
+  body.gameplay-active #app-panel #table-view > #shot-clock-alert .shot-clock-number { font-size: 27px !important; }
+  body.gameplay-active #app-panel #table-view > #shot-clock-alert .shot-clock-copy { font-size: 10px !important; }
+}
+@media (max-width: 430px) {
+  #table-header-actions { gap: 2px; }
+  #table-header-actions > .button,
+  #table-header-actions .table-menu > summary { min-width: 36px; padding-inline: 5px; }
+  #table-header-actions #fullscreen-button,
+  #table-header-actions #sit-out-button { font-size: 9px; }
+}
+@media (max-width: 340px) {
+  #app-panel #table-view > .table-shell-header { gap: 3px !important; }
+  #table-header-actions > .button,
+  #table-header-actions .table-menu > summary { min-width: 32px; padding-inline: 3px; }
+  #table-header-actions #fullscreen-button { max-width: 72px; }
+  #table-header-actions #sit-out-button { max-width: 72px; }
+}
+
+.seat-empty.has-secondary-action { gap: 3px; }
+.seat-empty-bot {
+  min-height: 28px;
+  padding: 2px 7px;
+  color: #e6f4c8;
+  border: 1px solid rgba(197, 227, 124, .56);
+  border-radius: 7px;
+  background: rgba(16, 36, 25, .94);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.seat-empty-bot:hover { background: rgba(197, 227, 124, .16); }
+.seat-empty-bot:focus-visible { outline: 3px solid #c5e37c; outline-offset: 2px; }
+
+.avatar-view-dialog {
+  box-sizing: border-box;
+  position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  width: fit-content;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100dvh - 20px);
+  padding: 0;
+  overflow: visible;
+  border: 1px solid rgba(240, 247, 230, .3);
+  border-radius: 12px;
+  background: #0a120e;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, .72);
+}
+.avatar-view-dialog::backdrop { background: rgba(2, 8, 5, .84); backdrop-filter: blur(4px); }
+.avatar-view-dialog[open] { display: block; }
+#avatar-view-image {
+  display: block;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  object-fit: contain;
+  border-radius: inherit;
+}
+#avatar-view-image[hidden] { display: none !important; }
+.avatar-view-dismiss {
+  position: absolute;
+  z-index: 2;
+  top: 5px;
+  right: 5px;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, .7);
+  border-radius: 50%;
+  background: rgba(7, 13, 10, .82);
+  font: 700 28px/1 sans-serif;
+  cursor: pointer;
+}
+.avatar-view-dismiss:focus-visible { outline: 3px solid #c5e37c; outline-offset: 2px; }
+
+.rebuy-offer-dialog {
+  box-sizing: border-box;
+  width: min(30rem, calc(100vw - 20px));
+  max-height: calc(100dvh - 20px);
+  padding: clamp(16px, 4vw, 24px);
+  overflow: auto;
+  color: var(--text, #ede9d9);
+  border: 1px solid rgba(225, 237, 227, .2);
+  border-radius: 16px;
+  background: #15251e;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, .58);
+}
+.rebuy-offer-dialog::backdrop { background: rgba(3, 9, 6, .78); backdrop-filter: blur(5px); }
+.rebuy-offer-dialog h2 { margin: .2rem 0 0; }
+.rebuy-offer-dialog > .muted { line-height: 1.55; }
+.rebuy-offer-countdown {
+  margin: .8rem 0;
+  color: #ffe28b;
+  font-size: clamp(26px, 7vw, 38px);
+  font-weight: 950;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.rebuy-ledger-note { color: #bdd0c3; font-size: 12px; line-height: 1.45; }
+.rebuy-offer-status { min-height: 1.4em; font-size: 13px; }
+.rebuy-offer-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 1rem; }
+.rebuy-offer-actions .button { min-height: 44px; }
+
+/* Keep the wager border inside its compact marker row so all-in odds stay distinct. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-wager {
+  box-sizing: border-box !important;
+}
+
+/* Fit the three compact header actions inside the 34px smallest-phone header row. */
+@media (max-width:340px) and (max-height:600px) and (orientation:portrait) {
+  body.gameplay-active #app-panel #table-view #table-header-actions {
+    height:34px !important; min-height:0 !important; max-height:34px !important; align-self:center !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-header-actions > .button,
+  body.gameplay-active #app-panel #table-view #table-header-actions .table-menu > summary {
+    box-sizing:border-box !important; height:30px !important; min-height:30px !important; max-height:30px !important;
+    padding-inline:3px !important; font-size:8px !important;
+  }
+}
+@media (max-width:340px) and (max-height:600px) and (orientation:portrait) {
+  body.gameplay-active #app-panel #table-view:not([hidden]) { grid-template-rows:34px auto minmax(0,1fr) auto auto !important; }
+  body.gameplay-active #app-panel #table-view > .table-shell-header { height:34px !important; min-height:34px !important; max-height:34px !important; }
+}
+@media (prefers-reduced-motion:reduce) {
+  body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden]) { animation:none !important; }
+}
+body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden])[data-paused="true"] { animation:none !important; }

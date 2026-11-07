@@ -288,7 +288,7 @@ class ServerAuthTests(unittest.TestCase):
             body_out = raw
         return response.status, headers_out, body_out
 
-    def login(self, name="Ada"):
+    def login(self, name="Ada", with_avatar=True):
         username = name.replace(" ", "-")
         status, headers, body = self.request(
             "POST", "/poker/api/register",
@@ -301,7 +301,20 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 201, body)
         self.assertIn("sitngo_session=", headers.get("Set-Cookie", ""))
         cookie = headers["Set-Cookie"].split(";", 1)[0]
-        return cookie, body["session_proof"], body["csrf"], body["player"]
+        proof, csrf = body["session_proof"], body["csrf"]
+        if with_avatar:
+            status, _, uploaded = self.upload_avatar(
+                cookie, proof, csrf, _test_png_data_uri(),
+            )
+            self.assertEqual(status, 200, uploaded)
+            status, _, current = self.request(
+                "GET", "/poker/api/me", cookie=cookie, proof=proof,
+            )
+            self.assertEqual(status, 200, current)
+            player = current["player"]
+        else:
+            player = body["player"]
+        return cookie, proof, csrf, player
 
     def enable_admin(self, username="admin"):
         args = types.SimpleNamespace(
@@ -368,8 +381,26 @@ class ServerAuthTests(unittest.TestCase):
             cookie=cookie, proof=proof, csrf=csrf,
         )
 
+    def force_final_rebuy_offer(self, table_id, eliminated_id, survivor_id):
+        now = time.time()
+
+        def settle(state):
+            starting_stack = state["config"]["starting_stack"]
+            hand = state["hand"]
+            hand["stack_before"] = {
+                eliminated_id: starting_stack,
+                survivor_id: starting_stack,
+            }
+            hand["contrib"] = {eliminated_id: 0, survivor_id: 0}
+            for seat in state["seats"]:
+                seat["stack"] = 0 if seat["player_id"] == eliminated_id else 2 * starting_stack
+            server.engine._finish_hand(state, {}, now)
+            return state
+
+        return self.app.store.mutate_table(table_id, settle, now)
+
     def test_avatar_upload_get_persistence_and_remove(self):
-        cookie, proof, csrf, player = self.login("Avatar Player")
+        cookie, proof, csrf, player = self.login("Avatar Player", with_avatar=False)
         self.assertEqual(player["avatar_url"], "")
         data_uri = _test_png_data_uri()
         image_bytes = base64.b64decode(data_uri.split(",", 1)[1])
@@ -429,7 +460,7 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 404)
 
     def test_avatar_validation_rejects_bad_types_signatures_dimensions_and_sizes(self):
-        cookie, proof, csrf, player = self.login("Avatar Validation")
+        cookie, proof, csrf, player = self.login("Avatar Validation", with_avatar=False)
         invalid_values = (
             "https://example.com/avatar.png",
             "data:image/svg+xml;base64,PHN2Zy8+",
@@ -471,9 +502,360 @@ class ServerAuthTests(unittest.TestCase):
         status, _, me = self.request("GET", "/poker/api/me", cookie=cookie, proof=proof)
         self.assertEqual(me["player"]["avatar_url"], "")
 
+    def test_player_full_avatar_route_serves_saved_1024_master_bytes(self):
+        cookie, proof, csrf, player = self.login("Full Avatar Player", with_avatar=False)
+        status, _, saved = self.request(
+            "POST", "/poker/api/profile/avatar",
+            {"image_data": _test_png_data_uri(256, 256),
+             "full_image_data": _test_png_data_uri(1024, 1024)},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["player"]["id"], player["id"])
+        self.assertTrue(saved["player"]["avatar_full_url"])
+        thumb_status, thumb_headers, thumb = self.request(
+            "GET", saved["player"]["avatar_url"], cookie=cookie, proof=proof,
+        )
+        full_status, full_headers, full = self.request(
+            "GET", saved["player"]["avatar_full_url"], cookie=cookie, proof=proof,
+        )
+        self.assertEqual(thumb_status, 200)
+        self.assertEqual(full_status, 200)
+        self.assertEqual(thumb_headers["Content-Type"], "image/png")
+        self.assertEqual(full_headers["Content-Type"], "image/png")
+        self.assertEqual(server._png_avatar_dimensions(thumb), (256, 256))
+        self.assertEqual(server._png_avatar_dimensions(full), (1024, 1024))
+        self.assertEqual(len(full), int(full_headers["Content-Length"]))
+        denied, _, _ = self.request("GET", saved["player"]["avatar_full_url"])
+        self.assertEqual(denied, 401)
+
+    def test_preset_only_avatar_selection_copies_both_allowlisted_builtin_images(self):
+        cookie, proof, csrf, player = self.login("Preset Player", with_avatar=False)
+        status, _, catalog = self.request(
+            "GET", "/poker/api/avatar-presets", cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 200, catalog)
+        fish = next(row for row in catalog["avatars"] if row["id"] == "fish")
+        self.assertEqual(fish["url"], "/poker/avatars/fish.jpg")
+        self.assertEqual(fish["full_url"], "/poker/avatars/full/fish.jpg")
+
+        status, _, selected = self.request(
+            "POST", "/poker/api/profile/avatar", {"preset_id": "fish"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 200, selected)
+        self.assertEqual(selected["player"]["id"], player["id"])
+        self.assertRegex(
+            selected["player"]["avatar_url"],
+            r"^/poker/api/players/[a-f0-9]{32}/avatar\?v=[a-f0-9]{64}$",
+        )
+        self.assertTrue(selected["player"]["avatar_full_url"])
+
+        for field, expected_size, limit in (
+            ("avatar_url", (256, 256), server.MAX_AVATAR_BYTES),
+            ("avatar_full_url", (1024, 1024), server.MAX_FULL_AVATAR_BYTES),
+        ):
+            image_url = selected["player"][field]
+            status, headers, image = self.request(
+                "GET", image_url, cookie=cookie, proof=proof,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(headers["Content-Type"], "image/jpeg")
+            self.assertLessEqual(len(image), limit)
+            self.assertEqual(server._jpeg_avatar_dimensions(image), expected_size)
+            denied, _, _ = self.request("GET", image_url)
+            self.assertEqual(denied, 401)
+
+        status, _, invalid = self.request(
+            "POST", "/poker/api/profile/avatar", {"preset_id": "../fish"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(invalid["error"]["code"], "invalid_avatar_preset")
+        missing, _, _ = self.request("GET", "/poker/avatars/not-listed.jpg")
+        self.assertEqual(missing, 404)
+        hidden_source, _, _ = self.request("GET", "/poker/avatars/source/fish.png")
+        self.assertEqual(hidden_source, 404)
+
+    def test_custom_avatar_catalog_is_admin_only_authenticated_and_preset_selectable(self):
+        cookie, proof, csrf, player = self.login("Catalog Player", with_avatar=False)
+        unauthorized_status, _, unauthorized = self.request(
+            "POST", "/poker/api/admin/avatar-presets",
+            {"name": "Custom", "image_data": _test_png_data_uri(256, 256),
+             "full_image_data": _test_png_data_uri(1024, 1024)},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(unauthorized_status, 403)
+        self.assertEqual(unauthorized["error"]["code"], "admin_required")
+
+        admin_cookie, admin_proof, admin_csrf, _ = self.enable_admin("catalog-admin")
+        admin_auth = dict(cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf)
+        status, _, empty_image = self.request(
+            "POST", "/poker/api/admin/avatar-presets",
+            {"name": "Empty", "image_data": "", "full_image_data": ""},
+            **admin_auth,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(empty_image["error"]["code"], "invalid_avatar")
+
+        status, _, created = self.request(
+            "POST", "/poker/api/admin/avatar-presets",
+            {"name": "Test Fox", "image_data": _test_png_data_uri(256, 256),
+             "full_image_data": _test_png_data_uri(1024, 1024)},
+            **admin_auth,
+        )
+        self.assertEqual(status, 201, created)
+        preset_id = created["avatar"]["id"]
+        self.assertEqual(len(preset_id), 32)
+        self.assertTrue(created["avatar"]["custom"])
+
+        # The global choice survives constructing another app object for the
+        # same durable data directory, while its images remain session protected.
+        new_app = server.App(
+            types.SimpleNamespace(public_origin=self.origin, data_dir=str(self.data_dir)),
+            room_password=self.password, admin_username="catalog-admin",
+        )
+        self.app = new_app
+        self.httpd.app = new_app
+        status, _, choices = self.request(
+            "GET", "/poker/api/avatar-presets", cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 200, choices)
+        custom = next(row for row in choices["avatars"] if row["id"] == preset_id)
+        for image_url in (custom["url"], custom["full_url"]):
+            status, headers, image = self.request(
+                "GET", image_url, cookie=cookie, proof=proof,
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(headers["Content-Type"].startswith("image/"))
+            self.assertGreater(len(image), 0)
+            denied, _, _ = self.request("GET", image_url)
+            self.assertEqual(denied, 401)
+
+        status, _, selected = self.request(
+            "POST", "/poker/api/profile/avatar", {"preset_id": preset_id},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 200, selected)
+        self.assertEqual(selected["player"]["id"], player["id"])
+        self.assertTrue(selected["player"]["avatar_full_url"])
+
+    def test_rebuy_http_requires_confirmation_is_idempotent_and_accounts_the_offer(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Rebuy Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Rebuy Guest")
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="HTTP rebuy",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        table_path = "/poker/api/tables/" + table_id
+        status, _, joined = self.request(
+            "POST", table_path + "/join", {},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, joined)
+        status, _, started = self.request(
+            "POST", table_path + "/start", {},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, started)
+
+        settled = self.force_final_rebuy_offer(table_id, host["id"], guest["id"])
+        self.assertEqual(settled["status"], "playing")
+        status, _, table = self.request(
+            "GET", table_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, table)
+        offer = table["table"]["viewer"]["rebuy_offer"]
+        self.assertIsNotNone(offer)
+        self.assertGreaterEqual(offer["expires_at"], table["table"]["server_now"] + 59)
+        self.assertEqual(table["table"]["entrant_count"], 2)
+        self.assertEqual(table["table"]["buy_in_count"], 2)
+        self.assertEqual(table["table"]["prize_pool_cents"], 2000)
+
+        offer_path = table_path + "/rebuy"
+        status, _, unconfirmed = self.request(
+            "POST", offer_path, {"offer_id": offer["id"], "confirm": False},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(unconfirmed["error"]["code"], "confirmation_required")
+        status, _, wrong_player = self.request(
+            "POST", offer_path, {"offer_id": offer["id"], "confirm": True},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(wrong_player["error"]["code"], "invalid_rebuy_offer")
+
+        for _ in range(2):
+            status, _, accepted = self.request(
+                "POST", offer_path, {"offer_id": offer["id"], "confirm": True},
+                cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+            )
+            self.assertEqual(status, 200, accepted)
+            rebought = next(seat for seat in accepted["table"]["seats"] if seat["id"] == host["id"])
+            self.assertEqual(rebought["stack"], 1000)
+            self.assertEqual(rebought["rebuy_count"], 1)
+            self.assertEqual(rebought["buy_in_count"], 2)
+            self.assertEqual(rebought["total_buy_in_cents"], 2000)
+            self.assertEqual(accepted["table"]["entrant_count"], 2)
+            self.assertEqual(accepted["table"]["buy_in_count"], 3)
+            self.assertEqual(accepted["table"]["rebuy_count"], 1)
+            self.assertEqual(accepted["table"]["prize_pool_cents"], 3000)
+        conn = self.app.store.connect()
+        try:
+            persisted = conn.execute("SELECT state FROM tables WHERE id=?", (table_id,)).fetchone()
+            persisted_state = json.loads(persisted["state"])
+        finally:
+            conn.close()
+        self.assertEqual(
+            sum(1 for row in persisted_state["rebuy_history"] if row.get("action") == "accepted"),
+            1,
+        )
+
+    def test_declining_last_http_offer_completes_heads_up_tournament(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Decline Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Decline Guest")
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Decline final rebuy",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        table_path = "/poker/api/tables/" + table_id
+        status, _, joined = self.request(
+            "POST", table_path + "/join", {},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, joined)
+        status, _, started = self.request(
+            "POST", table_path + "/start", {},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, started)
+        self.force_final_rebuy_offer(table_id, host["id"], guest["id"])
+
+        status, _, pending = self.request(
+            "GET", table_path, cookie=host_cookie, proof=host_proof,
+        )
+        self.assertEqual(status, 200, pending)
+        offer = pending["table"]["viewer"]["rebuy_offer"]
+        self.assertIsNotNone(offer)
+        status, _, declined = self.request(
+            "POST", table_path + "/rebuy/decline", {"offer_id": offer["id"]},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, declined)
+        self.assertEqual(declined["table"]["status"], "completed")
+        self.assertIsNone(declined["table"]["viewer"]["rebuy_offer"])
+        self.assertEqual(declined["table"]["results"][0]["player_id"], guest["id"])
+
+    def test_profile_credentials_require_current_password_and_keep_player_id(self):
+        cookie, proof, csrf, player = self.login("Profile User", with_avatar=False)
+        path = "/poker/api/profile"
+        status, _, missing_current = self.request(
+            "POST", path, {"username": "new-profile-name"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(missing_current["error"]["code"], "current_password_required")
+
+        status, _, wrong_current = self.request(
+            "POST", path,
+            {"username": "new-profile-name", "current_password": "wrong"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(wrong_current["error"]["code"], "invalid_current_password")
+
+        status, _, updated = self.request(
+            "POST", path,
+            {"username": "new-profile-name", "display_name": "New Profile",
+             "current_password": self.account_password},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 200, updated)
+        self.assertEqual(updated["player"]["id"], player["id"])
+        self.assertEqual(updated["player"]["username"], "new-profile-name")
+        self.assertEqual(updated["player"]["display_name"], "New Profile")
+
+        status, _, display_only = self.request(
+            "POST", path, {"display_name": "Name Only"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 200, display_only)
+        self.assertEqual(display_only["player"]["username"], "new-profile-name")
+        self.assertEqual(display_only["player"]["display_name"], "Name Only")
+
+        status, _, unchanged_session = self.request(
+            "GET", "/poker/api/me", cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 200, unchanged_session)
+        self.assertEqual(unchanged_session["player"]["id"], player["id"])
+        self.assertEqual(unchanged_session["player"]["username"], "new-profile-name")
+
+        status, _, missing_current = self.request(
+            "POST", path, {"new_password": "x"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 400)
+        status, _, password_changed = self.request(
+            "POST", path, {"new_password": "x", "current_password": self.account_password},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 200, password_changed)
+        self.assertEqual(password_changed["player"]["id"], player["id"])
+
+        status, _, old_login = self.request(
+            "POST", "/poker/api/login",
+            {"username": "new-profile-name", "password": self.account_password},
+        )
+        self.assertEqual(status, 401)
+        status, _, new_login = self.request(
+            "POST", "/poker/api/login",
+            {"username": "new-profile-name", "password": "x"},
+        )
+        self.assertEqual(status, 200, new_login)
+        self.assertEqual(new_login["player"]["id"], player["id"])
+
+        _, _, _, other = self.login("Existing Profile", with_avatar=False)
+        status, _, taken = self.request(
+            "POST", path,
+            {"username": "existing-profile", "current_password": "x"},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(taken["error"]["code"], "username_taken")
+
+        admin_cookie, admin_proof, admin_csrf, _ = self.enable_admin("profile-admin")
+        status, _, admin_denied = self.request(
+            "POST", path, {"display_name": "Not an account"},
+            cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(admin_denied["error"]["code"], "admin_read_only")
+
+    def test_registration_accepts_one_character_password_and_rejects_empty(self):
+        status, _, empty = self.request(
+            "POST", "/poker/api/register",
+            {"username": "empty-password", "password": "", "room_password": self.password},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(empty["error"]["code"], "invalid_password")
+        status, _, created = self.request(
+            "POST", "/poker/api/register",
+            {"username": "short-password", "password": "x", "room_password": self.password},
+        )
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["player"]["username"], "short-password")
+
     def test_avatar_urls_follow_players_in_table_views_without_revealing_opponent_cards(self):
-        host_cookie, host_proof, host_csrf, host = self.login("Avatar Host")
-        guest_cookie, guest_proof, guest_csrf, guest = self.login("Avatar Guest")
+        host_cookie, host_proof, host_csrf, host = self.login("Avatar Host", with_avatar=False)
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Avatar Guest", with_avatar=False)
+        status, _, photo_required = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Photo required",
+        )
+        self.assertEqual(status, 409, photo_required)
+        self.assertEqual(photo_required["error"]["code"], "profile_photo_required")
         status, _, uploaded = self.upload_avatar(
             host_cookie, host_proof, host_csrf, _test_png_data_uri(),
         )
@@ -490,6 +872,16 @@ class ServerAuthTests(unittest.TestCase):
             host_avatar_url,
         )
 
+        status, _, rejected = self.request(
+            "POST", "/poker/api/tables/" + table_id + "/join", {},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 409, rejected)
+        self.assertEqual(rejected["error"]["code"], "profile_photo_required")
+        status, _, uploaded_guest = self.upload_avatar(
+            guest_cookie, guest_proof, guest_csrf, _test_png_data_uri(),
+        )
+        self.assertEqual(status, 200, uploaded_guest)
         status, _, joined = self.request(
             "POST", "/poker/api/tables/" + table_id + "/join", {},
             cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
@@ -500,12 +892,21 @@ class ServerAuthTests(unittest.TestCase):
             next(seat for seat in seats if seat["id"] == host["id"])["avatar_url"],
             host_avatar_url,
         )
-        self.assertEqual(
+        self.assertTrue(
             next(seat for seat in seats if seat["id"] == guest["id"])["avatar_url"],
-            "",
         )
         self.assertTrue(all("avatar_url" in seat for seat in seats))
         self.assertTrue(all("image_data" not in seat and "avatar_data" not in seat for seat in seats))
+        status, _, removed_guest_photo = self.request(
+            "POST", "/poker/api/profile/avatar", {"image_data": ""},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, removed_guest_photo)
+        status, _, reconnect = self.request(
+            "POST", "/poker/api/tables/" + table_id + "/join", {},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, reconnect)
 
         table_path = "/poker/api/tables/" + table_id
         status, _, started = self.request(
@@ -957,7 +1358,7 @@ class ServerAuthTests(unittest.TestCase):
                     cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
                 )
                 self.assertEqual(status, 403, body)
-                expected = "admin_required" if "bots" in suffix else "host_only"
+                expected = "admin_required" if suffix.startswith("/bots/") else "host_only"
                 self.assertEqual(body["error"]["code"], expected)
 
     def test_sit_out_route_checks_csrf_ownership_and_persists_toggle(self):
@@ -2018,8 +2419,14 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(created["table"]["config"]["max_seats"], 9)
 
         status, _, host_bot = self.request("POST", path + "/bots", {"seat_no": 1}, **host_auth)
+        self.assertEqual(status, 200, host_bot)
+        self.assertTrue(next(seat for seat in host_bot["table"]["seats"] if seat["seat_no"] == 1)["is_bot"])
+        status, _, guest_bot = self.request(
+            "POST", path + "/bots", {"seat_no": 2},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
         self.assertEqual(status, 403)
-        self.assertEqual(host_bot["error"]["code"], "admin_required")
+        self.assertEqual(guest_bot["error"]["code"], "host_only")
         status, _, admin_bot = self.request("POST", path + "/bots", {"seat_no": 4}, **admin_auth)
         self.assertEqual(status, 200, admin_bot)
         self.assertTrue(next(seat for seat in admin_bot["table"]["seats"] if seat["seat_no"] == 4)["is_bot"])
@@ -2048,12 +2455,17 @@ class ServerAuthTests(unittest.TestCase):
         status, _, started = self.request("POST", path + "/start", {}, **host_auth)
         self.assertEqual(status, 200, started)
         self.assertEqual(started["table"]["status"], "playing")
-        self.assertEqual(started["table"]["config"]["max_seats"], 2)
+        self.assertEqual(started["table"]["config"]["max_seats"], 3)
         status, _, too_late = self.request(
             "POST", path + "/bots", {"seat_no": 7}, **admin_auth,
         )
         self.assertEqual(status, 409)
         self.assertEqual(too_late["error"]["code"], "table_started")
+        status, _, host_too_late = self.request(
+            "POST", path + "/bots", {"seat_no": 6}, **host_auth,
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(host_too_late["error"]["code"], "table_started")
 
     def test_host_end_requires_scoped_one_time_confirmation_and_preserves_private_history(self):
         host_cookie, host_proof, host_csrf, host = self.login("End host")

@@ -1,4 +1,6 @@
 // Focused headless checks for account bet presets, mobile actions/chat, pause controls and announcements.
+import {seedAvatar} from './avatar-fixture.mjs';
+
 export default async function adjustments([one, two], sleep, roomPassword) {
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
@@ -115,10 +117,11 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   async function register(label) {
     const username = ('Adj' + stamp + label).slice(0, 24);
     const password = 'FeltAdj_' + stamp + '_' + label + '_Pass';
-    const account = await request('/register', null, {
+    const account = {...await request('/register', null, {
       username, password, room_password: roomPassword,
-    });
-    return {...account, username, password};
+    }), username, password};
+    await seedAvatar(request, account);
+    return account;
   }
   const host = await register('Host');
   const guest = await register('Guest');
@@ -266,18 +269,15 @@ export default async function adjustments([one, two], sleep, roomPassword) {
         getComputedStyle(node).visibility === 'hidden' || node.getClientRects().length === 0;
     };
     return {
-      toplineVisible:!hidden('#chat-topline'),
-      previewVisible:!hidden('#chat-preview'),
-      quickFormVisible:!hidden('#chat-quick-form'),
-      preview:document.querySelector('#chat-preview')?.textContent || '',
+      inlineChatAbsent:!document.querySelector('#chat-topline,#chat-preview,#chat-quick-form,#chat-quick-input'),
+      chatButtonInMenu:document.querySelector('#chat-button')?.closest('#table-menu')===document.querySelector('#table-menu'),
       panelVisible:!document.querySelector('#chat-panel').hidden,
       latest:document.querySelector('#chat-messages').textContent,
     };
   });
-  assert(chatLayout.toplineVisible && chatLayout.previewVisible && chatLayout.quickFormVisible &&
-    chatLayout.panelVisible && chatLayout.latest.includes('drawer-latest-' + stamp) &&
-    chatLayout.preview.includes('drawer-latest-' + stamp),
-  'Gameplay chat rail and full drawer must both remain available: ' + JSON.stringify(chatLayout));
+  assert(chatLayout.inlineChatAbsent && chatLayout.chatButtonInMenu &&
+    chatLayout.panelVisible && chatLayout.latest.includes('drawer-latest-' + stamp),
+  'Menu-only chat must keep the complete live drawer available without an inline preview/composer: ' + JSON.stringify(chatLayout));
   const chatMessage = 'drawer-enter-' + stamp;
   await evaluate(actorPage, text => {
     window.adjustmentsChatPosts = [];

@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Two-client regression for private shortcuts, local favorites, delivery, and compact nine-seat layout.
 export default async function reactions([one,two], sleep, roomPassword) {
   const evaluate=(page,fn,...args)=>page.evaluate('('+fn.toString()+')(...'+JSON.stringify(args)+')');
@@ -34,7 +36,9 @@ export default async function reactions([one,two], sleep, roomPassword) {
   const stamp=Date.now().toString(36), users=[];
   for(let i=0;i<2;i++) {
     const username=('React'+stamp+i).slice(0,24),password='Felt_'+stamp+'_'+i+'_Test';
-    users.push({...await request('/register',null,{username,password,room_password:roomPassword}),username,password});
+    const user={...await request('/register',null,{username,password,room_password:roomPassword}),username,password};
+    await seedAvatar(request,user);
+    users.push(user);
   }
   async function signIn(page,user) {
     await wait(page,()=>document.querySelector('#login-name')?.offsetWidth);
@@ -98,6 +102,72 @@ export default async function reactions([one,two], sleep, roomPassword) {
   assert(JSON.stringify(saved)===JSON.stringify(['🔥','💩','🤦']),'Favorite shortcuts were not saved for this account in the browser.');
   assert(await evaluate(two,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='👏❤️😂'),
     'Changing one account’s favorites changed the other account’s shortcuts.');
+
+  const cursorBeforeEdit=Number((await request(path+'/reactions',users[0])).cursor||0);
+  await evaluate(one,()=>{
+    const button=document.querySelector('#reaction-shortcuts [data-reaction-slot="1"]');
+    const event=new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2});
+    button.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  await wait(one,()=>document.querySelector('#reaction-settings-dialog')?.open);
+  const rightClickTarget=await evaluate(one,()=>({
+    focused:document.activeElement?.id,
+    selected:document.querySelector('#reaction-shortcut-2')?.value,
+    open:document.querySelector('#reaction-settings-dialog')?.open,
+  }));
+  assert(rightClickTarget.focused==='reaction-shortcut-2'&&rightClickTarget.selected==='💩'&&rightClickTarget.open,
+    'Right-click did not open and focus the matching reaction preset: '+JSON.stringify(rightClickTarget));
+  const replacement=await evaluate(one,()=>{
+    const selects=[...document.querySelectorAll('[data-reaction-select]')],target=selects[1];
+    const option=[...target.options].find(item=>item.value!==target.value&&selects.every((select,index)=>index===1||select.value!==item.value));
+    if(!option)throw Error('No unique replacement reaction preset');
+    target.value=option.value;target.dispatchEvent(new Event('change',{bubbles:true}));
+    document.querySelector('#reaction-settings-form').requestSubmit();
+    return option.value;
+  });
+  await wait(one,emoji=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥'+emoji+'🤦',replacement);
+  const updatedFavorites=await evaluate(one,id=>JSON.parse(localStorage.getItem('felt-night.reaction-favorites.v1.'+id)||'null'),users[0].player.id);
+  assert(JSON.stringify(updatedFavorites)===JSON.stringify(['🔥',replacement,'🤦']),
+    'The right-clicked slot did not update only its saved favorite: '+JSON.stringify(updatedFavorites));
+
+  await evaluate(one,()=>{
+    const button=document.querySelector('#reaction-shortcuts [data-reaction-slot="0"]');
+    button.focus();
+    button.dispatchEvent(new KeyboardEvent('keydown',{key:'F10',shiftKey:true,bubbles:true,cancelable:true}));
+  });
+  await wait(one,()=>document.querySelector('#reaction-settings-dialog')?.open);
+  const keyboardSlot=await evaluate(one,()=>document.activeElement?.id);
+  assert(keyboardSlot==='reaction-shortcut-1','Shift+F10 did not focus the matching preset selector: '+keyboardSlot);
+  await one.pressEscape();
+  await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
+
+  await evaluate(one,async()=>{
+    const button=document.querySelector('#reaction-shortcuts [data-reaction-slot="2"]'),rect=button.getBoundingClientRect();
+    button.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:73,pointerType:'touch',clientX:rect.left+4,clientY:rect.top+4}));
+    await new Promise(resolve=>setTimeout(resolve,700));
+    button.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:73,pointerType:'touch',clientX:rect.left+4,clientY:rect.top+4}));
+  });
+  await wait(one,()=>document.querySelector('#reaction-settings-dialog')?.open);
+  const touchSlot=await evaluate(one,()=>document.activeElement?.id);
+  assert(touchSlot==='reaction-shortcut-3','Touch-and-hold did not open the corresponding preset: '+touchSlot);
+  await one.pressEscape();
+  await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
+  const cursorAfterEdit=Number((await request(path+'/reactions',users[0])).cursor||0);
+  assert(cursorAfterEdit===cursorBeforeEdit,'Opening or changing reaction shortcuts sent a table reaction.');
+  await click(one,'#table-menu > summary');
+  await click(one,'#reaction-settings-button');
+  await wait(one,()=>document.querySelector('#reaction-settings-dialog')?.open);
+  await evaluate(one,()=>{
+    const values=['🔥','💩','🤦'];
+    values.forEach((value,index)=>{
+      const select=document.querySelector('#reaction-shortcut-'+(index+1));
+      select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    document.querySelector('#reaction-settings-form').requestSubmit();
+  });
+  await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
+  await wait(one,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
 
   const admin=await request('/login',null,{username:'admin',password:''});
   const tableNow=(await request(path,users[0])).table;

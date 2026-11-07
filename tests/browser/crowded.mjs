@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Nine accounts fill one table. One seated browser checks live controls before
 // any action is submitted; a separate spectator browser checks exposed hands.
 export default async function crowded([activePage, spectatorPage], sleep, roomPassword) {
@@ -101,10 +103,11 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
   const stamp = Date.now().toString(36);
   async function register(username, suffix) {
     const password = 'CrowdedPass_' + suffix + '_' + stamp;
-    const session = await req('/register', null, {
+    const session = { ...await req('/register', null, {
       room_password: roomPassword, username, password,
-    });
-    return { ...session, username, password };
+    }), username, password };
+    await seedAvatar(req, session);
+    return session;
   }
   const playerNames = ['Alex','Sam','Jordan','Riley','Morgan','Casey','Taylor','Avery','Jamie'];
   const players = [];

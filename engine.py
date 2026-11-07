@@ -11,6 +11,7 @@ import itertools
 import math
 import random
 import time
+import uuid
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -29,6 +30,8 @@ SHOWDOWN_SECONDS = 5
 RUNOUT_EXACT_LIMIT = 10000
 DEFAULT_BUY_IN = 10
 DEFAULT_PAYOUT_PERCENTAGES = (60, 25, 15)
+REBUY_DECISION_SECONDS = 60
+MAX_PRIZE_POOL_CENTS = 2**53 - 1
 MAX_PAYOUT_PLACES = 9
 RUNOUT_SAMPLE_COUNT = 10000
 MAX_CHIPS = 1_000_000_000
@@ -326,6 +329,9 @@ def create_lobby(
                 "stack": starting_stack,
                 "is_bot": False,
                 "sitting_out": False,
+                "rebuy_count": 0,
+                "buy_in_count": 0,
+                "total_buy_in_cents": 0,
             }
         ],
         "created_at": timestamp,
@@ -350,6 +356,12 @@ def create_lobby(
         "action_log": [],
         "elimination_order": [],
         "results": [],
+        # Only newly created tournaments opt into rebuys. Persisted older games
+        # keep their original freezeout result semantics.
+        "rebuy_enabled": True,
+        "rebuy_offers": {},
+        "rebuy_receipts": {},
+        "rebuy_history": [],
     }
 
 
@@ -391,7 +403,8 @@ def join(
     state["seats"].append({
         "player_id": str(player_id), "name": player_name, "seat_no": requested,
         "stack": state["config"]["starting_stack"], "is_bot": False,
-        "sitting_out": False,
+        "sitting_out": False, "rebuy_count": 0, "buy_in_count": 0,
+        "total_buy_in_cents": 0,
     })
     state["seats"].sort(key=lambda item: item["seat_no"])
     timestamp = _now(now)
@@ -493,6 +506,8 @@ def pause_table(
                     for deadline in ("starts_at", "until"):
                         if announcement.get(deadline) is not None:
                             announcement[deadline] += duration
+            for offer in _pending_rebuy_offers(state):
+                offer["expires_at"] += duration
         state["paused"] = False
         state["paused_at"] = None
         state["turn_version"] += 1
@@ -727,8 +742,8 @@ def update_settings(
 
 def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[float] = None, *, is_admin: bool = False) -> Dict[str, Any]:
     """Add an automated player at an open seat in the lobby as a room admin."""
-    if not is_admin:
-        raise GameError("admin_required", "Only a room admin can add testing bots.", 403)
+    if not is_admin and actor_id != state["host_id"]:
+        raise GameError("host_only", "Only the table host can add a bot.", 403)
     if state["status"] != "lobby":
         raise GameError("table_started", "Bots can only be added before the tournament starts.", 409)
     requested = _validate_seat_no(seat_no, state["config"]["max_seats"])
@@ -740,7 +755,8 @@ def add_bot(state: Dict[str, Any], actor_id: str, seat_no: int, now: Optional[fl
     state["seats"].append({
         "player_id": bot_id, "name": "Bot %d" % (requested + 1),
         "seat_no": requested, "stack": state["config"]["starting_stack"], "is_bot": True,
-        "sitting_out": False,
+        "sitting_out": False, "rebuy_count": 0, "buy_in_count": 0,
+        "total_buy_in_cents": 0,
     })
     state["seats"].sort(key=lambda item: item["seat_no"])
     timestamp = _now(now)
@@ -855,6 +871,7 @@ def end_tournament(
         state["paused_at"] = None
         state["blind_announcement"] = None
         state["elimination_announcement"] = None
+        state["rebuy_offers"] = {}
         state["turn_version"] += 1
         hand = state.get("hand")
         if isinstance(hand, dict):
@@ -905,10 +922,17 @@ def start(
     state["config"]["payout_percentages"] = _normalize_payout_percentages(
         state["config"]["payout_percentages"], entrants,
     )
+    initial_buy_in_cents = state["config"]["buy_in"] * 100
+    for seat in state["seats"]:
+        seat["rebuy_count"] = 0
+        seat["buy_in_count"] = 1
+        seat["total_buy_in_cents"] = initial_buy_in_cents
     state["prize"] = {
         "buy_in": state["config"]["buy_in"],
         "entrants": entrants,
-        "pool_cents": state["config"]["buy_in"] * entrants * 100,
+        "buy_ins": entrants,
+        "rebuys": 0,
+        "pool_cents": initial_buy_in_cents * entrants,
         "payout_percentages": list(state["config"]["payout_percentages"]),
     }
     state["status"] = "playing"
@@ -960,6 +984,13 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
             state[key] = None
     alive = [seat for seat in _seats_in_order(state) if seat["stack"] > 0]
     if len(alive) <= 1:
+        if _pending_rebuy_offers(state):
+            hand = state.get("hand")
+            if isinstance(hand, dict) and hand.get("street") == "showdown":
+                expiries = [float(item["expires_at"]) for item in _pending_rebuy_offers(state)
+                            if type(item.get("expires_at")) in (int, float)]
+                hand["next_hand_at"] = min(expiries) if expiries else None
+            return
         _complete_tournament(state, now)
         return
 
@@ -1861,11 +1892,14 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
         if migrated:
             _bump(state)
         return state
+    changed = _expire_rebuy_offers(state, timestamp) or migrated
+    if _finish_if_no_rebuy_can_change_result(state, timestamp):
+        _bump(state)
+        return state
     # Discard check/fold selections left in tables by older versions.
     if isinstance(hand, dict):
         hand.pop("preactions", None)
         hand.pop("preaction_revisions", None)
-    changed = migrated
     if state["status"] == "lobby":
         last_activity = state.get("last_activity_at", state["created_at"])
         if timestamp - last_activity >= LOBBY_IDLE_SECONDS:
@@ -2358,6 +2392,239 @@ def _winner_rows(
     return rows
 
 
+def _pending_rebuy_offers(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    offers = state.get("rebuy_offers")
+    if not isinstance(offers, dict):
+        return []
+    return [offer for offer in offers.values()
+            if isinstance(offer, dict) and offer.get("status", "pending") == "pending"]
+
+
+def _add_rebuy_history(state: Dict[str, Any], item: Dict[str, Any]) -> None:
+    events = state.setdefault("rebuy_history", [])
+    if isinstance(events, list):
+        events.append(dict(item))
+
+
+def _resolve_rebuy_offer(state: Dict[str, Any], player_id: str,
+                         offer: Dict[str, Any], status: str, now: float) -> None:
+    offers = state.setdefault("rebuy_offers", {})
+    if offers.get(player_id, {}).get("id") == offer.get("id"):
+        del offers[player_id]
+    receipts = state.setdefault("rebuy_receipts", {})
+    receipts[str(offer.get("id"))] = {
+        "player_id": player_id, "status": status, "resolved_at": now,
+    }
+    _add_rebuy_history(state, {
+        "offer_id": offer.get("id"), "player_id": player_id,
+        "action": status, "offered_at": offer.get("offered_at"),
+        "resolved_at": now, "hand_id": offer.get("hand_id"),
+        "buy_in_cents": offer.get("buy_in_cents"),
+        "starting_stack": offer.get("starting_stack"),
+    })
+
+
+def _expire_rebuy_offers(state: Dict[str, Any], now: float) -> bool:
+    offers = state.get("rebuy_offers")
+    if not isinstance(offers, dict):
+        return False
+    expired = [(pid, offer) for pid, offer in list(offers.items())
+               if isinstance(offer, dict)
+               and offer.get("status", "pending") == "pending"
+               and type(offer.get("expires_at")) in (int, float)
+               and float(offer["expires_at"]) <= now]
+    for player_id, offer in expired:
+        _resolve_rebuy_offer(state, player_id, offer, "expired", now)
+        seat = _seat_by_id(state, player_id)
+        _log(state, "%s's rebuy offer expired." % (seat["name"] if seat else "Player"), now)
+    return bool(expired)
+
+
+def _renumber_elimination_order(state: Dict[str, Any]) -> None:
+    """Recompute places and tied groups after a player re-enters."""
+    rows = state.get("elimination_order")
+    if not isinstance(rows, list):
+        return
+    prize = state.get("prize") if isinstance(state.get("prize"), dict) else {}
+    total = prize.get("entrants")
+    if type(total) is not int or total < 1:
+        total = len(state.get("seats", []))
+    groups: List[List[Dict[str, Any]]] = []
+    keys: List[Any] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        group_id = item.get("elimination_group_id")
+        key = (("group", group_id) if group_id is not None else
+               ("legacy", item.get("hand_no"), item.get("eliminated_at"),
+                item.get("place"), item.get("tied"), item.get("tie_count")))
+        if groups and keys[-1] == key:
+            groups[-1].append(item)
+        else:
+            keys.append(key)
+            groups.append([item])
+    removed = 0
+    for group in groups:
+        place = total - removed - len(group) + 1
+        ids = [str(item.get("player_id")) for item in group]
+        for item in group:
+            item["place"] = place
+            item["tied"] = len(group) > 1
+            item["tie_count"] = len(group)
+        awards = _prize_awards_for_group(state, place, ids)
+        for item in group:
+            if awards is None:
+                item.pop("award_cents", None)
+            else:
+                item["award_cents"] = awards[str(item.get("player_id"))]
+            if state.get("rebuy_enabled") is True and state.get("status") != "completed":
+                item["award_is_estimate"] = True
+            else:
+                item.pop("award_is_estimate", None)
+        removed += len(group)
+
+
+def _create_rebuy_offers(state: Dict[str, Any],
+                         eliminated: Sequence[Dict[str, Any]],
+                         hand: Dict[str, Any], now: float) -> None:
+    if state.get("rebuy_enabled") is not True or state.get("status") != "playing":
+        return
+    prize = state.get("prize") if isinstance(state.get("prize"), dict) else {}
+    buy_in = prize.get("buy_in", state.get("config", {}).get("buy_in", DEFAULT_BUY_IN))
+    starting_stack = state.get("config", {}).get("starting_stack")
+    if type(buy_in) is not int or buy_in < 0 or type(starting_stack) is not int or starting_stack < 1:
+        return
+    offers = state.setdefault("rebuy_offers", {})
+    for item in eliminated:
+        player_id = str(item.get("player_id") or "")
+        seat = _seat_by_id(state, player_id)
+        if not player_id or seat is None or seat.get("is_bot", False):
+            continue
+        offer = {
+            "id": uuid.uuid4().hex, "hand_id": _hand_id(state, hand),
+            "offered_at": float(now),
+            "expires_at": float(now) + REBUY_DECISION_SECONDS,
+            "buy_in_cents": buy_in * 100, "starting_stack": starting_stack,
+            "status": "pending",
+        }
+        offers[player_id] = offer
+        _add_rebuy_history(state, {
+            "offer_id": offer["id"], "player_id": player_id, "action": "offered",
+            "offered_at": offer["offered_at"], "expires_at": offer["expires_at"],
+            "hand_id": offer["hand_id"], "buy_in_cents": offer["buy_in_cents"],
+            "starting_stack": starting_stack,
+        })
+
+
+def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
+                 now: Optional[float] = None) -> Dict[str, Any]:
+    """Accept one exact offer, adding the locked stack outside the current hand."""
+    timestamp = _now(now)
+    if not isinstance(offer_id, str) or not offer_id:
+        raise GameError("invalid_rebuy_offer", "Choose a valid rebuy offer.")
+    receipts = state.get("rebuy_receipts", {})
+    receipt = receipts.get(offer_id) if isinstance(receipts, dict) else None
+    if isinstance(receipt, dict) and receipt.get("player_id") == actor_id:
+        if receipt.get("status") == "accepted":
+            return state
+        if receipt.get("status") in ("declined", "expired"):
+            raise GameError("rebuy_expired", "This rebuy offer is no longer available.", 409)
+    if state.get("status") != "playing" or state.get("rebuy_enabled") is not True:
+        raise GameError("rebuy_unavailable", "This tournament does not accept rebuys.", 409)
+    offers = state.get("rebuy_offers")
+    offer = offers.get(actor_id) if isinstance(offers, dict) else None
+    if not isinstance(offer, dict) or offer.get("id") != offer_id:
+        raise GameError("invalid_rebuy_offer", "This rebuy offer is no longer available.", 409)
+    paused_at = state.get("paused_at") if state.get("paused", False) else None
+    effective_now = float(paused_at) if isinstance(paused_at, (int, float)) else timestamp
+    if float(offer.get("expires_at", 0)) <= effective_now:
+        _resolve_rebuy_offer(state, actor_id, offer, "expired", timestamp)
+        _finish_if_no_rebuy_can_change_result(state, timestamp)
+        raise GameError("rebuy_expired", "This rebuy offer has expired.", 409)
+    seat = _seat_by_id(state, actor_id)
+    if seat is None or seat.get("is_bot", False) or seat.get("stack") != 0:
+        raise GameError("rebuy_unavailable", "This player cannot re-enter this tournament.", 409)
+    if not any(item.get("player_id") == actor_id for item in state.get("elimination_order", [])):
+        raise GameError("rebuy_unavailable", "This player is not currently eliminated.", 409)
+    prize = state.get("prize") if isinstance(state.get("prize"), dict) else None
+    if prize is None:
+        raise GameError("rebuy_unavailable", "This tournament has no buy-in accounting.", 409)
+    buy_in = prize.get("buy_in")
+    buy_in_cents = buy_in * 100 if type(buy_in) is int else -1
+    pool_cents = prize.get("pool_cents")
+    if (buy_in_cents < 0 or type(pool_cents) is not int
+            or pool_cents + buy_in_cents > MAX_PRIZE_POOL_CENTS):
+        raise GameError("rebuy_limit", "The prize pool has reached its safe accounting limit.", 409)
+    stack = offer.get("starting_stack")
+    if type(stack) is not int or stack < 1 or stack > MAX_CHIPS:
+        raise GameError("rebuy_unavailable", "The original starting stack is unavailable.", 409)
+    seat["stack"] = stack
+    seat["rebuy_count"] = int(seat.get("rebuy_count", 0)) + 1
+    seat["buy_in_count"] = int(seat.get("buy_in_count", 1)) + 1
+    seat["total_buy_in_cents"] = int(seat.get("total_buy_in_cents", buy_in_cents)) + buy_in_cents
+    prize["rebuys"] = int(prize.get("rebuys", 0)) + 1
+    prize["buy_ins"] = int(prize.get("buy_ins", prize.get("entrants", 0))) + 1
+    prize["pool_cents"] = pool_cents + buy_in_cents
+    state["elimination_order"] = [item for item in state.get("elimination_order", [])
+                                  if item.get("player_id") != actor_id]
+    _resolve_rebuy_offer(state, actor_id, offer, "accepted", timestamp)
+    _renumber_elimination_order(state)
+    _log(state, "%s re-entered the tournament." % seat["name"], timestamp)
+    hand = state.get("hand")
+    if isinstance(hand, dict) and hand.get("street") == "showdown":
+        if sum(1 for item in state.get("seats", []) if item.get("stack", 0) > 0) > 1:
+            hand["next_hand_at"] = max(_presentation_end(state, hand) or timestamp, timestamp)
+    state["last_activity_at"] = timestamp
+    _bump(state)
+    return state
+
+
+def decline_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
+                  now: Optional[float] = None) -> Dict[str, Any]:
+    """Decline one exact offer and release any final tournament hold."""
+    timestamp = _now(now)
+    receipts = state.get("rebuy_receipts", {})
+    receipt = receipts.get(offer_id) if isinstance(receipts, dict) and isinstance(offer_id, str) else None
+    if isinstance(receipt, dict) and receipt.get("player_id") == actor_id and receipt.get("status") == "declined":
+        return state
+    offers = state.get("rebuy_offers")
+    offer = offers.get(actor_id) if isinstance(offers, dict) else None
+    if not isinstance(offer, dict) or offer.get("id") != offer_id:
+        raise GameError("invalid_rebuy_offer", "This rebuy offer is no longer available.", 409)
+    paused_at = state.get("paused_at") if state.get("paused", False) else None
+    effective_now = float(paused_at) if isinstance(paused_at, (int, float)) else timestamp
+    if float(offer.get("expires_at", 0)) <= effective_now:
+        _resolve_rebuy_offer(state, actor_id, offer, "expired", timestamp)
+        _finish_if_no_rebuy_can_change_result(state, timestamp)
+        raise GameError("rebuy_expired", "This rebuy offer has expired.", 409)
+    _resolve_rebuy_offer(state, actor_id, offer, "declined", timestamp)
+    seat = _seat_by_id(state, actor_id)
+    _log(state, "%s declined a rebuy offer." % (seat["name"] if seat else "Player"), timestamp)
+    _finish_if_no_rebuy_can_change_result(state, timestamp)
+    state["last_activity_at"] = timestamp
+    _bump(state)
+    return state
+
+
+def _finish_if_no_rebuy_can_change_result(state: Dict[str, Any], now: float) -> bool:
+    hand = state.get("hand")
+    if (state.get("status") != "playing" or state.get("rebuy_enabled") is not True
+            or _pending_rebuy_offers(state) or not isinstance(hand, dict)
+            or hand.get("street") != "showdown"):
+        return False
+    live = [seat for seat in state.get("seats", []) if seat.get("stack", 0) > 0]
+    if len(live) <= 1:
+        _complete_tournament(state, now)
+        if not live:
+            state["status"] = "completed"
+            state["completed_at"] = now
+        hand = state.get("hand")
+        if isinstance(hand, dict) and hand.get("street") == "showdown":
+            hand["next_hand_at"] = None
+        return True
+    return False
+
+
 def _record_eliminations(
     state: Dict[str, Any],
     hand: Dict[str, Any],
@@ -2393,12 +2660,14 @@ def _record_eliminations(
         group_awards = _prize_awards_for_group(
             state, place, [seat["player_id"] for seat in group]
         )
+        group_id = uuid.uuid4().hex
         for seat in group:
             item = {
                 "player_id": seat["player_id"],
                 "name": seat["name"],
                 "seat_no": seat["seat_no"],
                 "place": place,
+                "elimination_group_id": group_id,
                 "tied": len(group) > 1,
                 "tie_count": len(group),
                 "stack_before": starting_stack,
@@ -2407,6 +2676,8 @@ def _record_eliminations(
             }
             if group_awards is not None:
                 item["award_cents"] = group_awards[seat["player_id"]]
+                if state.get("rebuy_enabled") is True:
+                    item["award_is_estimate"] = True
             state["elimination_order"].append(item)
             newly_recorded.append(item)
             if len(group) > 1:
@@ -2464,10 +2735,16 @@ def _prize_awards_for_group(
         # No reachable place has a positive weight; only the champion can win.
         pooled_weight = 100 if place <= 1 < place + len(player_ids) else 0
         denominator = 100
-    amount = (
-        pool_cents * pooled_weight
-        // (denominator * len(player_ids) * 100)
-    ) * 100
+    if state.get("rebuy_enabled") is True:
+        # New games allocate whole cents. The champion receives all cent
+        # remainders when final results are assembled.
+        amount = pool_cents * pooled_weight // (denominator * len(player_ids))
+    else:
+        # Retained legacy games preserve their original whole-credit award rule.
+        amount = (
+            pool_cents * pooled_weight
+            // (denominator * len(player_ids) * 100)
+        ) * 100
     return {player_id: amount for player_id in player_ids}
 
 
@@ -2477,6 +2754,8 @@ def _prize_summary(state: Dict[str, Any]) -> Dict[str, Optional[int]]:
     if isinstance(prize, dict):
         return {
             "entrant_count": prize.get("entrants"),
+            "buy_in_count": prize.get("buy_ins", prize.get("entrants")),
+            "rebuy_count": prize.get("rebuys", 0),
             "prize_pool_cents": prize.get("pool_cents"),
         }
     entrant_count = len(state.get("seats", []))
@@ -2489,12 +2768,43 @@ def _prize_summary(state: Dict[str, Any]) -> Dict[str, Optional[int]]:
     }
 
 
+def _buyin_accounting(
+    state: Dict[str, Any],
+    seat: Optional[Dict[str, Any]],
+    result: Optional[Dict[str, Any]] = None,
+) -> Tuple[int, int, Optional[int]]:
+    """Return a safe buy-in ledger, including a known legacy original entry."""
+    seat = seat if isinstance(seat, dict) else {}
+    result = result if isinstance(result, dict) else {}
+    rebuy_count = result.get("rebuy_count", seat.get("rebuy_count", 0))
+    if type(rebuy_count) is not int or rebuy_count < 0:
+        rebuy_count = 0
+    buy_in_count = result.get("buy_in_count", seat.get("buy_in_count"))
+    if type(buy_in_count) is not int or buy_in_count < 0:
+        buy_in_count = 0 if state.get("status") == "lobby" else rebuy_count + 1
+    total = result.get("total_buy_in_cents")
+    if type(total) is not int or total < 0:
+        total = seat.get("total_buy_in_cents")
+    if type(total) is not int or total < 0:
+        if state.get("status") == "lobby":
+            total = 0
+        else:
+            prize = state.get("prize")
+            buy_in = prize.get("buy_in") if isinstance(prize, dict) else None
+            total = buy_in * 100 * max(1, buy_in_count) if type(buy_in) is int and buy_in >= 0 else None
+    return rebuy_count, buy_in_count, total
+
+
 def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     if state.get("status") == "completed" and state.get("results"):
         rows = []
         elimination = {item["player_id"]: item for item in state.get("elimination_order", [])}
         for result in state["results"]:
             item = elimination.get(result["player_id"], {})
+            seat = _seat_by_id(state, result["player_id"])
+            rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(
+                state, seat, result,
+            )
             rows.append({
                 "player_id": result["player_id"],
                 "name": result["name"],
@@ -2505,6 +2815,9 @@ def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "tied": bool(result.get("tied", item.get("tied", False))),
                 "tie_count": result.get("tie_count", item.get("tie_count", 1)),
                 "hand_no": item.get("hand_no"),
+                "rebuy_count": rebuy_count,
+                "buy_in_count": buy_in_count,
+                "total_buy_in_cents": total_buy_in_cents,
                 **({"award_cents": result["award_cents"]} if "award_cents" in result else {}),
             })
         return rows
@@ -2525,6 +2838,7 @@ def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         if seat["stack"] != last_stack:
             stack_rank = index
             last_stack = seat["stack"]
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat)
         rows.append({
             "player_id": seat["player_id"],
             "name": seat["name"],
@@ -2533,11 +2847,18 @@ def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             "status": "active",
             "place": None,
             "stack_rank": stack_rank,
+            "rebuy_count": rebuy_count,
+            "buy_in_count": buy_in_count,
+            "total_buy_in_cents": total_buy_in_cents,
         })
     for item in sorted(
         state.get("elimination_order", []),
         key=lambda row: (row["place"], row.get("seat_no", 0)),
     ):
+        seat = _seat_by_id(state, item["player_id"])
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(
+            state, seat, item,
+        )
         rows.append({
             "player_id": item["player_id"],
             "name": item["name"],
@@ -2548,7 +2869,11 @@ def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             "tied": bool(item.get("tied", False)),
             "tie_count": item.get("tie_count", 1),
             "hand_no": item.get("hand_no"),
+            "rebuy_count": rebuy_count,
+            "buy_in_count": buy_in_count,
+            "total_buy_in_cents": total_buy_in_cents,
             **({"award_cents": item["award_cents"]} if "award_cents" in item else {}),
+            **({"award_is_estimate": True} if item.get("award_is_estimate") else {}),
         })
     return rows
 
@@ -2593,21 +2918,29 @@ def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) ->
 
     results = []
     if winner is not None:
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, winner)
         results.append(
             {
                 "player_id": winner_id,
                 "name": winner["name"],
                 "place": 1,
                 "chips": winner["stack"],
+                "rebuy_count": rebuy_count,
+                "buy_in_count": buy_in_count,
+                "total_buy_in_cents": total_buy_in_cents,
             }
         )
     for item in reversed(state["elimination_order"]):
         seat = _seat_by_id(state, item["player_id"])
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat, item)
         result = {
             "player_id": item["player_id"],
             "name": item["name"],
             "place": item["place"],
             "chips": seat["stack"] if seat else 0,
+            "rebuy_count": rebuy_count,
+            "buy_in_count": buy_in_count,
+            "total_buy_in_cents": total_buy_in_cents,
             "tied": bool(item.get("tied", False)),
             "tie_count": item.get("tie_count", 1),
         }
@@ -2632,6 +2965,9 @@ def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) ->
 
     state["results"] = results
     state["status"] = "completed"
+    state["completed_at"] = now
+    for item in state.get("elimination_order", []):
+        item.pop("award_is_estimate", None)
     _log(state, "%s wins the tournament." % winner["name"], now)
 
 
@@ -2652,6 +2988,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["current_bet"] = 0
     hand["runout_at"] = None
     eliminated = _record_eliminations(state, hand, now)
+    _create_rebuy_offers(state, eliminated, hand, now)
     remaining = [seat for seat in _seats_in_order(state) if seat["stack"] > 0]
     hand["street"] = "showdown"
     hand["to_act"] = None
@@ -2698,6 +3035,9 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
 
     if len(remaining) > 1:
         _apply_due_blinds(state, now, not_before=hand["presentation_until"])
+        _refresh_presentation_deadline(state, hand)
+    elif _pending_rebuy_offers(state):
+        state["results"] = []
         _refresh_presentation_deadline(state, hand)
     else:
         _set_results(state, remaining[0]["player_id"] if remaining else None, now)
@@ -2815,6 +3155,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
     """Return only public information and the requesting player's own hole cards."""
     hand = state.get("hand")
     viewer_seat = _seat_by_id(state, viewer_id) if viewer_id else None
+    viewer_buyin = _buyin_accounting(state, viewer_seat) if viewer_seat else (0, 0, 0)
     showdown_cards = {}
     if hand:
         showdown_cards = {
@@ -2829,6 +3170,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         player_id = seat["player_id"]
         folded = bool(hand and player_id in hand["folded"])
         in_hand = bool(hand and player_id in hand["holes"])
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat)
         item = {
             "id": player_id,
             "name": seat["name"],
@@ -2840,6 +3182,9 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "folded": folded,
             "all_in": bool(in_hand and seat["stack"] == 0 and not folded),
             "bet": hand["bets"].get(player_id, 0) if hand else 0,
+            "rebuy_count": rebuy_count,
+            "buy_in_count": buy_in_count,
+            "total_buy_in_cents": total_buy_in_cents,
         }
         if hand and player_id in hand["holes"]:
             if player_id == viewer_id:
@@ -2963,6 +3308,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             if isinstance(state.get("prize"), dict) else None
         ),
         "entrant_count": _prize_summary(state)["entrant_count"],
+        "buy_in_count": _prize_summary(state).get("buy_in_count", _prize_summary(state)["entrant_count"]),
+        "rebuy_count": _prize_summary(state).get("rebuy_count", 0),
         "prize_pool_cents": _prize_summary(state)["prize_pool_cents"],
         "blinds": {
             "level": blinds["level"],
@@ -3009,6 +3356,17 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "player_id": viewer_id,
             "seated": viewer_seat is not None,
             "can_act": can_act,
+            "rebuy_offer": (
+                dict(state.get("rebuy_offers", {}).get(viewer_id, {}),
+                     expires_at=public_deadline(state["rebuy_offers"][viewer_id].get("expires_at")))
+                if viewer_id and isinstance(state.get("rebuy_offers"), dict)
+                and isinstance(state["rebuy_offers"].get(viewer_id), dict)
+                else None
+            ),
+            "rebuy_count": viewer_buyin[0],
+            "buy_in_count": viewer_buyin[1],
+            "total_buy_in_cents": viewer_buyin[2],
+            "total_buy_in": viewer_buyin[2],
             "hole_cards": hole_cards,
             "to_call": to_call,
             "raise_rights": raise_rights,
@@ -3055,6 +3413,8 @@ def summary(
         "buy_in": state["config"].get("buy_in", DEFAULT_BUY_IN),
         "payout_percentages": list(state["config"].get("payout_percentages", DEFAULT_PAYOUT_PERCENTAGES)),
         "entrant_count": _prize_summary(state)["entrant_count"],
+        "buy_in_count": _prize_summary(state).get("buy_in_count", _prize_summary(state)["entrant_count"]),
+        "rebuy_count": _prize_summary(state).get("rebuy_count", 0),
         "prize_pool_cents": _prize_summary(state)["prize_pool_cents"],
         "seated_count": len(state["seats"]),
         "blinds": {

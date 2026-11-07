@@ -1,6 +1,9 @@
 """Exercise separate listeners with disposable data, including stolen-session replay."""
+import base64
 import http.client
 import json
+import struct
+import zlib
 import tempfile
 import os
 import socket
@@ -12,6 +15,21 @@ import types
 import unittest
 
 import server
+
+
+def _test_png_data_uri():
+    def chunk(kind, payload):
+        checksum = zlib.crc32(kind + payload) & 0xffffffff
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    image = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00\x00"))
+        + chunk(b"IEND", b"")
+    )
+    return "data:image/png;base64," + base64.b64encode(image).decode("ascii")
 
 
 class PrivateAdminTests(unittest.TestCase):
@@ -74,6 +92,12 @@ class PrivateAdminTests(unittest.TestCase):
         admin = self.sign_in(self.private, "admin")
         self.assertTrue(admin[0].startswith("sitngo_session_admin="))
         self.assertTrue(host[0].startswith("sitngo_session="))
+        for account in (host, guest):
+            status, _, uploaded = self.request(
+                self.public, "POST", "/poker/api/profile/avatar",
+                {"image_data": _test_png_data_uri()}, account,
+            )
+            self.assertEqual(status, 200, uploaded)
         status, _, body = self.request(self.public, "POST", "/poker/api/tables", {
             "name": "Public lobby", "max_seats": 4, "starting_stack": 1000,
             "small_blind": 10, "big_blind": 20, "level_minutes": 5}, host)

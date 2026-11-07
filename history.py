@@ -88,6 +88,9 @@ def create_schema(conn):
             last_hand INTEGER NOT NULL,
             place INTEGER,
             award_cents INTEGER,
+            rebuy_count INTEGER NOT NULL DEFAULT 0,
+            buy_in_count INTEGER NOT NULL DEFAULT 1,
+            total_buy_in_cents INTEGER,
             PRIMARY KEY(table_id, player_id)
         );
         CREATE INDEX IF NOT EXISTS tournament_participants_player
@@ -111,6 +114,14 @@ def create_schema(conn):
         conn.execute("ALTER TABLE tournament_history ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'")
     if "prize_json" not in tournament_columns:
         conn.execute("ALTER TABLE tournament_history ADD COLUMN prize_json TEXT NOT NULL DEFAULT '{}'")
+    participant_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tournament_participants)")}
+    for column, declaration in (
+        ("rebuy_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("buy_in_count", "INTEGER NOT NULL DEFAULT 1"),
+        ("total_buy_in_cents", "INTEGER"),
+    ):
+        if column not in participant_columns:
+            conn.execute("ALTER TABLE tournament_participants ADD COLUMN %s %s" % (column, declaration))
 
 
 def backfill_tournaments(conn):
@@ -254,6 +265,28 @@ def _hand_result(hand, state):
     }
 
 
+def _buyin_accounting(state, seat, result=None):
+    seat = seat if isinstance(seat, dict) else {}
+    result = result if isinstance(result, dict) else {}
+    rebuy_count = result.get("rebuy_count", seat.get("rebuy_count", 0))
+    if type(rebuy_count) is not int or rebuy_count < 0:
+        rebuy_count = 0
+    buy_in_count = result.get("buy_in_count", seat.get("buy_in_count"))
+    if type(buy_in_count) is not int or buy_in_count < 0:
+        buy_in_count = 0 if state.get("status") == "lobby" else rebuy_count + 1
+    total = result.get("total_buy_in_cents")
+    if type(total) is not int or total < 0:
+        total = seat.get("total_buy_in_cents")
+    if type(total) is not int or total < 0:
+        if state.get("status") == "lobby":
+            total = 0
+        else:
+            prize = state.get("prize")
+            buy_in = prize.get("buy_in") if isinstance(prize, dict) else None
+            total = buy_in * 100 * max(1, buy_in_count) if type(buy_in) is int and buy_in >= 0 else None
+    return rebuy_count, buy_in_count, total
+
+
 def sync_state(conn, state, now):
     """Persist the current tournament snapshot and append any new hand events."""
     table_id = state.get("id")
@@ -283,6 +316,21 @@ def sync_state(conn, state, now):
             _dumps(state.get("prize") or {}),
         ),
     )
+    current_hand_no = state.get("hand_no")
+    if type(current_hand_no) is int and current_hand_no > 0:
+        for seat in state.get("seats", []):
+            if not isinstance(seat, dict) or not seat.get("player_id"):
+                continue
+            rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat)
+            _record_participant(
+                conn, table_id, str(seat["player_id"]),
+                str(seat.get("name") or "Player"), bool(seat.get("is_bot", False)),
+                current_hand_no, now,
+                rebuy_count=rebuy_count,
+                buy_in_count=buy_in_count,
+                total_buy_in_cents=total_buy_in_cents,
+            )
+
     hand = state.get("hand")
     if not isinstance(hand, dict) or not hand.get("number"):
         return
@@ -361,7 +409,13 @@ def sync_state(conn, state, now):
         before = hand.get("stack_before", {}).get(player_id)
         after = seat.get("stack") if ended is not None else None
         revealed_json = _dumps(reveals[player_id]) if player_id in reveals else None
-        _record_participant(conn, table_id, str(player_id), name, is_bot, number, now)
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat)
+        _record_participant(
+            conn, table_id, str(player_id), name, is_bot, number, now,
+            rebuy_count=rebuy_count,
+            buy_in_count=buy_in_count,
+            total_buy_in_cents=total_buy_in_cents,
+        )
         conn.execute(
             """INSERT INTO hand_history_players
                (hand_id,player_id,name,seat_no,is_bot,cards_json,revealed_cards_json,stack_before,stack_after)
@@ -373,7 +427,7 @@ def sync_state(conn, state, now):
                  cards_json=excluded.cards_json,
                  revealed_cards_json=COALESCE(excluded.revealed_cards_json,hand_history_players.revealed_cards_json),
                  stack_before=COALESCE(hand_history_players.stack_before,excluded.stack_before),
-                 stack_after=COALESCE(excluded.stack_after,hand_history_players.stack_after)""",
+                 stack_after=COALESCE(hand_history_players.stack_after,excluded.stack_after)""",
             (
                 hand_id, str(player_id), name, seat_no, is_bot, _dumps(cards),
                 revealed_json, before, after,
@@ -383,12 +437,16 @@ def sync_state(conn, state, now):
         if not isinstance(item, dict) or not item.get("player_id"):
             continue
         seat = seats.get(item["player_id"], {})
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat, item)
         _record_participant(
             conn, table_id, str(item["player_id"]),
             str(item.get("name") or seat.get("name") or "Player"),
             bool(seat.get("is_bot", False)),
             int(item.get("hand_no") or number), now,
             place=item.get("place"),
+            rebuy_count=rebuy_count,
+            buy_in_count=buy_in_count,
+            total_buy_in_cents=total_buy_in_cents,
         )
     for item in state.get("results", []):
         if not isinstance(item, dict) or not item.get("player_id"):
@@ -399,30 +457,51 @@ def sync_state(conn, state, now):
              if row.get("player_id") == item["player_id"]),
             {},
         )
+        rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(state, seat, item)
         _record_participant(
             conn, table_id, str(item["player_id"]),
             str(item.get("name") or seat.get("name") or "Player"),
             bool(seat.get("is_bot", False)),
             int(eliminated.get("hand_no") or number), now,
             place=item.get("place"), award_cents=item.get("award_cents"),
+            rebuy_count=rebuy_count,
+            buy_in_count=buy_in_count,
+            total_buy_in_cents=total_buy_in_cents,
         )
+
+    if state.get("status") != "completed":
+        for seat in state.get("seats", []):
+            if (not isinstance(seat, dict) or not seat.get("player_id")
+                    or int(seat.get("rebuy_count", 0)) < 1 or seat.get("stack", 0) <= 0):
+                continue
+            conn.execute(
+                """UPDATE tournament_participants
+                   SET place=NULL,award_cents=NULL
+                   WHERE table_id=? AND player_id=?""",
+                (table_id, str(seat["player_id"])),
+            )
 
 
 def _record_participant(conn, table_id, player_id, name, is_bot, hand_no, now,
-                        place=None, award_cents=None):
+                        place=None, award_cents=None, rebuy_count=0,
+                        buy_in_count=1, total_buy_in_cents=None):
     conn.execute(
         """INSERT INTO tournament_participants
-           (table_id,player_id,name,is_bot,first_hand,last_hand,place,award_cents)
-           VALUES(?,?,?,?,?,?,?,?)
+           (table_id,player_id,name,is_bot,first_hand,last_hand,place,award_cents,
+            rebuy_count,buy_in_count,total_buy_in_cents)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(table_id,player_id) DO UPDATE SET
              name=excluded.name,
              is_bot=excluded.is_bot,
              first_hand=MIN(tournament_participants.first_hand,excluded.first_hand),
              last_hand=MAX(tournament_participants.last_hand,excluded.last_hand),
              place=COALESCE(excluded.place,tournament_participants.place),
-             award_cents=COALESCE(excluded.award_cents,tournament_participants.award_cents)""",
+             award_cents=COALESCE(excluded.award_cents,tournament_participants.award_cents),
+             rebuy_count=excluded.rebuy_count,
+             buy_in_count=excluded.buy_in_count,
+             total_buy_in_cents=COALESCE(excluded.total_buy_in_cents,tournament_participants.total_buy_in_cents)""",
         (table_id, player_id, name, int(bool(is_bot)), hand_no, hand_no,
-         place, award_cents),
+         place, award_cents, rebuy_count, buy_in_count, total_buy_in_cents),
     )
 
 
@@ -436,7 +515,8 @@ def _standings(state):
 
 def _participants(conn, table_id):
     rows = conn.execute(
-        """SELECT player_id,name,is_bot,first_hand,last_hand,place,award_cents
+        """SELECT player_id,name,is_bot,first_hand,last_hand,place,award_cents,
+                  rebuy_count,buy_in_count,total_buy_in_cents
            FROM tournament_participants WHERE table_id=?
            ORDER BY first_hand,player_id""",
         (table_id,),
@@ -449,6 +529,9 @@ def _participants(conn, table_id):
         "last_hand": row["last_hand"],
         "place": row["place"],
         "award_cents": row["award_cents"],
+        "rebuy_count": row["rebuy_count"],
+        "buy_in_count": row["buy_in_count"],
+        "total_buy_in_cents": row["total_buy_in_cents"],
     } for row in rows]
 
 
@@ -499,14 +582,18 @@ def format_tournament_summary(tournament):
     elif tournament.get("created") is not None:
         lines.append("Created: " + _history_timestamp(tournament.get("created")))
     if isinstance(config.get("buy_in"), int) and type(config.get("buy_in")) is int:
-        lines.append("Buy-in: %s play credits" % config["buy_in"])
+        lines.append("Buy-in: $%s" % config["buy_in"])
     entrants = prize.get("entrants") if type(prize.get("entrants")) is int else len(participants)
     if entrants > 0:
         lines.append("Entrants: %d" % entrants)
+    buy_ins = prize.get("buy_ins")
+    rebuys = prize.get("rebuys", 0)
+    if type(buy_ins) is int:
+        lines.append("Total buy-ins: %d (rebuys: %d)" % (buy_ins, rebuys if type(rebuys) is int else 0))
     if type(prize.get("pool_cents")) is int:
         pool = _credit_amount(prize["pool_cents"])
         if pool is not None:
-            lines.append("Prize pool: %s play credits" % pool)
+            lines.append("Prize pool: $%s" % pool)
     small = config.get("small_blind")
     big = config.get("big_blind")
     if type(small) is int and type(big) is int:
@@ -543,7 +630,13 @@ def format_tournament_summary(tournament):
                 item += " — %d chips" % row["chips"]
             award = _credit_amount(row.get("award_cents"))
             if award is not None:
-                item += " — %s play credits" % award
+                item += " — $%s" % award
+            rebuys = row.get("rebuy_count")
+            total_buy_in = _credit_amount(row.get("total_buy_in_cents"))
+            if type(rebuys) is int:
+                item += " — %d rebuys" % rebuys
+            if total_buy_in is not None:
+                item += " — total buy-in $%s" % total_buy_in
             lines.append(item)
     if status in TERMINAL_STATUSES and status != "completed" and not results:
         lines.extend(["", "No final result was declared."])
@@ -560,7 +653,7 @@ def format_hand_history(tournament, hand, viewer_player_id=None):
     small, big = hand.get("small_blind"), hand.get("big_blind")
     stake = "%s/%s" % (small, big) if type(small) is int and type(big) is int else "blinds unavailable"
     lines = [
-        "Felt Night Hand #%s: No-Limit Texas Hold'em (%s play chips) - %s" % (
+        "Felt Night Hand #%s: No-Limit Texas Hold'em (%s chips) - %s" % (
             number, stake, _history_timestamp(hand.get("started")),
         ),
         "Tournament: " + _history_text_atom(tournament.get("name"), "Tournament"),

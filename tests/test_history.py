@@ -1,6 +1,121 @@
+import sqlite3
 import unittest
 
 import history
+
+
+class HistoryRebuyPersistenceTests(unittest.TestCase):
+    def test_legacy_participant_total_is_known_only_when_saved_prize_has_buyin(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            history.create_schema(conn)
+            for table_id, prize, expected in (
+                ("k" * 32, {"buy_in": 15, "entrants": 1}, 1500),
+                ("u" * 32, {"entrants": 1}, None),
+            ):
+                state = {
+                    "id": table_id, "host_id": "p1", "name": "Legacy ledger",
+                    "status": "playing", "created_at": 1.0, "started_at": 2.0,
+                    "config": {"buy_in": 99},
+                    "prize": prize,
+                    "seats": [{"player_id": "p1", "name": "Ada", "stack": 100}],
+                    "hand_no": 1, "results": [], "elimination_order": [],
+                }
+                history.record_table_created(conn, state, "p1", 1.0)
+                history.sync_state(conn, state, 2.0)
+                participant = history._participants(conn, table_id)[0]
+                self.assertEqual(participant["buy_in_count"], 1)
+                self.assertEqual(participant["total_buy_in_cents"], expected)
+                summary = history.format_tournament_summary({
+                    "name": "Legacy ledger", "status": "playing", "config": state["config"],
+                    "prize": state["prize"], "participants": [participant],
+                    "standings": [{"name": "Ada", "status": "active", "chips": 100,
+                                   "total_buy_in_cents": participant["total_buy_in_cents"],
+                                   "rebuy_count": 0}],
+                })
+                if expected is None:
+                    self.assertNotIn("total buy-in", summary)
+                else:
+                    self.assertIn("total buy-in $15", summary)
+        finally:
+            conn.close()
+
+    def test_rebuy_sync_keeps_ended_hand_stack_and_clears_provisional_place(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            history.create_schema(conn)
+            state = {
+                "id": "t" * 32,
+                "host_id": "p1",
+                "name": "History rebuy",
+                "status": "playing",
+                "created_at": 100.0,
+                "started_at": 101.0,
+                "config": {"buy_in": 10, "starting_stack": 100},
+                "prize": {
+                    "buy_in": 10, "entrants": 2, "buy_ins": 2,
+                    "rebuys": 0, "pool_cents": 2000,
+                    "payout_percentages": [75, 25],
+                },
+                "results": [],
+                "seats": [
+                    {"player_id": "p1", "name": "Ada", "seat_no": 0,
+                     "stack": 0, "rebuy_count": 0, "buy_in_count": 1,
+                     "total_buy_in_cents": 1000},
+                    {"player_id": "p2", "name": "Bea", "seat_no": 1,
+                     "stack": 200, "rebuy_count": 0, "buy_in_count": 1,
+                     "total_buy_in_cents": 1000},
+                ],
+                "hand_no": 1,
+                "elimination_order": [{
+                    "player_id": "p1", "name": "Ada", "seat_no": 0,
+                    "place": 2, "hand_no": 1, "award_cents": 500,
+                }],
+                "hand": {
+                    "number": 1, "hand_id": "t" * 32 + ":1",
+                    "started_at": 101.0, "street": "showdown", "board": [],
+                    "events": [], "event_seq": 0,
+                    "holes": {"p1": ["As", "Ks"], "p2": ["Ah", "Kh"]},
+                    "stack_before": {"p1": 100, "p2": 100},
+                    "showdown": [], "payouts": {}, "pot_winnings": {},
+                    "pots": [], "returns": [], "revealed": [],
+                },
+            }
+            history.record_table_created(conn, state, "p1", 100.0)
+            history.sync_state(conn, state, 102.0)
+            hand_row = conn.execute(
+                "SELECT stack_after FROM hand_history_players WHERE hand_id=? AND player_id='p1'",
+                (state["hand"]["hand_id"],),
+            ).fetchone()
+            self.assertEqual(hand_row["stack_after"], 0)
+
+            state["seats"][0].update({
+                "stack": 100, "rebuy_count": 1, "buy_in_count": 2,
+                "total_buy_in_cents": 2000,
+            })
+            state["prize"].update({"buy_ins": 3, "rebuys": 1, "pool_cents": 3000})
+            state["elimination_order"] = []
+            history.sync_state(conn, state, 103.0)
+
+            hand_row = conn.execute(
+                "SELECT stack_after FROM hand_history_players WHERE hand_id=? AND player_id='p1'",
+                (state["hand"]["hand_id"],),
+            ).fetchone()
+            self.assertEqual(hand_row["stack_after"], 0)
+            participant = next(
+                row for row in history._participants(conn, state["id"])
+                if row["player_id"] == "p1"
+            )
+            self.assertIsNone(participant["place"])
+            self.assertIsNone(participant["award_cents"])
+            self.assertEqual(participant["rebuy_count"], 1)
+            self.assertEqual(participant["buy_in_count"], 2)
+            self.assertEqual(participant["total_buy_in_cents"], 2000)
+            self.assertEqual(state["prize"]["entrants"], 2)
+        finally:
+            conn.close()
 
 
 class HistoryTextTests(unittest.TestCase):
@@ -69,17 +184,17 @@ class HistoryTextTests(unittest.TestCase):
         text = history.format_tournament_summary(self.tournament)
         self.assertIn("Felt Night Tournament Summary", text)
         self.assertIn("Tournament: Saturday Sit & Go", text)
-        self.assertIn("Buy-in: 10 play credits", text)
+        self.assertIn("Buy-in: $10", text)
         self.assertIn("Entrants: 2", text)
-        self.assertIn("Prize pool: 20 play credits", text)
+        self.assertIn("Prize pool: $20", text)
         self.assertIn("Final standings:", text)
-        self.assertIn("1. Hero — 3000 chips — 14 play credits", text)
-        self.assertIn("2. Rival — 0 chips — 6 play credits", text)
+        self.assertIn("1. Hero — 3000 chips — $14", text)
+        self.assertIn("2. Rival — 0 chips — $6", text)
         self.assertNotIn("PokerStars", text)
 
     def test_hand_text_formats_recorded_actions_results_and_only_visible_cards(self):
         text = history.format_hand_history(self.tournament, self.hand, "hero")
-        self.assertIn("Felt Night Hand #7: No-Limit Texas Hold'em (10/20 play chips)", text)
+        self.assertIn("Felt Night Hand #7: No-Limit Texas Hold'em (10/20 chips)", text)
         self.assertIn("Blind level 3 (10/20)", text)
         self.assertIn("Seat #1 is the button", text)
         self.assertIn("Dealt to Hero [As Kd]", text)

@@ -1,3 +1,4 @@
+import {seedAvatar} from "./avatar-fixture.mjs";
 // Real browser/API regressions for table seating, persistent sit-out and live chat.
 export default async function interactions([one,two], sleep, roomPassword) {
   const evaluate=(page,fn,...args)=>page.evaluate('('+fn.toString()+')(...'+JSON.stringify(args)+')');
@@ -39,7 +40,9 @@ export default async function interactions([one,two], sleep, roomPassword) {
   const stamp=Date.now().toString(36), users=[];
   for(let i=0;i<3;i++) {
     const username=('Chat'+stamp+i).slice(0,24),password='Felt_'+stamp+'_'+i+'_Test';
-    users.push({...await request('/register',null,{username,password,room_password:roomPassword}),username,password});
+    const user={...await request('/register',null,{username,password,room_password:roomPassword}),username,password};
+    await seedAvatar(request,user);
+    users.push(user);
   }
   async function signIn(page,user) {
     await wait(page,()=>document.querySelector('#login-name')?.offsetWidth);
@@ -62,18 +65,30 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await wait(two,()=>document.querySelector('#seat-grid .seat-card.is-me')?.offsetWidth);
   assert(await evaluate(two,()=>![...document.querySelectorAll('#seat-grid .seat-card')].some(n=>/#\d/.test(n.innerText))),'Seat number remains visible');
   await wait(one,()=>document.querySelectorAll('#seat-grid .seat-card[data-player-id]').length===2);
-  let hostBotRejected=false;
-  try { await request(path+'/bots',users[0],{seat_no:2}); }
-  catch(error) { hostBotRejected=String(error).includes('admin_required'); }
-  assert(hostBotRejected,'A normal host account could add a testing bot.');
+  const botVisibility=await Promise.all([one,two].map(page=>evaluate(page,()=>
+    [...document.querySelectorAll('[data-table-add-bot]')].filter(node=>node.offsetWidth&&!node.disabled).map(node=>node.dataset.tableAddBot))));
+  assert(botVisibility[0].length>0&&botVisibility[1].length===0,
+    'Waiting-table bot actions were not visible to the host only: '+JSON.stringify(botVisibility));
+  await click(one,'[data-table-add-bot="2"]');
+  await wait(one,()=>document.querySelector('#seat-grid .seat-card[data-seat-no="2"][data-is-bot="true"]')?.offsetWidth);
+  let nonHostBotRejected=false;
+  try { await request(path+'/bots',users[1],{seat_no:3}); }
+  catch(_) { nonHostBotRejected=true; }
+  assert(nonHostBotRejected,'A non-host added a bot to an empty lobby seat.');
+  for(let seatNo=3;seatNo<9;seatNo++) await request(path+'/bots',users[0],{seat_no:seatNo});
+  const fullHostView=(await request(path,users[0])).table;
+  assert(fullHostView.seats.filter(seat=>seat.is_bot).length===7,
+    'The host could not fill the remaining lobby capacity with bots.');
+  await wait(one,()=>!document.querySelector('[data-table-add-bot]'));
+  for(let seatNo=2;seatNo<9;seatNo++) await request(path+'/bots/'+seatNo,admin,undefined,'DELETE');
+  const afterHostBotRemove=(await request(path,users[0])).table;
+  assert(!afterHostBotRemove.seats.some(seat=>seat.is_bot),'Admin bot removal did not clear host-added test bots.');
   await request(path+'/bots',admin,{seat_no:2});
   const adminBotTable=(await request(path,admin)).table;
   const bot=adminBotTable.seats.find(seat=>seat.is_bot);
-  assert(bot,'Admin bot endpoint did not add a bot at an empty seat.');
+  assert(bot,'Admin bot endpoint did not add a test bot at an empty seat.');
   await request(path+'/bots/'+bot.seat_no,admin,undefined,'DELETE');
-  const afterAdminRemove=(await request(path,users[0])).table;
-  assert(!afterAdminRemove.seats.some(seat=>seat.is_bot),'Admin bot removal did not clear the test bot.');
-  console.log('Phone user seated directly on felt; only admin can add/remove testing bots.');
+  console.log('Lobby host can fill empty seats with bots; non-host and full-table actions are blocked.');
 
   await click(one,'#chat-button');await click(two,'#chat-button');
   await wait(one,()=>document.querySelector('#chat-input')?.offsetWidth);
@@ -112,6 +127,12 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await two.pressEscape();await one.pressEscape();
 
   const started=(await request(path+'/start',users[0],{})).table;
+  let activeBotRejected=false;
+  try { await request(path+'/bots',users[0],{seat_no:2}); }
+  catch(_) { activeBotRejected=true; }
+  assert(activeBotRejected,'The host added a bot after the game started.');
+  await wait(one,()=>!document.querySelector('[data-table-add-bot]'));
+  await wait(two,()=>!document.querySelector('[data-table-add-bot]'));
   const chatVersion=started.turn_version;
   await request(path+'/chat',users[1],{text:'Good luck!'});
   const unchanged=(await request(path,users[0])).table;
@@ -136,4 +157,104 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await two.screenshot('chat-320x568');
   await two.pressEscape();
   await one.screenshot('table-interactions');
+
+  const rebuyName='Rebuy acceptance '+stamp;
+  const rebuyCreated=await request('/tables',users[0],{
+    name:rebuyName,starting_stack:100,small_blind:10,big_blind:20,buy_in:5,
+    level_minutes:79,turn_seconds:3600,payout_percentages:[75,25]
+  });
+  const rebuyTableId=rebuyCreated.table.id,rebuyPath='/tables/'+rebuyTableId;
+  await request(rebuyPath+'/seat',users[1],{seat_no:1});
+  for(const [page,id] of [[one,rebuyTableId],[two,rebuyTableId]]) {
+    await evaluate(page,tableId=>window.location.assign('/poker/table?table='+encodeURIComponent(tableId)),id);
+    await wait(page,name=>document.querySelector('#view-table-name')?.textContent===name,rebuyName);
+  }
+  let rebuyState=(await request(rebuyPath+'/start',users[0],{})).table;
+  let offerOwner=null,offerView=null;
+  for(let handAttempt=0;handAttempt<4&&!offerOwner;handAttempt++) {
+    rebuyState=(await request(rebuyPath,users[0])).table;
+    const thisHand=Number(rebuyState.hand_no);
+    const firstActor=users.find(user=>user.player.id===rebuyState.actor_id);
+    if(!firstActor) throw Error('The rebuy test did not resolve an actor for hand '+thisHand+'.');
+    rebuyState=(await request(rebuyPath+'/action',firstActor,{
+      action:'all_in',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version
+    })).table;
+    const caller=users.find(user=>user.player.id===rebuyState.actor_id);
+    if(!caller||caller.player.id===firstActor.player.id) throw Error('The heads-up rebuy caller was not the opponent.');
+    rebuyState=(await request(rebuyPath+'/action',caller,{
+      action:'call',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version
+    })).table;
+    for(let attempt=0;attempt<80&&!offerOwner;attempt++) {
+      for(const user of users.slice(0,2)) {
+        const current=(await request(rebuyPath,user)).table;
+        if(current.viewer?.rebuy_offer) {offerOwner=user;offerView=current;break;}
+        if(current.status==='completed') break;
+      }
+      if(!offerOwner) {
+        const current=(await request(rebuyPath,users[0])).table;
+        if(current.hand_no>thisHand&&current.actor_id) break;
+        if(current.status==='completed') break;
+        await sleep(125);
+      }
+    }
+  }
+  if(!offerOwner) throw Error('A final heads-up elimination did not create the expected rebuy offer.');
+  const acceptPage=offerOwner===users[0]?one:two,otherPage=acceptPage===one?two:one;
+  await wait(acceptPage,()=>document.querySelector('#rebuy-offer-dialog')?.open===true);
+  const offerUi=await evaluate(acceptPage,()=>({
+    summary:document.querySelector('#rebuy-offer-summary')?.textContent||'',
+    countdown:document.querySelector('#rebuy-offer-countdown')?.getAttribute('aria-label')||'',
+    confirmText:document.querySelector('#rebuy-offer-accept')?.textContent.trim()||'',
+    declineVisible:Boolean(document.querySelector('#rebuy-offer-decline')?.offsetWidth),
+  }));
+  const secondsLeft=Number(offerUi.countdown.match(/(\d+) seconds left/)?.[1]||0);
+  assert(offerUi.summary.includes('$5.00')&&offerUi.summary.includes('100 chips')&&
+    offerUi.summary.includes('no external payment')&&secondsLeft>=1&&secondsLeft<=60&&
+    offerUi.confirmText==='Confirm rebuy'&&offerUi.declineVisible,
+    'Rebuy offer did not show the locked stack, buy-in, countdown, and explicit choices: '+JSON.stringify(offerUi));
+  await wait(otherPage,name=>document.querySelector('#view-table-name')?.textContent===name,rebuyName);
+  assert(await evaluate(otherPage,()=>!document.querySelector('#rebuy-offer-dialog')?.open&&
+    document.querySelector('#rebuy-offer-button')?.hidden),
+    'Another table viewer could see the eliminated player’s private rebuy offer.');
+  const offerId=String(offerView.viewer.rebuy_offer.id);
+  await evaluate(acceptPage,()=>{
+    window.rebuyPostsQA=[];
+    window.rebuyResponsesQA=[];
+    const original=window.fetch.bind(window);
+    window.fetch=async function(input,init) {
+      const url=typeof input==='string'?input:input.url;
+      const isRebuy=/\/rebuy$/.test(new URL(url,location.origin).pathname)&&String(init?.method||'GET').toUpperCase()==='POST';
+      if(isRebuy) window.rebuyPostsQA.push(JSON.parse(init.body||'{}'));
+      const response=await original(input,init);
+      if(isRebuy) {
+        let data={};try{data=await response.clone().json();}catch(_){}
+        window.rebuyResponsesQA.push({status:response.status,data});
+      }
+      return response;
+    };
+  });
+  assert(await evaluate(acceptPage,()=>window.rebuyPostsQA.length===0),
+    'The rebuy offer posted before the player confirmed it.');
+  await click(acceptPage,'#rebuy-offer-accept');
+  await wait(acceptPage,()=>document.querySelector('#rebuy-offer-dialog')?.open===false&&
+    document.querySelector('#notice')?.textContent.includes('no external payment')&&window.rebuyResponsesQA?.length===1);
+  const rebuyStateAfterPost=await evaluate(acceptPage,()=>({posts:window.rebuyPostsQA,responses:window.rebuyResponsesQA}));
+  const rebuyPost=rebuyStateAfterPost.posts;
+  assert(rebuyPost.length===1&&rebuyPost[0].offer_id===offerId&&rebuyPost[0].confirm===true&&
+    rebuyStateAfterPost.responses.length===1&&rebuyStateAfterPost.responses[0].status===200,
+    'Confirm rebuy did not submit exactly one idempotent, confirmed request: '+JSON.stringify(rebuyStateAfterPost));
+  const accepted=(await request(rebuyPath,offerOwner)).table;
+  const acceptedSeat=accepted.seats.find(seat=>String(seat.player_id||seat.id)===offerOwner.player.id);
+  const offerHandNo=Number(String(offerView.viewer.rebuy_offer.hand_id).split(':').pop());
+  const acceptedHandNo=Number(accepted.hand_no);
+  const restoredChips=acceptedHandNo===offerHandNo
+    ? Number(acceptedSeat?.stack) : Number(acceptedSeat?.stack)+Number(acceptedSeat?.bet||0);
+  assert(acceptedSeat&&restoredChips===100&&!(acceptedHandNo===offerHandNo&&acceptedSeat.in_hand)&&
+    Number(acceptedSeat.rebuy_count)===1&&Number(acceptedSeat.total_buy_in_cents)===1000&&
+    Number(accepted.prize_pool_cents)===1500&&Number(accepted.viewer.rebuy_count)===1&&
+    Number(accepted.viewer.buy_in_count)===2&&Number(accepted.viewer.total_buy_in_cents)===1000,
+    'Accepted rebuy did not restore the original stack outside the offer hand and update dollar accounting: '+
+      JSON.stringify({acceptedHandNo,offerHandNo,restoredChips,acceptedSeat,viewer:accepted.viewer,pool:accepted.prize_pool_cents}));
+  await wait(acceptPage,text=>document.querySelector('#view-table-subtitle')?.textContent.includes('$10.00'));
+  console.log('Confirmed rebuy restored 100 chips, counted a second $5 buy-in, and updated the $15 prize pool without external payment.');
 }

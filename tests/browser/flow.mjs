@@ -1,4 +1,6 @@
 // End-to-end coverage for the focused lobby, shared admin controls, payout sliders and terminal flow.
+import {seedAvatar} from './avatar-fixture.mjs';
+
 export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
@@ -68,8 +70,9 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
     const stamp = Date.now().toString(36);
     const username = ('Flow' + tag + stamp).slice(0, 24);
     const password = 'FeltFlow_' + stamp + '_' + tag + '_Pass';
-    const session = await api('/register', null, {username, password, room_password: roomPassword});
-    return {...session, username, password};
+    const session = {...await api('/register', null, {username, password, room_password: roomPassword}), username, password};
+    await seedAvatar(api, session);
+    return session;
   }
   async function signIn(page, user) {
     await wait(page, query => Boolean(document.querySelector(query)?.offsetWidth), '#login-name');

@@ -42,9 +42,12 @@ LOGIN_WINDOW = 15 * 60
 LOGIN_LIMIT = 5
 MAX_BODY = 16 * 1024
 MAX_AVATAR_BYTES = 256 * 1024
+MAX_FULL_AVATAR_BYTES = 1024 * 1024
 MAX_AVATAR_BASE64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
-MAX_AVATAR_BODY = MAX_AVATAR_BASE64 + 128
+MAX_FULL_AVATAR_BASE64 = 4 * ((MAX_FULL_AVATAR_BYTES + 2) // 3)
+MAX_AVATAR_BODY = MAX_AVATAR_BASE64 + MAX_FULL_AVATAR_BASE64 + 512
 MAX_AVATAR_DIMENSION = 1024
+MAX_AVATAR_PRESET_NAME = 32
 CHAT_MAX_LENGTH = 500
 CHAT_READ_LIMIT = 50
 CHAT_TABLE_LIMIT = 100
@@ -93,7 +96,7 @@ class AppError(Exception):
 def _invalid_avatar():
     raise AppError(
         400, "invalid_avatar",
-        "Choose a PNG or JPEG image no larger than 256 KiB and 1024 pixels per side.",
+        "Choose a PNG or JPEG image no larger than 256 KiB for its thumbnail or 1 MiB for its full image, with dimensions up to 1024 pixels per side.",
     )
 
 
@@ -201,7 +204,18 @@ def _jpeg_avatar_dimensions(data):
     _invalid_avatar()
 
 
-def _decode_avatar_data_uri(value):
+def _validate_avatar_bytes(content_type, data, max_bytes=MAX_AVATAR_BYTES):
+    if (content_type not in ("image/png", "image/jpeg") or
+            not isinstance(data, bytes) or not data or len(data) > max_bytes):
+        _invalid_avatar()
+    if content_type == "image/png":
+        _png_avatar_dimensions(data)
+    else:
+        _jpeg_avatar_dimensions(data)
+    return content_type, data
+
+
+def _decode_avatar_data_uri(value, max_bytes=MAX_AVATAR_BYTES):
     if value == "":
         return None, None
     if not isinstance(value, str):
@@ -217,7 +231,8 @@ def _decode_avatar_data_uri(value):
             content_type = candidate_type
             encoded = value[len(prefix):]
             break
-    if content_type is None or not encoded or len(encoded) > MAX_AVATAR_BASE64:
+    max_base64 = 4 * ((max_bytes + 2) // 3)
+    if content_type is None or not encoded or len(encoded) > max_base64:
         _invalid_avatar()
     if len(encoded) % 4:
         _invalid_avatar()
@@ -225,14 +240,60 @@ def _decode_avatar_data_uri(value):
         data = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error):
         _invalid_avatar()
-    if (not data or len(data) > MAX_AVATAR_BYTES or
-            base64.b64encode(data).decode("ascii") != encoded):
+    if base64.b64encode(data).decode("ascii") != encoded:
         _invalid_avatar()
-    if content_type == "image/png":
-        _png_avatar_dimensions(data)
-    else:
-        _jpeg_avatar_dimensions(data)
-    return content_type, data
+    return _validate_avatar_bytes(content_type, data, max_bytes)
+
+
+AVATAR_PRESET_MANIFEST = Path(__file__).parent / "static" / "avatar-presets.json"
+AVATAR_PRESET_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+
+
+def _builtin_avatar_presets():
+    try:
+        manifest = json.loads(AVATAR_PRESET_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        raise AppError(503, "avatar_presets_unavailable", "Avatar choices are temporarily unavailable.")
+    rows = manifest.get("avatars") if isinstance(manifest, dict) else None
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise AppError(503, "avatar_presets_unavailable", "Avatar choices are temporarily unavailable.")
+    result = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise AppError(503, "avatar_presets_unavailable", "Avatar choices are temporarily unavailable.")
+        preset_id = row.get("id")
+        name = row.get("name")
+        extension = "jpg" if isinstance(row.get("url"), str) and row["url"].endswith(".jpg") else "png"
+        expected_url = "/poker/avatars/%s.%s" % (preset_id, extension)
+        expected_full = "/poker/avatars/full/%s.%s" % (preset_id, extension)
+        if (not isinstance(preset_id, str) or not AVATAR_PRESET_ID.fullmatch(preset_id)
+                or preset_id in seen or not isinstance(name, str) or not name.strip()
+                or row.get("url") != expected_url or row.get("full_url") != expected_full):
+            raise AppError(503, "avatar_presets_unavailable", "Avatar choices are temporarily unavailable.")
+        seen.add(preset_id)
+        result.append({
+            "id": preset_id, "name": name.strip(), "url": expected_url,
+            "full_url": expected_full, "custom": False,
+        })
+    return result
+
+
+def _builtin_avatar_path(preset_id, full=False):
+    preset = next((item for item in _builtin_avatar_presets() if item["id"] == preset_id), None)
+    if preset is None:
+        raise AppError(404, "avatar_preset_not_found", "Avatar preset not found.")
+    url = preset["full_url"] if full else preset["url"]
+    relative = url.removeprefix("/poker/")
+    static_root = (Path(__file__).parent / "static").resolve()
+    candidate = (static_root / relative).resolve()
+    try:
+        candidate.relative_to(static_root)
+    except ValueError:
+        raise AppError(404, "avatar_preset_not_found", "Avatar preset not found.")
+    if not candidate.is_file():
+        raise AppError(404, "avatar_preset_not_found", "Avatar preset not found.")
+    return candidate
 
 
 def _parse_origin(value):
@@ -431,7 +492,21 @@ class Store:
                     content_type TEXT NOT NULL CHECK(content_type IN ('image/png','image/jpeg')),
                     image_data BLOB NOT NULL CHECK(length(image_data) BETWEEN 1 AND 262144),
                     sha256 TEXT NOT NULL CHECK(length(sha256)=64),
-                    updated REAL NOT NULL
+                    updated REAL NOT NULL,
+                    full_content_type TEXT CHECK(full_content_type IN ('image/png','image/jpeg')),
+                    full_image_data BLOB CHECK(full_image_data IS NULL OR length(full_image_data) BETWEEN 1 AND 1048576),
+                    full_sha256 TEXT CHECK(full_sha256 IS NULL OR length(full_sha256)=64)
+                );
+                CREATE TABLE IF NOT EXISTS custom_avatar_presets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    content_type TEXT NOT NULL CHECK(content_type IN ('image/png','image/jpeg')),
+                    image_data BLOB NOT NULL CHECK(length(image_data) BETWEEN 1 AND 262144),
+                    sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+                    full_content_type TEXT NOT NULL CHECK(full_content_type IN ('image/png','image/jpeg')),
+                    full_image_data BLOB NOT NULL CHECK(length(full_image_data) BETWEEN 1 AND 1048576),
+                    full_sha256 TEXT NOT NULL CHECK(length(full_sha256)=64),
+                    created REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS accounts (
                     username TEXT PRIMARY KEY,
@@ -494,6 +569,14 @@ class Store:
                 CREATE INDEX IF NOT EXISTS login_attempts_recent
                     ON login_attempts(client_key, attempted);
             """)
+            avatar_columns = {row["name"] for row in conn.execute("PRAGMA table_info(player_avatars)")}
+            for column, declaration in (
+                ("full_content_type", "TEXT"),
+                ("full_image_data", "BLOB"),
+                ("full_sha256", "TEXT"),
+            ):
+                if column not in avatar_columns:
+                    conn.execute("ALTER TABLE player_avatars ADD COLUMN %s %s" % (column, declaration))
             tournament_history.create_schema(conn)
             global_row = conn.execute(
                 "SELECT value FROM meta WHERE key='global_config'"
@@ -627,7 +710,8 @@ class Store:
         conn = self.connect()
         try:
             row = conn.execute(
-                """SELECT s.token_hash,s.player_id,s.expires,p.name,a.display_name AS account_name
+                """SELECT s.token_hash,s.player_id,s.expires,p.name,
+                          a.username AS account_username,a.display_name AS account_name
                    FROM sessions s JOIN players p ON p.id=s.player_id
                    LEFT JOIN accounts a ON a.player_id=p.id
                    WHERE s.token_hash=?""",
@@ -643,7 +727,8 @@ class Store:
             return {
                 "id": row["player_id"],
                 "name": self.admin_username if is_admin else row["name"],
-                "username": self.admin_username if is_admin else row["account_name"],
+                "username": self.admin_username if is_admin else row["account_username"],
+                "display_name": self.admin_username if is_admin else row["account_name"],
                 "account": has_account,
                 "needs_claim": not has_account,
                 "is_admin": is_admin,
@@ -652,15 +737,10 @@ class Store:
             conn.close()
 
     def avatar_urls(self, player_ids):
-        requested = [
-            player_id for player_id in player_ids
-            if isinstance(player_id, str)
-        ]
+        requested = [player_id for player_id in player_ids if isinstance(player_id, str)]
         urls = {player_id: "" for player_id in requested}
-        valid_ids = [
-            player_id for player_id in dict.fromkeys(requested)
-            if re.fullmatch(r"[a-f0-9]{32}", player_id)
-        ]
+        valid_ids = [player_id for player_id in dict.fromkeys(requested)
+                     if re.fullmatch(r"[a-f0-9]{32}", player_id)]
         if not valid_ids:
             return urls
         placeholders = ",".join("?" for _ in valid_ids)
@@ -679,13 +759,185 @@ class Store:
         finally:
             conn.close()
 
-    def get_player_avatar(self, player_id):
+    def avatar_full_urls(self, player_ids):
+        requested = [player_id for player_id in player_ids if isinstance(player_id, str)]
+        urls = {player_id: "" for player_id in requested}
+        valid_ids = [player_id for player_id in dict.fromkeys(requested)
+                     if re.fullmatch(r"[a-f0-9]{32}", player_id)]
+        if not valid_ids:
+            return urls
+        placeholders = ",".join("?" for _ in valid_ids)
         conn = self.connect()
         try:
-            row = conn.execute(
-                "SELECT content_type,image_data,sha256 FROM player_avatars WHERE player_id=?",
-                (player_id,),
-            ).fetchone()
+            rows = conn.execute(
+                "SELECT player_id,full_sha256 FROM player_avatars WHERE player_id IN (%s)" % placeholders,
+                tuple(valid_ids),
+            ).fetchall()
+            for row in rows:
+                if row["full_sha256"]:
+                    urls[row["player_id"]] = (
+                        "/poker/api/players/%s/avatar/full?v=%s" %
+                        (row["player_id"], row["full_sha256"])
+                    )
+            return urls
+        finally:
+            conn.close()
+
+    def has_player_avatar(self, player_id):
+        conn = self.connect()
+        try:
+            return conn.execute(
+                "SELECT 1 FROM player_avatars WHERE player_id=?", (player_id,),
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
+    def get_player_avatar(self, player_id, full=False):
+        conn = self.connect()
+        try:
+            if full:
+                row = conn.execute(
+                    """SELECT full_content_type AS content_type,
+                              full_image_data AS image_data,full_sha256 AS sha256
+                       FROM player_avatars WHERE player_id=?""",
+                    (player_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT content_type,image_data,sha256 FROM player_avatars WHERE player_id=?",
+                    (player_id,),
+                ).fetchone()
+            if row is None or row["image_data"] is None:
+                return None
+            return {
+                "content_type": row["content_type"],
+                "image_data": bytes(row["image_data"]),
+                "sha256": row["sha256"],
+            }
+        finally:
+            conn.close()
+
+    def set_player_avatar(self, player_id, content_type, image_data,
+                          full_content_type, full_image_data, now):
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM players WHERE id=?", (player_id,)).fetchone() is None:
+                raise AppError(404, "player_not_found", "Player not found.")
+            if image_data is None:
+                conn.execute("DELETE FROM player_avatars WHERE player_id=?", (player_id,))
+                avatar_url = ""
+                avatar_full_url = ""
+            else:
+                digest = hashlib.sha256(image_data).hexdigest()
+                full_digest = hashlib.sha256(full_image_data).hexdigest() if full_image_data else None
+                conn.execute(
+                    """INSERT INTO player_avatars
+                       (player_id,content_type,image_data,sha256,updated,
+                        full_content_type,full_image_data,full_sha256)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(player_id) DO UPDATE SET
+                           content_type=excluded.content_type,
+                           image_data=excluded.image_data,
+                           sha256=excluded.sha256,
+                           updated=excluded.updated,
+                           full_content_type=excluded.full_content_type,
+                           full_image_data=excluded.full_image_data,
+                           full_sha256=excluded.full_sha256""",
+                    (player_id, content_type, sqlite3.Binary(image_data), digest, now,
+                     full_content_type,
+                     sqlite3.Binary(full_image_data) if full_image_data else None,
+                     full_digest),
+                )
+                avatar_url = "/poker/api/players/%s/avatar?v=%s" % (player_id, digest)
+                avatar_full_url = (
+                    "/poker/api/players/%s/avatar/full?v=%s" % (player_id, full_digest)
+                    if full_digest else ""
+                )
+            conn.commit()
+            return avatar_url, avatar_full_url
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def add_custom_avatar_preset(self, name, content_type, image_data,
+                                 full_content_type, full_image_data, now):
+        preset_id = uuid.uuid4().hex
+        digest = hashlib.sha256(image_data).hexdigest()
+        full_digest = hashlib.sha256(full_image_data).hexdigest()
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    """INSERT INTO custom_avatar_presets
+                       (id,name,content_type,image_data,sha256,full_content_type,
+                        full_image_data,full_sha256,created)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (preset_id, name, content_type, sqlite3.Binary(image_data), digest,
+                     full_content_type, sqlite3.Binary(full_image_data), full_digest, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                if conn.execute(
+                    "SELECT 1 FROM custom_avatar_presets WHERE name=? COLLATE NOCASE",
+                    (name,),
+                ).fetchone():
+                    raise AppError(409, "avatar_preset_name_taken",
+                                   "That avatar choice name is already in use.") from exc
+                raise
+            conn.commit()
+            return {
+                "id": preset_id, "name": name,
+                "url": "/poker/api/avatar-presets/%s/thumbnail?v=%s" % (preset_id, digest),
+                "full_url": "/poker/api/avatar-presets/%s/full?v=%s" % (preset_id, full_digest),
+                "custom": True,
+            }
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def avatar_preset_catalog(self):
+        catalog = _builtin_avatar_presets()
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """SELECT id,name,sha256,full_sha256 FROM custom_avatar_presets
+                   ORDER BY created,id""",
+            ).fetchall()
+            catalog.extend({
+                "id": row["id"],
+                "name": row["name"],
+                "url": "/poker/api/avatar-presets/%s/thumbnail?v=%s" %
+                       (row["id"], row["sha256"]),
+                "full_url": "/poker/api/avatar-presets/%s/full?v=%s" %
+                            (row["id"], row["full_sha256"]),
+                "custom": True,
+            } for row in rows)
+            return catalog
+        finally:
+            conn.close()
+
+    def get_custom_avatar_preset(self, preset_id, full=False):
+        conn = self.connect()
+        try:
+            if full:
+                row = conn.execute(
+                    """SELECT full_content_type AS content_type,
+                              full_image_data AS image_data,full_sha256 AS sha256
+                       FROM custom_avatar_presets WHERE id=?""",
+                    (preset_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT content_type,image_data,sha256 FROM custom_avatar_presets WHERE id=?",
+                    (preset_id,),
+                ).fetchone()
             if row is None:
                 return None
             return {
@@ -696,34 +948,37 @@ class Store:
         finally:
             conn.close()
 
-    def set_player_avatar(self, player_id, content_type, image_data, now):
+    def get_avatar_preset_image(self, preset_id, full=False):
+        builtin = next((item for item in _builtin_avatar_presets()
+                        if item["id"] == preset_id), None)
+        if builtin is not None:
+            path = _builtin_avatar_path(preset_id, full=full)
+            content_type = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+            image_data = path.read_bytes()
+            max_bytes = MAX_FULL_AVATAR_BYTES if full else MAX_AVATAR_BYTES
+            content_type, image_data = _validate_avatar_bytes(
+                content_type, image_data, max_bytes,
+            )
+            return {"content_type": content_type, "image_data": image_data}
+        stored = self.get_custom_avatar_preset(preset_id, full=full)
+        if stored is None:
+            return None
+        content_type, image_data = _validate_avatar_bytes(
+            stored["content_type"], stored["image_data"],
+            MAX_FULL_AVATAR_BYTES if full else MAX_AVATAR_BYTES,
+        )
+        return {"content_type": content_type, "image_data": image_data}
+
+    def has_avatar_preset(self, preset_id):
+        if not isinstance(preset_id, str) or not AVATAR_PRESET_ID.fullmatch(preset_id):
+            return False
+        if any(item["id"] == preset_id for item in _builtin_avatar_presets()):
+            return True
         conn = self.connect()
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            if conn.execute("SELECT 1 FROM players WHERE id=?", (player_id,)).fetchone() is None:
-                raise AppError(404, "player_not_found", "Player not found.")
-            if image_data is None:
-                conn.execute("DELETE FROM player_avatars WHERE player_id=?", (player_id,))
-                avatar_url = ""
-            else:
-                digest = hashlib.sha256(image_data).hexdigest()
-                conn.execute(
-                    """INSERT INTO player_avatars(player_id,content_type,image_data,sha256,updated)
-                       VALUES(?,?,?,?,?)
-                       ON CONFLICT(player_id) DO UPDATE SET
-                           content_type=excluded.content_type,
-                           image_data=excluded.image_data,
-                           sha256=excluded.sha256,
-                           updated=excluded.updated""",
-                    (player_id, content_type, sqlite3.Binary(image_data), digest, now),
-                )
-                avatar_url = "/poker/api/players/%s/avatar?v=%s" % (player_id, digest)
-            conn.commit()
-            return avatar_url
-        except Exception:
-            if conn.in_transaction:
-                conn.rollback()
-            raise
+            return conn.execute(
+                "SELECT 1 FROM custom_avatar_presets WHERE id=?", (preset_id,),
+            ).fetchone() is not None
         finally:
             conn.close()
 
@@ -782,11 +1037,12 @@ class Store:
             conn.close()
 
     @staticmethod
-    def _account_player(player_id, display_name):
+    def _account_player(player_id, username, display_name):
         return {
             "id": player_id,
             "name": display_name,
-            "username": display_name,
+            "display_name": display_name,
+            "username": username,
             "account": True,
             "needs_claim": False,
             "is_admin": False,
@@ -796,6 +1052,7 @@ class Store:
         return {
             "id": self.admin_player_id,
             "name": self.admin_username,
+            "display_name": self.admin_username,
             "username": self.admin_username,
             "account": True,
             "needs_claim": False,
@@ -854,7 +1111,61 @@ class Store:
             )
             token = None if legacy_player_id is not None else self._issue_session(conn, player_id, now)
             conn.commit()
-            return self._account_player(player_id, display_name), token
+            return self._account_player(player_id, username, display_name), token
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def update_account_profile(self, player_id, username, display_name,
+                               new_password, current_password, now):
+        if (username is not None or new_password is not None) and current_password is None:
+            raise AppError(400, "current_password_required",
+                           "Enter your current password to change account credentials.")
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT username,display_name,password_salt,password_verifier
+                   FROM accounts WHERE player_id=?""",
+                (player_id,),
+            ).fetchone()
+            if row is None:
+                raise AppError(403, "account_required", "Create or claim a personal account first.")
+            if current_password is not None:
+                try:
+                    salt = bytes.fromhex(row["password_salt"])
+                except ValueError:
+                    salt = bytes(16)
+                candidate = self._password_verifier(current_password, salt)
+                if not hmac.compare_digest(candidate, row["password_verifier"]):
+                    raise AppError(403, "invalid_current_password", "Current password is incorrect.")
+            target_username = row["username"] if username is None else username
+            target_display = row["display_name"] if display_name is None else display_name
+            if self.admin_username is not None and target_username == self.admin_username:
+                raise AppError(409, "username_reserved", "That username is reserved for the room admin.")
+            if target_username != row["username"] and conn.execute(
+                "SELECT 1 FROM accounts WHERE username=?", (target_username,),
+            ).fetchone():
+                raise AppError(409, "username_taken", "That username is already registered.")
+            if new_password is None:
+                conn.execute(
+                    "UPDATE accounts SET username=?,display_name=? WHERE player_id=?",
+                    (target_username, target_display, player_id),
+                )
+            else:
+                salt = secrets.token_bytes(16)
+                verifier = self._password_verifier(new_password, salt)
+                conn.execute(
+                    """UPDATE accounts SET username=?,display_name=?,
+                              password_salt=?,password_verifier=? WHERE player_id=?""",
+                    (target_username, target_display, salt.hex(), verifier, player_id),
+                )
+            conn.execute("UPDATE players SET name=? WHERE id=?", (target_display, player_id))
+            conn.commit()
+            return self._account_player(player_id, target_username, target_display)
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
@@ -889,7 +1200,7 @@ class Store:
         conn = self.connect()
         try:
             row = conn.execute(
-                """SELECT a.player_id,a.display_name,a.password_salt,a.password_verifier
+                """SELECT a.player_id,a.username,a.display_name,a.password_salt,a.password_verifier
                    FROM accounts a WHERE a.username=?""",
                 (username,),
             ).fetchone()
@@ -907,7 +1218,7 @@ class Store:
                 return None
             conn.execute("BEGIN IMMEDIATE")
             player_id = row["player_id"]
-            player = self._account_player(player_id, row["display_name"])
+            player = self._account_player(player_id, row["username"], row["display_name"])
             token = self._issue_session(conn, player_id, now)
             conn.commit()
             return player, token
@@ -987,6 +1298,11 @@ class Store:
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            if not owner.get("is_admin") and conn.execute(
+                "SELECT 1 FROM player_avatars WHERE player_id=?", (owner["id"],),
+            ).fetchone() is None:
+                raise AppError(409, "profile_photo_required",
+                               "Add a profile photo before creating a table.")
             global_config = self._global_config_from_conn(conn)
             table_config = dict(config)
             table_config["max_seats"] = engine.MAX_SEATS
@@ -1540,7 +1856,10 @@ class Handler(BaseHTTPRequestHandler):
         self.reaction_after = None
         self.avatar_version = None
         avatar_route = re.fullmatch(
-            r"/poker/api/players/([a-f0-9]{32})/avatar", parsed.path,
+            r"/poker/api/players/([a-f0-9]{32})/avatar(?:/(full))?", parsed.path,
+        )
+        preset_image_route = re.fullmatch(
+            r"/poker/api/avatar-presets/([a-f0-9]{32})/(thumbnail|full)", parsed.path,
         )
         if parsed.query:
             page_route = self.command == "GET" and parsed.path in PAGE_ROUTES
@@ -1557,7 +1876,8 @@ class Handler(BaseHTTPRequestHandler):
                 r"/poker/api/tables/[a-f0-9]{32}/last-hand", parsed.path,
             )
             if self.command != "GET" or not (
-                page_route or history_route or reaction_route or last_hand_route or avatar_route
+                page_route or history_route or reaction_route or last_hand_route
+                or avatar_route or preset_image_route
             ):
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
             if not page_route:
@@ -1579,7 +1899,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not re.fullmatch(r"[1-9][0-9]{0,8}", raw_number):
                         raise AppError(400, "invalid_url", "Invalid hand number.")
                     self.request_hand_number = int(raw_number)
-                elif avatar_route:
+                elif avatar_route or preset_image_route:
                     if set(query) != {"v"} or len(query["v"]) != 1:
                         raise AppError(400, "invalid_url", "Use one avatar version.")
                     version = query["v"][0]
@@ -1593,7 +1913,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
                         raise AppError(400, "invalid_url", "Invalid history offset.")
                     self.request_offset = int(raw_offset)
-        elif avatar_route:
+        elif avatar_route or preset_image_route:
             raise AppError(400, "invalid_url", "Avatar URLs require a version.")
         host = self.headers.get("Host", "").strip().lower()
         if host != self.app.public_netloc:
@@ -1675,6 +1995,8 @@ class Handler(BaseHTTPRequestHandler):
         payload = dict(player)
         player_id = payload.get("id")
         payload["avatar_url"] = self.app.store.avatar_urls([player_id]).get(player_id, "")
+        payload["avatar_full_url"] = self.app.store.avatar_full_urls([player_id]).get(player_id, "")
+        payload.setdefault("display_name", payload.get("name", ""))
         return payload
 
     def _public_table(self, state, viewer_id):
@@ -1683,8 +2005,12 @@ class Handler(BaseHTTPRequestHandler):
         avatar_urls = self.app.store.avatar_urls(
             seat.get("id") for seat in seats
         )
+        avatar_full_urls = self.app.store.avatar_full_urls(
+            seat.get("id") for seat in seats
+        )
         for seat in seats:
             seat["avatar_url"] = avatar_urls.get(seat.get("id"), "")
+            seat["avatar_full_url"] = avatar_full_urls.get(seat.get("id"), "")
         return view
 
     def _require_origin(self):
@@ -1738,8 +2064,8 @@ class Handler(BaseHTTPRequestHandler):
     def _password(value, registration=False):
         if not isinstance(value, str):
             raise AppError(400, "invalid_password", "Enter your account password.")
-        if registration and not 10 <= len(value) <= 256:
-            raise AppError(400, "invalid_password", "Passwords must be 10 to 256 characters.")
+        if registration and not 1 <= len(value) <= 256:
+            raise AppError(400, "invalid_password", "Passwords must be 1 to 256 characters.")
         if not registration and len(value) > 256:
             raise AppError(400, "invalid_password", "Passwords must be 256 characters or fewer.")
         return value
@@ -1821,6 +2147,9 @@ class Handler(BaseHTTPRequestHandler):
                 "/poker/manifest.webmanifest": (
                     "manifest.webmanifest", "application/manifest+json; charset=utf-8",
                 ),
+                "/poker/avatar-presets.json": (
+                    "avatar-presets.json", "application/json; charset=utf-8",
+                ),
                 "/poker/service-worker.js": ("service-worker.js", "text/javascript; charset=utf-8"),
                 "/poker/icon.svg": ("icon.svg", "image/svg+xml"),
                 "/poker/icon-192.png": ("icon-192.png", "image/png"),
@@ -1840,12 +2169,43 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 self._send(200, body, content_type, headers)
                 return
+            if path == "/poker/api/avatar-presets":
+                self._require_player()
+                self._json(200, {"avatars": self.app.store.avatar_preset_catalog()})
+                return
+            builtin_avatar_match = re.fullmatch(
+                r"/poker/avatars/(full/)?([a-z0-9]+(?:-[a-z0-9]+)*)\.(png|jpg)", path,
+            )
+            if builtin_avatar_match:
+                is_full, preset_id, extension = builtin_avatar_match.groups()
+                asset = _builtin_avatar_path(preset_id, full=bool(is_full))
+                if asset.suffix.lower() != "." + extension:
+                    raise AppError(404, "avatar_preset_not_found", "Avatar preset not found.")
+                content_type = "image/jpeg" if extension == "jpg" else "image/png"
+                self._send(200, asset.read_bytes(), content_type)
+                return
+            custom_preset_match = re.fullmatch(
+                r"/poker/api/avatar-presets/([a-f0-9]{32})/(thumbnail|full)", path,
+            )
+            if custom_preset_match:
+                self._require_player(require_account=False)
+                preset_id, variant = custom_preset_match.groups()
+                preset = self.app.store.get_custom_avatar_preset(
+                    preset_id, full=(variant == "full"),
+                )
+                if (preset is None or self.avatar_version is None or
+                        not hmac.compare_digest(preset["sha256"], self.avatar_version)):
+                    raise AppError(404, "avatar_preset_not_found", "Avatar preset not found.")
+                self._send(200, preset["image_data"], preset["content_type"])
+                return
             avatar_match = re.fullmatch(
-                r"/poker/api/players/([a-f0-9]{32})/avatar", path,
+                r"/poker/api/players/([a-f0-9]{32})/avatar(?:/(full))?", path,
             )
             if avatar_match:
                 self._require_player(require_account=False)
-                avatar = self.app.store.get_player_avatar(avatar_match.group(1))
+                avatar = self.app.store.get_player_avatar(
+                    avatar_match.group(1), full=bool(avatar_match.group(2)),
+                )
                 if (avatar is None or self.avatar_version is None or
                         not hmac.compare_digest(avatar["sha256"], self.avatar_version)):
                     raise AppError(404, "avatar_not_found", "Avatar not found.")
@@ -1955,7 +2315,9 @@ class Handler(BaseHTTPRequestHandler):
             path = self._headers()
             self._require_origin()
             body = self._body(
-                MAX_AVATAR_BODY if path == "/poker/api/profile/avatar" else MAX_BODY
+                MAX_AVATAR_BODY
+                if path in ("/poker/api/profile/avatar", "/poker/api/admin/avatar-presets")
+                else MAX_BODY
             )
             now = time.time()
 
@@ -2056,18 +2418,89 @@ class Handler(BaseHTTPRequestHandler):
                             ("; Secure" if self.app.secure_cookie else "")})
                 return
 
+            if path == "/poker/api/profile":
+                if player.get("is_admin"):
+                    raise AppError(403, "admin_read_only", "Room admins cannot change player profiles.")
+                if not player.get("account"):
+                    raise AppError(403, "account_required", "Create or claim a personal account first.")
+                allowed = {"username", "display_name", "new_password", "current_password"}
+                if set(body) - allowed:
+                    raise AppError(400, "invalid_profile", "Unknown profile setting.")
+                if not ({"username", "display_name", "new_password"} & set(body)):
+                    raise AppError(400, "invalid_profile", "Choose a profile setting to update.")
+                username = self._username(body["username"])[0] if "username" in body else None
+                display_name = self._display_name(body["display_name"]) if "display_name" in body else None
+                new_password = self._password(body["new_password"], registration=True) if "new_password" in body else None
+                current_password = self._password(body["current_password"]) if "current_password" in body else None
+                updated = self.app.store.update_account_profile(
+                    player["id"], username, display_name, new_password,
+                    current_password, now,
+                )
+                self._json(200, {"player": self._player_payload(updated)})
+                return
+
             if path == "/poker/api/profile/avatar":
                 if player.get("is_admin"):
                     raise AppError(403, "admin_read_only", "Room admins cannot change player profiles.")
                 if not player.get("account"):
                     raise AppError(403, "account_required", "Create or claim a personal account first.")
-                if set(body) != {"image_data"}:
+                allowed = {"image_data", "full_image_data", "preset_id"}
+                if set(body) - allowed:
                     raise AppError(400, "invalid_avatar", "Choose a PNG or JPEG image.")
-                content_type, image_data = _decode_avatar_data_uri(body["image_data"])
+                preset_id = body.get("preset_id")
+                if preset_id is not None and not self.app.store.has_avatar_preset(preset_id):
+                    raise AppError(400, "invalid_avatar_preset", "Choose an available avatar.")
+                full_content_type = None
+                full_image_data = None
+                if "image_data" not in body:
+                    if preset_id is None or "full_image_data" in body:
+                        raise AppError(400, "invalid_avatar", "Choose a PNG or JPEG image.")
+                    thumbnail = self.app.store.get_avatar_preset_image(preset_id)
+                    full = self.app.store.get_avatar_preset_image(preset_id, full=True)
+                    if thumbnail is None or full is None:
+                        raise AppError(400, "invalid_avatar_preset", "Choose an available avatar.")
+                    content_type, image_data = thumbnail["content_type"], thumbnail["image_data"]
+                    full_content_type, full_image_data = full["content_type"], full["image_data"]
+                else:
+                    content_type, image_data = _decode_avatar_data_uri(body["image_data"])
+                    if "full_image_data" in body:
+                        full_content_type, full_image_data = _decode_avatar_data_uri(
+                            body["full_image_data"], MAX_FULL_AVATAR_BYTES,
+                        )
+                if image_data is None and (full_image_data is not None or preset_id is not None):
+                    raise AppError(400, "invalid_avatar", "Remove both image sizes together.")
+                if (image_data is not None and full_image_data is not None
+                        and content_type != full_content_type):
+                    raise AppError(400, "invalid_avatar", "Use the same image format for both sizes.")
                 self.app.store.set_player_avatar(
-                    player["id"], content_type, image_data, now,
+                    player["id"], content_type, image_data,
+                    full_content_type, full_image_data, now,
                 )
                 self._json(200, {"player": self._player_payload(player)})
+                return
+
+            if path == "/poker/api/admin/avatar-presets":
+                if not player.get("is_admin"):
+                    raise AppError(403, "admin_required", "Room admin access is required.")
+                if set(body) != {"name", "image_data", "full_image_data"}:
+                    raise AppError(400, "invalid_avatar_preset", "Name and both image sizes are required.")
+                name = self._display_name(body["name"])
+                content_type, image_data = _decode_avatar_data_uri(body["image_data"])
+                full_content_type, full_image_data = _decode_avatar_data_uri(
+                    body["full_image_data"], MAX_FULL_AVATAR_BYTES,
+                )
+                if image_data is None or full_image_data is None:
+                    raise AppError(400, "invalid_avatar", "Both avatar image sizes must be nonempty.")
+                if content_type != full_content_type:
+                    raise AppError(400, "invalid_avatar", "Use the same image format for both sizes.")
+                avatar = self.app.store.add_custom_avatar_preset(
+                    name, content_type, image_data,
+                    full_content_type, full_image_data, now,
+                )
+                self._json(201, {
+                    "avatar": avatar,
+                    "avatars": self.app.store.avatar_preset_catalog(),
+                })
                 return
 
             if path == "/poker/api/admin/config":
@@ -2126,6 +2559,31 @@ class Handler(BaseHTTPRequestHandler):
             if player.get("is_admin"):
                 raise AppError(403, "admin_read_only",
                                "Room admins can only change global settings or lobby bots.")
+
+            rebuy_match = re.fullmatch(
+                r"/poker/api/tables/([a-f0-9]{32})/rebuy(/decline)?", path,
+            )
+            if rebuy_match:
+                table_id, decline_suffix = rebuy_match.groups()
+                offer_id = body.get("offer_id")
+                if decline_suffix:
+                    if set(body) != {"offer_id"}:
+                        raise AppError(400, "invalid_rebuy_offer", "Choose a rebuy offer to decline.")
+                    state = self.app.store.mutate_table(
+                        table_id,
+                        lambda value: engine.decline_rebuy(value, player["id"], offer_id, now),
+                        now,
+                    )
+                else:
+                    if set(body) != {"offer_id", "confirm"} or body.get("confirm") is not True:
+                        raise AppError(400, "confirmation_required", "Confirm the rebuy before accepting.")
+                    state = self.app.store.mutate_table(
+                        table_id,
+                        lambda value: engine.accept_rebuy(value, player["id"], offer_id, now),
+                        now,
+                    )
+                self._json(200, {"table": self._public_table(state, player["id"])})
+                return
 
             reaction_match = re.fullmatch(
                 r"/poker/api/tables/([a-f0-9]{32})/reactions", path,
@@ -2240,16 +2698,27 @@ class Handler(BaseHTTPRequestHandler):
                 return
             table_id, operation = match.groups()
             if operation == "join":
-                state = self.app.store.mutate_table(
-                    table_id, lambda value: engine.join(value, player["id"], player["name"], now), now)
+                def join_player(value):
+                    if (not player.get("is_admin")
+                            and not any(seat.get("player_id") == player["id"]
+                                        for seat in value.get("seats", []))
+                            and not self.app.store.has_player_avatar(player["id"])):
+                        raise AppError(409, "profile_photo_required",
+                                       "Add a profile photo before taking a new seat.")
+                    return engine.join(value, player["id"], player["name"], now)
+                state = self.app.store.mutate_table(table_id, join_player, now)
             elif operation == "seat":
                 seat_no = self._integer(body.get("seat_no"), "seat_no", 0, 8)
-                state = self.app.store.mutate_table(
-                    table_id,
-                    lambda value: engine.join(
-                        value, player["id"], player["name"], now, seat_no=seat_no),
-                    now,
-                )
+                def move_player(value):
+                    if (not player.get("is_admin")
+                            and not any(seat.get("player_id") == player["id"]
+                                        for seat in value.get("seats", []))
+                            and not self.app.store.has_player_avatar(player["id"])):
+                        raise AppError(409, "profile_photo_required",
+                                       "Add a profile photo before taking a new seat.")
+                    return engine.join(
+                        value, player["id"], player["name"], now, seat_no=seat_no)
+                state = self.app.store.mutate_table(table_id, move_player, now)
             elif operation == "stand":
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.stand(value, player["id"], now), now)

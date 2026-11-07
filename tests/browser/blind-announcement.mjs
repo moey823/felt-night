@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Verify blind-level announcements wait for winner/showdown holds, sit over the felt,
 // and keep the next hand queued until their authoritative end time.
 export default async function blindAnnouncement([desktop, mobile], sleep, roomPassword) {
@@ -59,10 +61,11 @@ export default async function blindAnnouncement([desktop, mobile], sleep, roomPa
   async function register(label, stamp) {
     const username = ("Blind" + label + stamp).slice(0, 24);
     const password = "BlindPass_" + stamp + "_" + label + "!";
-    const account = await newSession("/register", {
+    const account = { ...await newSession("/register", {
       username, password, room_password: roomPassword,
-    });
-    return { ...account, username, password };
+    }), username, password };
+    await seedAvatar(request, account);
+    return account;
   }
 
   async function signIn(page, account) {

@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Check full five-card showdowns in the compact 667x375 and 844x390 table layouts.
 export default async function compact([tablePage], sleep, roomPassword) {
   const ev = (page, fn, ...args) =>
@@ -98,10 +100,11 @@ export default async function compact([tablePage], sleep, roomPassword) {
   for (let index = 0; index < 9; index++) {
     const username = "Compact" + stamp + "P" + index;
     const password = "CompactPass_" + stamp + "_" + index;
-    const session = await newSession("/register", {
+    const session = { ...await newSession("/register", {
       username, password, room_password: roomPassword,
-    });
-    players.push({ ...session, username, password });
+    }), username, password };
+    await seedAvatar(request, session);
+    players.push(session);
   }
   const playersById = new Map(players.map(player => [player.player.id, player]));
   const admin = await newSession("/login", { username: "admin", password: "" });

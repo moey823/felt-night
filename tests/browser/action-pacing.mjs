@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Check full five-card showdowns in the compact 667x375 and 844x390 table layouts.
 export default async function actionPacing([tablePage, adminPage], sleep, roomPassword) {
   const ev = (page, fn, ...args) =>
@@ -99,8 +101,9 @@ export default async function actionPacing([tablePage, adminPage], sleep, roomPa
   for (let index = 0; index < 2; index++) {
     const username = ("ActionPlayer" + stamp + index).slice(0,24);
     const password = "ActionPass_" + stamp + "_" + index;
-    const session = await newSession("/register", {username,password,room_password:roomPassword});
-    players.push({...session,username,password});
+    const session = {...await newSession("/register", {username,password,room_password:roomPassword}),username,password};
+    await seedAvatar(request,session);
+    players.push(session);
   }
   await wait(adminPage, () => Boolean(document.querySelector("#login-name")?.offsetWidth));
   await ev(adminPage, () => {

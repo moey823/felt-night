@@ -1,3 +1,4 @@
+import {seedAvatar} from "./avatar-fixture.mjs";
 // Geometry and readability checks for the reserved poker table layout.
 export default async function layout([activePage, spectatorPage], sleep, roomPassword) {
   const ev = (page, fn, ...args) => page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
@@ -89,8 +90,9 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
   const stamp = Date.now().toString(36);
   async function register(username, suffix) {
     const password = 'LayoutPass_' + suffix + '_' + stamp;
-    const session = await req('/register', null, {room_password:roomPassword,username,password});
-    return {...session,username,password};
+    const session = {...await req('/register', null, {room_password:roomPassword,username,password}),username,password};
+    await seedAvatar(req,session);
+    return session;
   }
   const names = ['Alex','Sam','Jordan','Riley','Morgan','Casey','Taylor','Avery','Jamie'];
   const players = [];

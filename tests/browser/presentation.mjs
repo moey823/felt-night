@@ -1,4 +1,6 @@
 // Focused presentation checks for poker results, queued announcements, chat, and felt geometry.
+import {seedAvatar} from './avatar-fixture.mjs';
+
 export default async function presentation([one, two], sleep, roomPassword) {
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
@@ -78,10 +80,11 @@ export default async function presentation([one, two], sleep, roomPassword) {
   async function register(label, stamp) {
     const username = ('Pres' + stamp + label).slice(0, 24);
     const password = 'FeltPres_' + stamp + '_' + label + '_Pass';
-    const account = await request('/register', null, {
+    const account = {...await request('/register', null, {
       username, password, room_password:roomPassword,
-    });
-    return {...account, username, password};
+    }), username, password};
+    await seedAvatar(request, account);
+    return account;
   }
   async function signIn(page, account) {
     await wait(page, visible, '#login-name');
@@ -529,18 +532,15 @@ export default async function presentation([one, two], sleep, roomPassword) {
         getComputedStyle(node).visibility === 'hidden' || node.getClientRects().length === 0;
     };
     return {
-      toplineVisible:!hidden('#chat-topline'),
-      previewVisible:!hidden('#chat-preview'),
-      quickFormVisible:!hidden('#chat-quick-form'),
-      preview:document.querySelector('#chat-preview')?.textContent || '',
+      inlineChatAbsent:!document.querySelector('#chat-topline,#chat-preview,#chat-quick-form,#chat-quick-input'),
+      chatButtonInMenu:document.querySelector('#chat-button')?.closest('#table-menu')===document.querySelector('#table-menu'),
       panelVisible:!document.querySelector('#chat-panel').hidden,
       latest:document.querySelector('#chat-messages').textContent,
     };
   });
-  assert(collapsedChat.toplineVisible && collapsedChat.previewVisible && collapsedChat.quickFormVisible &&
-    collapsedChat.panelVisible && collapsedChat.latest.includes('drawer-latest-' + stamp) &&
-    collapsedChat.preview.includes('drawer-latest-' + stamp),
-  'Gameplay chat rail and full drawer must both remain available with the latest message: ' +
+  assert(collapsedChat.inlineChatAbsent && collapsedChat.chatButtonInMenu &&
+    collapsedChat.panelVisible && collapsedChat.latest.includes('drawer-latest-' + stamp),
+  'Menu-only chat must keep the full drawer and latest message without an inline preview/composer: ' +
     JSON.stringify(collapsedChat));
   await evaluate(normalActorPage, text => {
     window.presentationEnter = {keys:0, submits:0, posts:[], response:null};
@@ -636,14 +636,12 @@ export default async function presentation([one, two], sleep, roomPassword) {
   const reconnectedChat = await evaluate(normalActorPage, () => ({
     visible:!document.querySelector('#chat-panel').hidden,
     message:document.querySelector('#chat-messages').textContent,
-    quickEntryVisible:Boolean(document.querySelector('#chat-quick-form') &&
-      !document.querySelector('#chat-quick-form').hidden &&
-      getComputedStyle(document.querySelector('#chat-quick-form')).display !== 'none'),
-    preview:document.querySelector('#chat-preview')?.textContent || '',
+    inlineChatAbsent:!document.querySelector('#chat-topline,#chat-preview,#chat-quick-form,#chat-quick-input'),
+    chatButtonInMenu:document.querySelector('#chat-button')?.closest('#table-menu')===document.querySelector('#table-menu'),
   }));
   assert(reconnectedChat.visible && reconnectedChat.message.includes(chatMessage) &&
-    reconnectedChat.quickEntryVisible && reconnectedChat.preview.includes(chatMessage),
-  'Reconnected chat drawer did not restore the sent message or compact layout: ' +
+    reconnectedChat.inlineChatAbsent && reconnectedChat.chatButtonInMenu,
+  'Reconnected chat drawer must restore the message from the menu without an inline composer: ' +
     JSON.stringify(reconnectedChat));
   console.log('Full chat drawer receives shared messages, submits on Enter once, and reconnects without quick-entry clutter.');
 

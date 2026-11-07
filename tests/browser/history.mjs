@@ -1,4 +1,7 @@
 // Focused browser checks for saved text histories and replay navigation.
+import {seedAvatar} from './avatar-fixture.mjs';
+
+// Focused browser checks for saved text histories and replay navigation.
 export default async function history([one, two], sleep, roomPassword) {
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
@@ -62,9 +65,11 @@ export default async function history([one, two], sleep, roomPassword) {
   async function register(label, stamp) {
     const username = ('Hist' + stamp + label).slice(0, 24);
     const password = 'FeltHist_' + stamp + '_' + label + '_Pass';
-    return {...await request('/register', null, {
+    const account = {...await request('/register', null, {
       username, password, room_password:roomPassword,
     }), username, password};
+    await seedAvatar(request, account);
+    return account;
   }
   async function signIn(page, account) {
     await wait(page, () => Boolean(document.querySelector('#login-name')?.offsetWidth));
@@ -132,7 +137,7 @@ export default async function history([one, two], sleep, roomPassword) {
   });
   const savedText = await evaluate(one, () => document.querySelector('#history-content')?.innerText || '');
   assert(savedText.includes('Felt Night Tournament Summary') &&
-    savedText.includes('Buy-in: 10 play credits') && savedText.includes('Prize pool: 20 play credits') &&
+    savedText.includes('Buy-in: $10') && savedText.includes('Prize pool: $20') &&
     savedText.includes('Felt Night Hand #1') && savedText.includes('Blind level 1 (5/10)'),
   'Player history omitted saved tournament facts or hand transcript: ' + savedText);
   await evaluate(one, () => document.querySelector('#history-close').click());

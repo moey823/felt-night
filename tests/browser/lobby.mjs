@@ -64,6 +64,15 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
     !initialLobby.emptyState && initialLobby.create,
     'The signed-in player did not enter a lobby-only view: ' + JSON.stringify(initialLobby));
 
+  await click(hostPage, '#profile-photo-button');
+  await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === true &&
+    Boolean(document.querySelector('[data-avatar-preset-id="fish"]')));
+  await click(hostPage, '[data-avatar-preset-id="fish"]');
+  await wait(hostPage, () => document.querySelector('#profile-photo-save')?.disabled === false);
+  await click(hostPage, '#profile-photo-save');
+  await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === false &&
+    Boolean(document.querySelector('#identity-avatar img')?.getAttribute('src')));
+
   await evaluate(hostPage, () => {
     const originalFetch = window.fetch.bind(window);
     window.completedFixtureSeen = false;
@@ -163,6 +172,31 @@ export default async function lobby([hostPage, loginPage], sleep, roomPassword) 
     const tableView = document.querySelector('#table-view');
     return location.pathname === '/poker/table' && Boolean(tableView && !tableView.hidden);
   });
+  await click(hostPage, '#close-table-button');
+  await wait(hostPage, () => location.pathname === '/poker/lobby');
+
+  await evaluate(hostPage, () => {
+    const original = window.matchMedia.bind(window);
+    window.matchMedia = query => query === '(display-mode: standalone)'
+      ? {matches:true,media:query,addListener(){},removeListener(){},addEventListener(){},removeEventListener(){},dispatchEvent(){return false;}}
+      : original(query);
+    sessionStorage.setItem('standalonePopupCount', '0');
+    window.open = function() {
+      sessionStorage.setItem('standalonePopupCount', String(Number(sessionStorage.getItem('standalonePopupCount') || 0) + 1));
+      return null;
+    };
+  });
+  await clickTrusted(hostPage, '[data-open-table="' + routeTableId + '"]');
+  await wait(hostPage, id => location.pathname === '/poker/table' &&
+    new URLSearchParams(location.search).get('table') === id &&
+    document.querySelector('#table-view')?.hidden === false, routeTableId);
+  const standaloneRoute = await evaluate(hostPage, () => ({
+    path:location.pathname, id:new URLSearchParams(location.search).get('table'),
+    popupCount:Number(sessionStorage.getItem('standalonePopupCount') || 0), tableVisible:!document.querySelector('#table-view').hidden,
+  }));
+  assert(standaloneRoute.path === '/poker/table' && standaloneRoute.id === routeTableId &&
+    standaloneRoute.popupCount === 0 && standaloneRoute.tableVisible,
+    'Installed standalone mode opened a popup instead of navigating in the app window: ' + JSON.stringify(standaloneRoute));
   await click(hostPage, '#close-table-button');
   await wait(hostPage, () => location.pathname === '/poker/lobby');
 

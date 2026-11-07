@@ -1,0 +1,76 @@
+{
+  "avatars": [
+    {
+      "id": "fish",
+      "name": "Fish",
+      "url": "/poker/avatars/fish.jpg",
+      "full_url": "/poker/avatars/full/fish.jpg"
+    },
+    {
+      "id": "shark",
+      "name": "Shark",
+      "url": "/poker/avatars/shark.jpg",
+      "full_url": "/poker/avatars/full/shark.jpg"
+    },
+    {
+      "id": "cowboy",
+      "name": "Cowboy",
+      "url": "/poker/avatars/cowboy.jpg",
+      "full_url": "/poker/avatars/full/cowboy.jpg"
+    },
+    {
+      "id": "fisherman",
+      "name": "Fisherman",
+      "url": "/poker/avatars/fisherman.jpg",
+      "full_url": "/poker/avatars/full/fisherman.jpg"
+    },
+    {
+      "id": "whale",
+      "name": "Whale",
+      "url": "/poker/avatars/whale.jpg",
+      "full_url": "/poker/avatars/full/whale.jpg"
+    },
+    {
+      "id": "crab",
+      "name": "Crab",
+      "url": "/poker/avatars/crab.jpg",
+      "full_url": "/poker/avatars/full/crab.jpg"
+    },
+    {
+      "id": "octopus",
+      "name": "Octopus",
+      "url": "/poker/avatars/octopus.jpg",
+      "full_url": "/poker/avatars/full/octopus.jpg"
+    },
+    {
+      "id": "pumpkin",
+      "name": "Pumpkin",
+      "url": "/poker/avatars/pumpkin.jpg",
+      "full_url": "/poker/avatars/full/pumpkin.jpg"
+    },
+    {
+      "id": "pirate",
+      "name": "Pirate",
+      "url": "/poker/avatars/pirate.jpg",
+      "full_url": "/poker/avatars/full/pirate.jpg"
+    },
+    {
+      "id": "cowgirl",
+      "name": "Cowgirl",
+      "url": "/poker/avatars/cowgirl.jpg",
+      "full_url": "/poker/avatars/full/cowgirl.jpg"
+    },
+    {
+      "id": "astronaut",
+      "name": "Astronaut",
+      "url": "/poker/avatars/astronaut.jpg",
+      "full_url": "/poker/avatars/full/astronaut.jpg"
+    },
+    {
+      "id": "fox",
+      "name": "Fox",
+      "url": "/poker/avatars/fox.jpg",
+      "full_url": "/poker/avatars/full/fox.jpg"
+    }
+  ]
+}

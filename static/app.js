@@ -19,7 +19,7 @@
     var passwordLabel = document.querySelector('label[for="login-password"]');
     passwordInput.required = newAccount || !adminLogin;
     passwordInput.maxLength = 256;
-    passwordInput.minLength = newAccount ? 10 : (adminLogin ? 0 : 1);
+    passwordInput.minLength = newAccount ? 1 : (adminLogin ? 0 : 1);
     passwordInput.autocomplete = newAccount ? "new-password" : "current-password";
     passwordLabel.hidden = adminLogin;
     passwordInput.hidden = adminLogin;
@@ -28,7 +28,7 @@
     byId("admin-login-button").hidden = claim || adminLogin;
     byId("login-form").querySelector('button[type=submit] span').textContent = claim ? "Secure my seat" : newAccount ? "Create account" : (adminLogin ? "Sign in as admin" : "Sign in");
     document.querySelector(".login-card h2").textContent = claim ? "Keep your seat" : newAccount ? "Create an account" : (adminLogin ? "Room administration" : "Welcome back");
-    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password of at least 10 characters." : (adminLogin ? "Use the reserved room administrator account." : "Sign in to return to your seat and view your tournament history.");
+    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password with at least one character." : (adminLogin ? "Use the reserved room administrator account." : "Sign in to return to your seat and view your tournament history.");
   }
   byId("auth-switch").addEventListener("click", async function () {
     if (authMode === "claim") {
@@ -290,6 +290,7 @@
   }
 
   function reserveTableWindow() {
+    if (isStandaloneApp()) return null;
     try { return window.open("about:blank", "_blank", tableWindowFeatures()); }
     catch (err) { return null; }
   }
@@ -297,6 +298,13 @@
   function openTableWindow(tableId, setup, reservedWindow) {
     if (!tableId) return false;
     var url = tableWindowUrl(tableId, setup);
+    if (isStandaloneApp()) {
+      try { if (reservedWindow && !reservedWindow.closed) reservedWindow.close(); } catch (closeError) {}
+      state.pendingTableUrl = "";
+      byId("popup-fallback").hidden = true;
+      window.location.assign(url);
+      return true;
+    }
     var popup = reservedWindow;
     var opened = false;
     try {
@@ -338,6 +346,16 @@
   var avatarCacheOrder = [];
   var avatarCacheGeneration = 0;
   var profilePhotoDraft = "";
+  var profilePhotoFullDraft = "";
+  var profilePhotoPresetId = "";
+  var profilePhotoAfterSave = null;
+  var profilePhotoAfterCancel = null;
+  var avatarPresets = [];
+  var avatarPresetsPromise = null;
+  var profileAccountBusy = false;
+  var profileAccountGeneration = 0;
+  var profileAccountTrigger = null;
+  var adminAvatarBusy = false;
   var profilePhotoRemovePending = false;
   var profilePhotoBusy = false;
   var profilePhotoTriggerId = "";
@@ -351,15 +369,29 @@
   var profilePhotoDrag = null;
   var MAX_AVATAR_INPUT_BYTES = 12 * 1024 * 1024;
   var MAX_AVATAR_OUTPUT_BYTES = 256 * 1024;
+  var MAX_AVATAR_FULL_OUTPUT_BYTES = 1024 * 1024;
+  var MAX_AVATAR_PRESET_BYTES = 2 * 1024 * 1024;
   var MAX_AVATAR_SOURCE_PIXELS = 64 * 1000 * 1000;
 
   function safeAvatarPath(value) {
     if (typeof value !== "string" || !value) return "";
     try {
       var parsed = new URL(value, window.location.origin);
-      if (parsed.origin !== window.location.origin ||
-          !/^\/poker\/api\/players\/[A-Za-z0-9_-]+\/avatar$/.test(parsed.pathname)) return "";
-      return parsed.pathname + parsed.search;
+      if (parsed.origin !== window.location.origin || parsed.hash) return "";
+      var versioned = /^\?v=[a-f0-9]{64}$/i.test(parsed.search);
+      if (/^\/poker\/api\/players\/[A-Za-z0-9_-]+\/avatar$/.test(parsed.pathname) && versioned) {
+        return parsed.pathname + parsed.search;
+      }
+      if (/^\/poker\/api\/players\/[A-Za-z0-9_-]+\/avatar\/full$/.test(parsed.pathname) && versioned) {
+        return parsed.pathname + parsed.search;
+      }
+      if (/^\/poker\/api\/avatar-presets\/[a-f0-9]{32}\/(?:thumbnail|full)$/.test(parsed.pathname) && versioned) {
+        return parsed.pathname + parsed.search;
+      }
+      if (/^\/poker\/avatars\/(?:full\/)?[a-z0-9-]+\.(?:jpg|png)$/i.test(parsed.pathname) && !parsed.search) {
+        return parsed.pathname;
+      }
+      return "";
     } catch (err) {
       return "";
     }
@@ -397,7 +429,11 @@
 
   function fetchAvatarData(value) {
     var path = safeAvatarPath(value);
-    if (!path || !state.sessionProof) return Promise.resolve("");
+    if (!path) return Promise.resolve("");
+    var pathOnly = path.split("?")[0];
+    var isPublic = pathOnly.indexOf("/poker/avatars/") === 0;
+    var isFull = pathOnly.indexOf("/poker/avatars/full/") === 0 || /(?:\/full|\/avatar\/full)$/.test(pathOnly);
+    if (!isPublic && !state.sessionProof) return Promise.resolve("");
     var entry = avatarDataCache[path];
     if (entry && entry.data) {
       rememberAvatarPath(path);
@@ -408,21 +444,24 @@
     if (!entry) entry = avatarDataCache[path] = { data: "", promise: null, retryAt: 0 };
     var proof = state.sessionProof;
     var generation = avatarCacheGeneration;
+    var headers = { "Accept": "image/jpeg,image/png" };
+    if (!isPublic) headers["X-SitNgo-Session"] = proof;
     entry.promise = fetch(path, {
       method: "GET",
       credentials: "same-origin",
       cache: "no-store",
-      headers: { "Accept": "image/jpeg,image/png", "X-SitNgo-Session": proof }
+      headers: headers
     }).then(function (response) {
       if (!response.ok) throw Error("Avatar request failed.");
       var contentType = String(response.headers.get("Content-Type") || "").split(";")[0].toLowerCase();
       if (contentType !== "image/jpeg" && contentType !== "image/png") throw Error("Unsupported avatar image.");
       return response.blob();
     }).then(function (blob) {
-      if (blob.size > MAX_AVATAR_OUTPUT_BYTES) throw Error("Avatar image is too large.");
+      var limit = isFull ? MAX_AVATAR_FULL_OUTPUT_BYTES : (isPublic ? MAX_AVATAR_PRESET_BYTES : MAX_AVATAR_OUTPUT_BYTES);
+      if (blob.size > limit) throw Error("Avatar image is too large.");
       return blobAsDataUrl(blob);
     }).then(function (dataUrl) {
-      if (proof !== state.sessionProof || generation !== avatarCacheGeneration) return "";
+      if ((!isPublic && proof !== state.sessionProof) || generation !== avatarCacheGeneration) return "";
       entry.data = dataUrl;
       entry.retryAt = 0;
       entry.promise = null;
@@ -459,10 +498,243 @@
     });
   }
 
-  function avatarMarkup(url, name, className) {
+  function avatarMarkup(url, name, className, options) {
     var initial = String(name || "").trim().charAt(0).toUpperCase() || "♠";
-    return '<span class="' + className + '" data-avatar-url="' + esc(url || "") + '" aria-hidden="true">' +
-      '<span class="avatar-fallback-text">' + esc(initial) + '</span><img class="avatar-image" alt=""></span>';
+    var safeUrl = safeAvatarPath(url) || "";
+    var inner = '<span class="avatar-fallback-text">' + esc(initial) + '</span><img class="avatar-image" alt="">';
+    if (options && options.interactive && safeUrl) {
+      var fullUrl = safeAvatarPath(options.fullUrl || url) || safeUrl;
+      return '<button type="button" class="' + className + ' avatar-photo-trigger" data-avatar-url="' + esc(safeUrl) +
+        '" data-avatar-full-url="' + esc(fullUrl) + '" aria-label="View ' + esc(String(name || "Player")) + ' profile photo">' +
+        inner + '</button>';
+    }
+    return '<span class="' + className + '" data-avatar-url="' + esc(safeUrl) + '" aria-hidden="true">' + inner + '</span>';
+  }
+
+  function safeAvatarPreset(preset) {
+    if (!preset || typeof preset.id !== "string" ||
+        !/^(?:[a-z0-9-]{1,40}|[a-f0-9]{32})$/i.test(preset.id) ||
+        typeof preset.name !== "string" || !preset.name.trim() || typeof preset.url !== "string") return null;
+    var path = safeAvatarPath(preset.url);
+    var fullUrl = safeAvatarPath(preset.full_url || preset.url);
+    var isCustom = Boolean(preset.custom);
+    if (isCustom) {
+      if (!new RegExp("^/poker/api/avatar-presets/" + preset.id + "/thumbnail\\?v=[a-f0-9]{64}$", "i").test(path) ||
+          !new RegExp("^/poker/api/avatar-presets/" + preset.id + "/full\\?v=[a-f0-9]{64}$", "i").test(fullUrl)) return null;
+    } else {
+      if (!new RegExp("^/poker/avatars/" + preset.id + "\\.(?:jpg|png)$", "i").test(path) ||
+          !new RegExp("^/poker/avatars/full/" + preset.id + "\\.(?:jpg|png)$", "i").test(fullUrl)) return null;
+    }
+    return { id:preset.id, name:preset.name.trim(), url:path, fullUrl:fullUrl, custom:isCustom };
+  }
+
+  function renderAvatarPresets() {
+    var grid = byId("profile-photo-presets");
+    if (!grid) return;
+    grid.innerHTML = avatarPresets.map(function (preset) {
+      var initial = preset.name.trim().charAt(0).toUpperCase() || "♠";
+      return '<button type="button" class="avatar-preset" data-avatar-preset-id="' + esc(preset.id) +
+        '" aria-pressed="' + String(profilePhotoPresetId === preset.id) + '" aria-label="Choose ' + esc(preset.name) + ' avatar">' +
+        '<span class="avatar-preset-image" data-avatar-url="' + esc(preset.url) + '" aria-hidden="true">' +
+        '<span class="avatar-fallback-text">' + esc(initial) + '</span><img class="avatar-image" alt="" loading="lazy"></span>' +
+        '<span class="avatar-preset-name">' + esc(preset.name) + '</span></button>';
+    }).join("");
+    hydrateAvatarNodes(grid);
+    if (grid.querySelectorAll) grid.querySelectorAll(".avatar-preset").forEach(function (button) {
+      button.disabled = profilePhotoBusy;
+    });
+  }
+
+  function loadAvatarPresets(force) {
+    if (avatarPresets.length && !force) {
+      renderAvatarPresets();
+      return Promise.resolve(avatarPresets);
+    }
+    if (avatarPresetsPromise) return avatarPresetsPromise;
+    var status = byId("profile-photo-presets-status");
+    if (status) status.textContent = "Loading avatar choices…";
+    avatarPresetsPromise = request("/avatar-presets").then(function (data) {
+      var seen = Object.create(null);
+      var choices = (Array.isArray(data.avatars) ? data.avatars : []).map(safeAvatarPreset).filter(function (preset) {
+        if (!preset || seen[preset.id]) return false;
+        seen[preset.id] = true;
+        return true;
+      });
+      if (!choices.length) throw Error("No avatar choices are available.");
+      avatarPresets = choices;
+      renderAvatarPresets();
+      if (status) status.textContent = "Choose a cartoon portrait, or upload your own photo.";
+      renderAdminAvatarCatalog();
+      return avatarPresets;
+    }).catch(function () {
+      if (status) status.textContent = "Avatar choices could not be loaded. You can still upload a photo.";
+      renderAdminAvatarCatalog("Shared avatar choices could not be loaded.");
+      return avatarPresets;
+    }).finally(function () {
+      avatarPresetsPromise = null;
+    });
+    return avatarPresetsPromise;
+  }
+
+  function setAdminAvatarError(message) {
+    var node = byId("admin-avatar-preset-error");
+    node.textContent = message || "";
+    node.hidden = !message;
+  }
+
+  function renderAdminAvatarCatalog(message) {
+    var list = byId("admin-avatar-catalog-list");
+    if (!list) return;
+    if (message) {
+      list.innerHTML = '<p class="profile-photo-error" role="alert">' + esc(message) + '</p>';
+      return;
+    }
+    if (!avatarPresets.length) {
+      list.innerHTML = '<p class="muted">No shared portraits are available.</p>';
+      return;
+    }
+    list.innerHTML = '<p class="muted">' + avatarPresets.length + ' shared portraits available to players.</p>' +
+      '<div class="admin-avatar-catalog-grid">' + avatarPresets.map(function (preset) {
+        return '<div class="admin-avatar-catalog-item"><span class="avatar-preset-image" data-avatar-url="' +
+          esc(preset.url) + '" aria-hidden="true"><span class="avatar-fallback-text">' +
+          esc(preset.name.charAt(0).toUpperCase()) + '</span><img class="avatar-image" alt=""></span>' +
+          '<span>' + esc(preset.name) + '</span></div>';
+      }).join("") + '</div>';
+    hydrateAvatarNodes(list);
+  }
+
+  async function encodeAvatarCanvas(canvas, maxBytes, errorMessage) {
+    var qualities = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5, 0.42, 0.34];
+    for (var i = 0; i < qualities.length; i += 1) {
+      var blob = await canvasBlob(canvas, qualities[i]);
+      if (blob && blob.size <= maxBytes) return blobAsDataUrl(blob);
+    }
+    throw Error(errorMessage);
+  }
+
+  function drawCenteredAvatar(source, size) {
+    var canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    var context = canvas.getContext("2d");
+    if (!context) throw Error("Image editing is unavailable in this browser.");
+    var side = Math.min(source.width, source.height);
+    var x = (source.width - side) / 2;
+    var y = (source.height - side) / 2;
+    context.fillStyle = "#17251e";
+    context.fillRect(0, 0, size, size);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(source, x, y, side, side, 0, 0, size, size);
+    return canvas;
+  }
+
+  function adminAvatarFormBusy(busy) {
+    adminAvatarBusy = busy;
+    byId("admin-avatar-preset-name").disabled = busy;
+    byId("admin-avatar-preset-file").disabled = busy;
+    byId("admin-avatar-preset-save").disabled = busy;
+    byId("admin-avatar-preset-save").setAttribute("aria-busy", String(busy));
+  }
+
+  async function saveAdminAvatarPreset(event) {
+    event.preventDefault();
+    if (!state.isAdmin || adminAvatarBusy) return;
+    var form = byId("admin-avatar-preset-form");
+    var name = byId("admin-avatar-preset-name").value.trim();
+    var file = byId("admin-avatar-preset-file").files && byId("admin-avatar-preset-file").files[0];
+    setAdminAvatarError("");
+    if (!form.checkValidity() || !name || !file) {
+      form.reportValidity();
+      return;
+    }
+    adminAvatarFormBusy(true);
+    byId("admin-avatar-preset-status").textContent = "Preparing shared portrait…";
+    var source = null;
+    try {
+      source = await loadAvatarFile(file);
+      var thumbCanvas = drawCenteredAvatar(source, 256);
+      var fullCanvas = drawCenteredAvatar(source, 1024);
+      var imageData = await encodeAvatarCanvas(thumbCanvas, MAX_AVATAR_OUTPUT_BYTES,
+        "This image could not be compressed below 256 KB. Choose another image.");
+      var fullImageData = await encodeAvatarCanvas(fullCanvas, MAX_AVATAR_FULL_OUTPUT_BYTES,
+        "This image could not be compressed below 1 MB. Choose another image.");
+      var preview = byId("admin-avatar-preset-preview");
+      preview.src = imageData;
+      byId("admin-avatar-preset-preview-name").textContent = name;
+      byId("admin-avatar-preset-preview-wrap").hidden = false;
+      byId("admin-avatar-preset-status").textContent = "Saving shared portrait…";
+      var data = await mutate("/admin/avatar-presets", {
+        name:name, image_data:imageData, full_image_data:fullImageData
+      });
+      if (!Array.isArray(data.avatars)) throw Error("The saved shared portrait list could not be loaded.");
+      avatarPresets = data.avatars.map(safeAvatarPreset).filter(Boolean);
+      renderAvatarPresets();
+      renderAdminAvatarCatalog();
+      byId("admin-avatar-preset-form").reset();
+      byId("admin-avatar-preset-preview-wrap").hidden = true;
+      byId("admin-avatar-preset-status").textContent = name + " is now available to every player.";
+    } catch (err) {
+      byId("admin-avatar-preset-status").textContent = "";
+      setAdminAvatarError(err.message || "Could not add the shared portrait. Try again.");
+    } finally {
+      if (source && source.close) source.close();
+      adminAvatarFormBusy(false);
+    }
+  }
+
+  async function selectAvatarPreset(id) {
+    if (profilePhotoBusy) return;
+    var preset = avatarPresets.filter(function (item) { return item.id === id; })[0];
+    if (!preset) return;
+    invalidateProfilePhotoWork();
+    profilePhotoPresetId = preset.id;
+    renderAvatarPresets();
+    profilePhotoBusy = true;
+    setProfilePhotoError("");
+    setProfilePhotoPreview(String(state.player && state.player.avatar_url || ""), false);
+    byId("profile-photo-status").textContent = "Preparing " + preset.name + " avatar…";
+    updateProfilePhotoButtons();
+    var generation = profilePhotoGeneration;
+    var playerId = String(state.player && state.player.id || "");
+    try {
+      var sourceUrl = preset.fullUrl || preset.url;
+      var headers = { "Accept":"image/jpeg,image/png" };
+      if (preset.custom) headers["X-SitNgo-Session"] = state.sessionProof;
+      var response = await fetch(sourceUrl, { credentials:"same-origin", cache:preset.custom ? "no-store" : "force-cache", headers:headers });
+      if (!response.ok) throw Error("That avatar could not be loaded.");
+      var blob = await response.blob();
+      var contentType = String(blob.type || "").split(";")[0].toLowerCase();
+      if (blob.size <= 0 || blob.size > MAX_AVATAR_FULL_OUTPUT_BYTES ||
+          (contentType !== "image/jpeg" && contentType !== "image/png")) {
+        throw Error("That avatar image is invalid.");
+      }
+      var file = new File([blob], preset.id + (contentType === "image/png" ? ".png" : ".jpg"), { type:contentType });
+      var imageSource = await loadAvatarFile(file);
+      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "") ||
+          !byId("profile-photo-dialog").open) {
+        if (imageSource.close) imageSource.close();
+        return;
+      }
+      profilePhotoSource = imageSource;
+      profilePhotoCrop = { zoom:1, x:0.5, y:0.5 };
+      byId("profile-photo-editor").hidden = false;
+      drawProfilePhotoCrop();
+      await prepareProfilePhotoCrop(++profilePhotoCropRevision);
+      if (generation === profilePhotoGeneration && playerId === String(state.player && state.player.id || "")) {
+        byId("profile-photo-status").textContent = preset.name + " avatar ready to save.";
+      }
+    } catch (err) {
+      if (generation === profilePhotoGeneration && playerId === String(state.player && state.player.id || "")) {
+        byId("profile-photo-status").textContent = "";
+        setProfilePhotoError(err.message || "Could not prepare that avatar.");
+      }
+    } finally {
+      if (generation === profilePhotoGeneration && playerId === String(state.player && state.player.id || "")) {
+        profilePhotoBusy = false;
+        updateProfilePhotoButtons();
+      }
+    }
   }
 
   function renderIdentityAvatar() {
@@ -529,39 +801,55 @@
     profilePhotoGeneration += 1;
     resetProfilePhotoEditor();
     profilePhotoDraft = "";
+    profilePhotoFullDraft = "";
+    profilePhotoPresetId = "";
     profilePhotoRemovePending = false;
     profilePhotoBusy = false;
+    if (byId("profile-photo-presets")) renderAvatarPresets();
     var file = byId("profile-photo-file");
     if (file) file.value = "";
   }
 
-  function openProfilePhotoDialog(event) {
-    if (!state.player || state.isAdmin) return;
+  function openProfilePhotoDialog(event, afterSave, afterCancel) {
+    if (!state.player || state.isAdmin) return false;
+    if (typeof afterSave === "function" && state.player.avatar_url) return false;
     invalidateProfilePhotoWork();
     profilePhotoTriggerId = event && event.currentTarget ? event.currentTarget.id : "profile-photo-button";
+    profilePhotoAfterSave = typeof afterSave === "function" ? afterSave : null;
+    profilePhotoAfterCancel = typeof afterCancel === "function" ? afterCancel : null;
     profilePhotoDraft = "";
+    profilePhotoFullDraft = "";
+    profilePhotoPresetId = "";
     profilePhotoRemovePending = false;
     profilePhotoBusy = false;
     byId("profile-photo-file").value = "";
     byId("profile-photo-status").textContent = "";
     setProfilePhotoError("");
     setProfilePhotoPreview(String(state.player.avatar_url || ""), false);
+    renderAvatarPresets();
+    loadAvatarPresets(true);
     updateProfilePhotoButtons();
     var dialog = byId("profile-photo-dialog");
     if (!dialog.open) {
       if (typeof dialog.showModal === "function") dialog.showModal();
       else dialog.setAttribute("open", "");
     }
+    return true;
   }
 
-  function closeProfilePhotoDialog(restoreFocus) {
+  function closeProfilePhotoDialog(restoreFocus, saved) {
     invalidateProfilePhotoWork();
     var dialog = byId("profile-photo-dialog");
     if (dialog && dialog.open) dialog.close();
     byId("profile-photo-status").textContent = "";
     setProfilePhotoError("");
-    if (restoreFocus) focusTableControl(profilePhotoTriggerId || "profile-photo-button");
+    var triggerId = profilePhotoTriggerId || "profile-photo-button";
+    var callback = saved ? profilePhotoAfterSave : profilePhotoAfterCancel;
+    profilePhotoAfterSave = null;
+    profilePhotoAfterCancel = null;
     profilePhotoTriggerId = "";
+    if (restoreFocus) focusTableControl(triggerId);
+    if (callback) callback();
   }
 
   function readImageDimensions(file) {
@@ -646,18 +934,22 @@
     if (context) context.clearRect(0, 0, 256, 256);
   }
 
-  function drawProfilePhotoCrop() {
+  function drawProfilePhotoToCanvas(canvas) {
     if (!profilePhotoSource) return;
-    var source = profilePhotoSource, canvas = byId("profile-photo-canvas");
-    var context = canvas.getContext("2d");
+    var source = profilePhotoSource, context = canvas.getContext("2d"), size = canvas.width;
     if (!context) throw Error("Photo editing is unavailable in this browser.");
     var side = Math.min(source.width, source.height) / profilePhotoCrop.zoom;
     context.fillStyle = "#17251e";
-    context.fillRect(0, 0, 256, 256);
+    context.fillRect(0, 0, size, size);
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
     context.drawImage(source, (source.width - side) * profilePhotoCrop.x,
-      (source.height - side) * profilePhotoCrop.y, side, side, 0, 0, 256, 256);
+      (source.height - side) * profilePhotoCrop.y, side, side, 0, 0, size, size);
+  }
+
+  function drawProfilePhotoCrop() {
+    if (!profilePhotoSource) return;
+    drawProfilePhotoToCanvas(byId("profile-photo-canvas"));
     byId("profile-photo-zoom").value = String(profilePhotoCrop.zoom);
     byId("profile-photo-zoom-value").value = profilePhotoCrop.zoom.toFixed(2) + "×";
     byId("profile-photo-x").value = String(profilePhotoCrop.x * 100);
@@ -670,7 +962,7 @@
     updateProfilePhotoButtons();
     try {
       var canvas = byId("profile-photo-canvas");
-      var qualities = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32], dataUrl = "";
+      var qualities = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32], dataUrl = "", fullDataUrl = "";
       for (var i = 0; i < qualities.length; i += 1) {
         var blob = await canvasBlob(canvas, qualities[i]);
         if (revision !== profilePhotoCropRevision || generation !== profilePhotoGeneration) return;
@@ -678,7 +970,19 @@
       }
       if (revision !== profilePhotoCropRevision || generation !== profilePhotoGeneration) return;
       if (!dataUrl) throw Error("This photo could not be compressed below 256 KB. Choose another image.");
+      var masterCanvas = document.createElement("canvas");
+      masterCanvas.width = 1024;
+      masterCanvas.height = 1024;
+      drawProfilePhotoToCanvas(masterCanvas);
+      for (var j = 0; j < qualities.length; j += 1) {
+        var fullBlob = await canvasBlob(masterCanvas, qualities[j]);
+        if (revision !== profilePhotoCropRevision || generation !== profilePhotoGeneration) return;
+        if (fullBlob && fullBlob.size <= MAX_AVATAR_FULL_OUTPUT_BYTES) { fullDataUrl = await blobAsDataUrl(fullBlob); break; }
+      }
+      if (revision !== profilePhotoCropRevision || generation !== profilePhotoGeneration) return;
+      if (!fullDataUrl) throw Error("This photo could not be compressed below 1 MB. Choose another image.");
       profilePhotoDraft = dataUrl;
+      profilePhotoFullDraft = fullDataUrl;
       setProfilePhotoPreview(dataUrl, true);
       byId("profile-photo-status").textContent = "Photo ready to save.";
     } catch (err) {
@@ -718,25 +1022,145 @@
     byId("profile-photo-status").textContent = "Saving profile photo…";
     updateProfilePhotoButtons();
     try {
-      var data = await mutate("/profile/avatar", { image_data: profilePhotoRemovePending ? "" : profilePhotoDraft });
+      var photoPayload = {
+        image_data: profilePhotoRemovePending ? "" : profilePhotoDraft,
+        full_image_data: profilePhotoRemovePending ? "" : profilePhotoFullDraft
+      };
+      if (!profilePhotoRemovePending && profilePhotoPresetId) photoPayload.preset_id = profilePhotoPresetId;
+      var data = await mutate("/profile/avatar", photoPayload);
       if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) {
         refreshAll(true);
         return;
       }
       if (!data.player) throw Error("The saved profile could not be loaded. Try again.");
       state.player = data.player;
-      profileAvatarOverride = { playerId: String(data.player.id || ""), url: String(data.player.avatar_url || ""), expiresAt: Date.now() + 20000 };
+      profileAvatarOverride = {
+        playerId: String(data.player.id || ""),
+        url: String(data.player.avatar_url || ""),
+        fullUrl: String(data.player.avatar_full_url || data.player.avatar_url || ""),
+        expiresAt: Date.now() + 20000
+      };
       renderIdentityAvatar();
       if (byId("welcome-name")) byId("welcome-name").textContent = state.player.name || "";
       refreshAll(true);
       profilePhotoBusy = false;
-      closeProfilePhotoDialog(true);
+      closeProfilePhotoDialog(false, true);
     } catch (err) {
       if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) return;
       profilePhotoBusy = false;
       byId("profile-photo-status").textContent = "";
       setProfilePhotoError(err.message || "Could not save the profile photo. Try again.");
       updateProfilePhotoButtons();
+    }
+  }
+
+  function setProfileAccountError(message) {
+    var node = byId("profile-account-error");
+    node.textContent = message || "";
+    node.hidden = !message;
+  }
+
+  function updateProfileAccountForm() {
+    var player = state.player || {};
+    var usernameChanged = byId("profile-account-username").value.trim() !== String(player.username || "");
+    var newPassword = byId("profile-account-new-password").value;
+    var credentialsChanged = usernameChanged || Boolean(newPassword);
+    var displayNameChanged = byId("profile-account-display-name").value.trim() !== String(player.display_name || player.name || "");
+    byId("profile-account-current-password").required = credentialsChanged;
+    byId("profile-account-save").disabled = profileAccountBusy || !(usernameChanged || displayNameChanged || newPassword);
+    ["profile-account-username", "profile-account-display-name", "profile-account-current-password",
+      "profile-account-new-password"].forEach(function (id) {
+      byId(id).disabled = profileAccountBusy;
+    });
+    byId("profile-account-close").disabled = profileAccountBusy;
+  }
+
+  function openProfileAccountDialog(event) {
+    if (!state.player || state.isAdmin) return;
+    profileAccountGeneration += 1;
+    profileAccountBusy = false;
+    profileAccountTrigger = event && event.currentTarget ? event.currentTarget : byId("profile-account-button");
+    byId("profile-account-username").value = String(state.player.username || "");
+    byId("profile-account-display-name").value = String(state.player.display_name || state.player.name || "");
+    byId("profile-account-current-password").value = "";
+    byId("profile-account-new-password").value = "";
+    byId("profile-account-status").textContent = "";
+    setProfileAccountError("");
+    updateProfileAccountForm();
+    var dialog = byId("profile-account-dialog");
+    if (!dialog.open) dialog.showModal();
+    byId("profile-account-username").focus();
+  }
+
+  function closeProfileAccountDialog(restoreFocus) {
+    profileAccountGeneration += 1;
+    profileAccountBusy = false;
+    var dialog = byId("profile-account-dialog");
+    if (dialog && dialog.open) dialog.close();
+    ["profile-account-current-password", "profile-account-new-password"].forEach(function (id) {
+      var input = byId(id);
+      if (input) input.value = "";
+    });
+    byId("profile-account-status").textContent = "";
+    setProfileAccountError("");
+    updateProfileAccountForm();
+    var trigger = profileAccountTrigger;
+    profileAccountTrigger = null;
+    if (restoreFocus && trigger && trigger.isConnected) trigger.focus({ preventScroll:true });
+  }
+
+  async function saveProfileAccount(event) {
+    event.preventDefault();
+    if (profileAccountBusy || !state.player) return;
+    var username = byId("profile-account-username").value.trim();
+    var displayName = byId("profile-account-display-name").value.trim();
+    var newPassword = byId("profile-account-new-password").value;
+    var currentPassword = byId("profile-account-current-password").value;
+    var payload = {};
+    if (username !== String(state.player.username || "")) payload.username = username;
+    if (displayName !== String(state.player.display_name || state.player.name || "")) payload.display_name = displayName;
+    if (newPassword) payload.new_password = newPassword;
+    if (payload.username || payload.new_password) {
+      if (!currentPassword) {
+        setProfileAccountError("Enter your current password to change your username or password.");
+        byId("profile-account-current-password").focus();
+        return;
+      }
+      payload.current_password = currentPassword;
+    }
+    if (!Object.keys(payload).length) {
+      closeProfileAccountDialog(true);
+      return;
+    }
+    if (!byId("profile-account-form").checkValidity()) {
+      byId("profile-account-form").reportValidity();
+      return;
+    }
+    var generation = profileAccountGeneration;
+    var playerId = String(state.player.id || "");
+    profileAccountBusy = true;
+    setProfileAccountError("");
+    byId("profile-account-status").textContent = "Saving account changes…";
+    updateProfileAccountForm();
+    try {
+      var data = await mutate("/profile", payload);
+      if (generation !== profileAccountGeneration || playerId !== String(state.player && state.player.id || "")) return;
+      if (!data.player || String(data.player.id || "") !== playerId) throw Error("The saved account could not be loaded. Try again.");
+      state.player = data.player;
+      if (typeof data.session_proof === "string" && data.session_proof) state.sessionProof = data.session_proof;
+      if (typeof data.csrf === "string" && data.csrf) state.csrf = data.csrf;
+      if (data.session_proof || data.csrf) persistAuth();
+      renderIdentityAvatar();
+      byId("welcome-name").textContent = state.player.display_name || state.player.name || state.player.username || "";
+      refreshAll(true);
+      profileAccountBusy = false;
+      closeProfileAccountDialog(true);
+    } catch (err) {
+      if (generation !== profileAccountGeneration || playerId !== String(state.player && state.player.id || "")) return;
+      profileAccountBusy = false;
+      byId("profile-account-status").textContent = "";
+      setProfileAccountError(err.message || "Could not save the account changes. Try again.");
+      updateProfileAccountForm();
     }
   }
 
@@ -1146,21 +1570,50 @@
     });
   }
 
-  function openReactionSettingsDialog() {
+  var reactionSettingsReturnFocus = null;
+  var reactionTouchHoldTimer = 0;
+  var reactionTouchHoldButton = null;
+  var reactionTouchHoldPointerId = null;
+  var reactionTouchHoldStart = null;
+  var reactionTouchHoldFired = false;
+  var avatarPreviewRequestSerial = 0;
+  var avatarPreviewTrigger = null;
+  var rebuyOfferCurrentId = "";
+  var rebuyOfferDeadlineMs = 0;
+  var rebuyOfferRemainingMs = 0;
+  var rebuyOfferUpdatedAt = 0;
+  var rebuyOfferTimer = 0;
+  var rebuyActionPending = false;
+  var pendingPhotoGatePopup = null;
+  var pendingPhotoGateSeat = "";
+  var reactionTouchSuppressClickButton = null;
+
+  function openReactionSettingsDialog(slotIndex, trigger) {
     if (state.isAdmin) return;
     var dialog = byId("reaction-settings-dialog");
     if (!dialog) return;
     renderReactionSettingsDialog();
+    reactionSettingsReturnFocus = trigger || byId("reaction-settings-button");
     byId("reaction-settings-button").setAttribute("aria-expanded", "true");
-    if (typeof dialog.showModal === "function") dialog.showModal();
+    if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
     else dialog.setAttribute("open", "");
+    var selects = Array.from(document.querySelectorAll("[data-reaction-select]"));
+    var selected = Number(slotIndex);
+    if (Number.isInteger(selected) && selected >= 0 && selected < selects.length) {
+      selects[selected].focus({ preventScroll: true });
+    }
   }
 
   function closeReactionSettingsDialog(restoreFocus) {
     var dialog = byId("reaction-settings-dialog");
     if (dialog && dialog.open) dialog.close();
     byId("reaction-settings-button").setAttribute("aria-expanded", "false");
-    if (restoreFocus) focusTableControl("reaction-settings-button");
+    var trigger = reactionSettingsReturnFocus;
+    reactionSettingsReturnFocus = null;
+    if (restoreFocus) {
+      if (trigger && trigger.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true });
+      else focusTableControl("reaction-settings-button");
+    }
   }
 
   function closeRecentActionDialog(restoreFocus) {
@@ -1451,6 +1904,7 @@
     state.sitOutRequestId += 1;
     state.sitOutPending = false;
     closeProfilePhotoDialog(false);
+    closeProfileAccountDialog(false);
     clearAvatarCache();
     state.player = null;
     renderIdentityAvatar();
@@ -2550,6 +3004,28 @@
     document.querySelectorAll(".seat-turn-clock").forEach(function (node) {
       node.textContent = label;
     });
+    updateShotClockAlert();
+  }
+
+  function updateShotClockAlert() {
+    var node = byId("shot-clock-alert");
+    var count = byId("shot-clock-number");
+    var copy = byId("shot-clock-copy");
+    if (!node || !count || !copy) return;
+    var seconds = turnClockSecondsRemaining();
+    var active = Boolean(state.seatTurnClockKey && seconds > 0 && seconds <= 5);
+    node.hidden = !active;
+    node.dataset.paused = String(Boolean(state.seatTurnClockPaused));
+    if (!active) {
+      node.removeAttribute("aria-label");
+      return;
+    }
+    var value = String(seconds);
+    if (count.textContent !== value) count.textContent = value;
+    var label = seconds === 1 ? "SECOND LEFT TO ACT" : "SECONDS LEFT TO ACT";
+    if (copy.textContent !== label) copy.textContent = label;
+    node.setAttribute("aria-label", "Shot clock: " + seconds + " " + (seconds === 1 ? "second" : "seconds") + " left to act" +
+      (state.seatTurnClockPaused ? ", paused" : ""));
   }
 
   function clearSeatTurnClock() {
@@ -2559,6 +3035,7 @@
     state.seatTurnRemainingMs = 0;
     state.seatTurnClockUpdatedAt = 0;
     state.seatTurnClockPaused = false;
+    updateShotClockAlert();
   }
 
   function syncSeatTurnClock(view) {
@@ -2793,12 +3270,16 @@
         } else {
           var emptySeatNo = i + 1;
           var emptyActions = "";
+          var canAddBot = Boolean(isHost && view.status === "lobby");
           if (!viewerHasSeat) {
             emptyActions += '<button class="seat-empty-join" type="button" data-take-seat="' + i + '" aria-label="Take seat ' + emptySeatNo + '"><span>Take seat</span></button>';
-          } else {
-            emptyActions += '<span class="seat-empty-open">Open</span>';
           }
-          html += '<div class="seat-card seat-empty" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true">' + emptyActions + '</div>';
+          if (canAddBot) {
+            emptyActions += '<button class="seat-empty-bot" type="button" data-table-add-bot="' + i + '" aria-label="Add bot to seat ' + emptySeatNo + '">Add bot</button>';
+          }
+          if (!emptyActions) emptyActions = '<span class="seat-empty-open">Open</span>';
+          var emptyClass = "seat-card seat-empty" + (!viewerHasSeat && canAddBot ? " has-secondary-action" : "");
+          html += '<div class="' + emptyClass + '" data-seat-no="' + i + '" data-relative-seat="' + relativeIndex + '" data-seat-empty="true">' + emptyActions + '</div>';
         }
         continue;
       }
@@ -2921,10 +3402,15 @@
       var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
       var seatAvatarUrl = Object.prototype.hasOwnProperty.call(seat, "avatar_url")
         ? String(seat.avatar_url || "") : (isMe && state.player ? String(state.player.avatar_url || "") : "");
+      var seatAvatarFullUrl = String(seat.avatar_full_url || seatAvatarUrl || "");
       if (isMe && profileAvatarOverride && profileAvatarOverride.playerId === id && Date.now() < profileAvatarOverride.expiresAt) {
         seatAvatarUrl = profileAvatarOverride.url;
+        seatAvatarFullUrl = String(profileAvatarOverride.fullUrl || profileAvatarOverride.url || "");
       }
-      var seatAvatar = avatarMarkup(seatAvatarUrl, seatName, "seat-avatar");
+      var seatAvatar = avatarMarkup(seatAvatarUrl, seatName, "seat-avatar", {
+        interactive: Boolean(seatAvatarUrl),
+        fullUrl: seatAvatarFullUrl || seatAvatarUrl
+      });
       // Blind position belongs to the hand, independently of the latest action.
       var blindRole = currentHand && String(view.street || "").toLowerCase() === "preflop"
         ? (id === String(view.small_blind_id || "") ? "Small blind" :
@@ -2973,7 +3459,9 @@
       var markerLane = '<div class="seat-local-markers">' + markerHtml + '</div>';
       var playerInfo = '<div class="seat-player-info">' + seatAvatar +
         '<div class="seat-player-meta">' + stackHtml + markerLane + '</div></div>';
-      var footerContent = actionMarkup || equityHtml;
+      // Once all-in odds exist, betting is locked. Show the equity instead of
+      // letting a retained last-action badge hide the preflop runout estimate.
+      var footerContent = oddsRow && !showdown ? equityHtml : (actionMarkup || equityHtml);
       var playerFooter = '<div class="seat-footer' + (actionMarkup ? ' has-action' : '') + '">' + footerContent + '</div>';
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         cardHtml +
@@ -2996,7 +3484,14 @@
       var playerId = avatar.closest(".seat-card").getAttribute("data-player-id");
       var previous = previousAvatars[playerId];
       if (previous && previous.getAttribute("data-avatar-url") === avatar.getAttribute("data-avatar-url")) {
-        previous.querySelector(".avatar-fallback-text").textContent = avatar.querySelector(".avatar-fallback-text").textContent;
+        var previousFallback = previous.querySelector(".avatar-fallback-text");
+        var nextFallback = avatar.querySelector(".avatar-fallback-text");
+        if (previousFallback && nextFallback) previousFallback.textContent = nextFallback.textContent;
+        ["data-avatar-full-url", "aria-label"].forEach(function (attribute) {
+          var value = avatar.getAttribute(attribute);
+          if (value == null) previous.removeAttribute(attribute);
+          else previous.setAttribute(attribute, value);
+        });
         avatar.replaceWith(previous);
       }
     });
@@ -3072,7 +3567,7 @@
       var feltBox = felt.getBoundingClientRect();
       var markerSize = window.innerWidth <= 380 || window.innerHeight <= 450 ? 20 : 30;
       var blockedNodes = Array.from(grid.querySelectorAll(".seat-card")).filter(function (node) { return node !== owner; })
-        .concat(Array.from(owner.querySelectorAll(".seat-name,.mini-card,.seat-avatar,.seat-stack,.seat-status,.seat-action,.seat-wager,.seat-turn-indicator")))
+        .concat(Array.from(owner.querySelectorAll(".seat-name,.mini-card,.seat-avatar,.seat-stack,.seat-status,.seat-action,.seat-wager,.seat-equity,.seat-result,.seat-turn-indicator")))
         .concat(Array.from(felt.querySelectorAll(".board-center,#pot-display,#street-label,#blind-strip")));
       var blocked = blockedNodes.filter(function (node) {
         var style = window.getComputedStyle(node), rect = node.getBoundingClientRect();
@@ -3234,7 +3729,18 @@
       title.textContent = championName + " wins";
     }
     var pool = results.reduce(function (sum,row) {return sum + number(row.award_cents,0);}, 0);
-    byId("results-description").textContent = results.some(function(row) {return row.award_cents != null;}) ? credits(pool) + " play credits awarded · Buy-in " + credits(view.config.buy_in * 100) + " · " + view.config.payout_percentages.join(" / ") + "%" : "Final standings for this freezeout.";
+    var prizePool = view.prize_pool_cents == null ? pool : number(view.prize_pool_cents, pool);
+    var buyInCents = number(view.config && view.config.buy_in, 0) * 100;
+    var totalBuyIns = results.reduce(function (sum,row) {return sum + number(row.buy_in_count, 0);}, 0);
+    var totalRebuys = results.reduce(function (sum,row) {return sum + number(row.rebuy_count, 0);}, 0);
+    var totalContributions = results.length && results.every(function (row) { return row.total_buy_in_cents != null; })
+      ? results.reduce(function (sum,row) {return sum + number(row.total_buy_in_cents, 0);}, 0) : null;
+    var resultCopy = results.some(function(row) {return row.award_cents != null;})
+      ? "Prize pool " + dollars(prizePool) + " · Total buy-ins " + (totalContributions == null ? "Not recorded" : dollars(totalContributions)) +
+        " (" + totalBuyIns + " entries, " + totalRebuys + " rebuys) · Buy-in " + dollars(buyInCents) +
+        " · Payout shares " + (view.config && view.config.payout_percentages || []).join(" / ") + "%"
+      : "Final standings for this freezeout.";
+    byId("results-description").textContent = resultCopy;
     byId("results-list").innerHTML = results.map(function (row, index) {
       var place = number(row.place != null ? row.place : row.rank, index + 1);
       var suffix = place % 100 >= 11 && place % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[place % 10] || "th");
@@ -3243,8 +3749,12 @@
       var name = row.name || row.player_name || "Player";
       var rowStatus = String(row.status || "").toLowerCase();
       var detail = row.detail || (place === 1 ? "Tournament winner" : (row.eliminated_at || rowStatus === "eliminated" ? "Eliminated" : (row.status || "Final result")));
+      detail += buyInAccountingCopy(row);
+      if (row.award_is_estimate) detail += " · Estimated award";
       var awardRecorded = row.award_cents != null;
-      var awardLabel = awardRecorded ? credits(row.award_cents) + " credits" : "Not recorded";
+      var awardLabel = awardRecorded
+        ? (row.award_is_estimate ? "Estimated " : "") + dollars(row.award_cents)
+        : "Not recorded";
       return '<div class="result-row" role="listitem"><span class="result-place ' + (place === 1 ? "first" : "") + '" aria-label="' + esc(placeAria) + '">' + placeLabel + '</span>' +
         '<span><span class="result-name">' + esc(name) + '</span><span class="result-detail">' + esc(detail) + '</span></span>' +
         '<span class="result-award ' + (awardRecorded ? "is-recorded" : "is-unrecorded") + '" aria-label="Award: ' + esc(awardLabel) + '">' + esc(awardLabel) + '</span></div>';
@@ -4057,11 +4567,14 @@
       var reactionTableId = String(view.id || state.activeTableId || "");
       var reactionPlayerId = String(viewer.player_id || (state.player && state.player.id) || "");
       var reactionSeatNo = String(seat && seat.seat_no != null ? seat.seat_no : "");
-      var shortcutMarkup = reactionVisible ? normalizedReactionFavorites(state.reactionFavorites).map(function (emoji) {
+      var shortcutMarkup = reactionVisible ? normalizedReactionFavorites(state.reactionFavorites).map(function (emoji, index) {
         var label = REACTION_EMOJI_LABELS[emoji] || "table";
+        var changeHint = "Right-click, press Shift+F10, or hold to change shortcut " + (index + 1);
         return '<button class="reaction-shortcut" type="button" data-send-reaction="' + esc(emoji) +
+          '" data-reaction-slot="' + index + '" data-send-hint="' + esc(changeHint) +
           '" data-reaction-table-id="' + esc(reactionTableId) + '" data-reaction-player-id="' + esc(reactionPlayerId) +
-          '" data-reaction-seat-no="' + esc(reactionSeatNo) + '" aria-label="Send ' + esc(label) + ' reaction" title="Send ' + esc(label) + '">' +
+          '" data-reaction-seat-no="' + esc(reactionSeatNo) + '" aria-haspopup="dialog" aria-label="Send ' + esc(label) +
+          ' reaction. ' + esc(changeHint) + '." title="Send ' + esc(label) + '. ' + esc(changeHint) + '">' +
           esc(emoji) + '</button>';
       }).join("") : "";
       if (shortcuts.innerHTML !== shortcutMarkup) shortcuts.innerHTML = shortcutMarkup;
@@ -4510,6 +5023,202 @@
     syncTableAnnouncementRegion();
   }
 
+  function safeAvatarViewerUrl(value) {
+    var safePath = safeAvatarPath(value);
+    if (!safePath) return null;
+    var url = new URL(safePath, window.location.origin);
+    var path = url.pathname;
+    var isPlayer = /^\/poker\/api\/players\/[A-Za-z0-9_-]+\/avatar(?:\/full)?$/.test(path);
+    var isCustomPreset = /^\/poker\/api\/avatar-presets\/[a-f0-9]{32}\/(?:thumbnail|full)$/i.test(path);
+    var isBuiltin = /^\/poker\/avatars\/(?:full\/)?[a-z0-9-]+\.(?:jpg|png)$/i.test(path);
+    if (!isPlayer && !isCustomPreset && !isBuiltin) return null;
+    var privateImage = isPlayer || isCustomPreset;
+    var fullImage = /\/full$/.test(path);
+    return {
+      path:safePath,
+      privateImage:privateImage,
+      maxBytes:fullImage ? 1024 * 1024 : (privateImage ? 256 * 1024 : 2 * 1024 * 1024)
+    };
+  }
+
+  async function openAvatarViewer(trigger) {
+    var dialog = byId("avatar-view-dialog");
+    var image = byId("avatar-view-image");
+    var status = byId("avatar-view-status");
+    if (!dialog || !image || !status || !trigger) return;
+    var source = String(trigger.getAttribute("data-avatar-full-url") || trigger.getAttribute("data-avatar-url") || "");
+    var safeSource = safeAvatarViewerUrl(source);
+    if (!safeSource) return;
+    if (safeSource.privateImage && !state.sessionProof) return;
+    var requestId = ++avatarPreviewRequestSerial;
+    var proof = state.sessionProof;
+    avatarPreviewTrigger = trigger;
+    image.hidden = true;
+    image.removeAttribute("src");
+    image.alt = "";
+    status.textContent = "Loading profile photo…";
+    status.hidden = false;
+    if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+    else dialog.setAttribute("open", "");
+    byId("avatar-view-close").focus({ preventScroll:true });
+    var seatName = trigger.closest(".seat-card")?.querySelector(".seat-name")?.textContent || "Player";
+    image.alt = seatName + " profile photo";
+    try {
+      var headers = { "Accept":"image/jpeg,image/png" };
+      if (safeSource.privateImage) headers["X-SitNgo-Session"] = proof;
+      var response = await fetch(safeSource.path, {
+        method:"GET", credentials:"same-origin", cache:"no-store", headers:headers
+      });
+      if (!response.ok) throw Error("Profile photo request failed.");
+      var blob = await response.blob();
+      var type = String(blob.type || "").split(";")[0].toLowerCase();
+      if ((type !== "image/jpeg" && type !== "image/png") || blob.size <= 0 || blob.size > safeSource.maxBytes) {
+        throw Error("Profile photo is invalid or too large.");
+      }
+      if (requestId !== avatarPreviewRequestSerial || proof !== state.sessionProof || !dialog.open) return;
+      var dataUrl = await blobAsDataUrl(blob);
+      if (requestId !== avatarPreviewRequestSerial || proof !== state.sessionProof || !dialog.open) return;
+      image.src = dataUrl;
+      await image.decode();
+      if (requestId !== avatarPreviewRequestSerial || proof !== state.sessionProof || !dialog.open) return;
+      image.hidden = false;
+      status.hidden = true;
+      status.textContent = "";
+    } catch (err) {
+      if (requestId !== avatarPreviewRequestSerial || !dialog.open) return;
+      status.textContent = "This profile photo is unavailable.";
+      image.hidden = true;
+      image.removeAttribute("src");
+    }
+  }
+
+  function closeAvatarViewer(restoreFocus) {
+    avatarPreviewRequestSerial += 1;
+    var dialog = byId("avatar-view-dialog");
+    if (dialog && dialog.open) dialog.close();
+    var image = byId("avatar-view-image");
+    var status = byId("avatar-view-status");
+    if (image) {
+      image.hidden = true;
+      image.removeAttribute("src");
+      image.alt = "";
+    }
+    if (status) {
+      status.textContent = "";
+      status.hidden = true;
+    }
+    var trigger = avatarPreviewTrigger;
+    avatarPreviewTrigger = null;
+    if (restoreFocus && trigger && trigger.isConnected) trigger.focus({ preventScroll:true });
+  }
+
+  function rebuyOfferSecondsRemaining() {
+    if (!rebuyOfferCurrentId) return -1;
+    var elapsed = state.tableView && state.tableView.paused ? 0 : monotonicNow() - rebuyOfferUpdatedAt;
+    return Math.max(0, Math.ceil((rebuyOfferRemainingMs - elapsed) / 1000));
+  }
+
+  function updateRebuyOfferControls() {
+    var button = byId("rebuy-offer-button");
+    var countdown = byId("rebuy-offer-countdown");
+    var accept = byId("rebuy-offer-accept");
+    var decline = byId("rebuy-offer-decline");
+    var status = byId("rebuy-offer-status");
+    if (!button || !countdown || !accept || !decline || !status) return;
+    var seconds = rebuyOfferSecondsRemaining();
+    var active = Boolean(rebuyOfferCurrentId && seconds >= 0);
+    button.hidden = !rebuyOfferCurrentId;
+    button.textContent = active ? "Rebuy offer · " + formatClock(seconds) : "Rebuy offer";
+    countdown.textContent = active ? formatClock(seconds) : "Expired";
+    countdown.setAttribute("aria-label", active ? seconds + " seconds left on rebuy offer" : "Rebuy offer expired");
+    var expired = !active || seconds <= 0;
+    accept.disabled = rebuyActionPending || expired;
+    decline.disabled = rebuyActionPending || expired;
+    if (expired) status.textContent = "This offer has expired. The table will refresh its final state.";
+    else if (!rebuyActionPending) status.textContent = "Accept or decline before the timer ends.";
+    if (!rebuyOfferCurrentId && byId("rebuy-offer-dialog")?.open) byId("rebuy-offer-dialog").close();
+  }
+
+  function clearRebuyOffer() {
+    if (rebuyOfferTimer) window.clearInterval(rebuyOfferTimer);
+    rebuyOfferTimer = 0;
+    rebuyOfferCurrentId = "";
+    rebuyOfferDeadlineMs = 0;
+    rebuyOfferRemainingMs = 0;
+    rebuyOfferUpdatedAt = 0;
+    rebuyActionPending = false;
+    updateRebuyOfferControls();
+  }
+
+  function syncRebuyOffer(view) {
+    var offer = view && view.viewer && view.viewer.rebuy_offer;
+    var offerId = String(offer && offer.id || "");
+    if (!offerId || !state.activeTableId || !state.player || state.isAdmin) {
+      clearRebuyOffer();
+      return;
+    }
+    var newOffer = offerId !== rebuyOfferCurrentId;
+    rebuyOfferCurrentId = offerId;
+    rebuyOfferDeadlineMs = epochMilliseconds(offer.expires_at);
+    var serverNow = epochMilliseconds(view.server_now) || Date.now();
+    rebuyOfferRemainingMs = Math.max(0, rebuyOfferDeadlineMs - serverNow);
+    rebuyOfferUpdatedAt = monotonicNow();
+    var dialog = byId("rebuy-offer-dialog");
+    var summary = byId("rebuy-offer-summary");
+    var buyInCents = number(view.config && view.config.buy_in, 0) * 100;
+    var startingStack = number(view.config && view.config.starting_stack, 0);
+    if (summary) {
+      summary.textContent = "Re-enter with the original starting stack of " + chips(startingStack) +
+        " chips and original buy-in " + dollars(buyInCents) +
+        ". This updates the table ledger only; no external payment is taken or settled here.";
+    }
+    if (newOffer && dialog && typeof dialog.showModal === "function" && !dialog.open) {
+      dialog.showModal();
+      byId("rebuy-offer-accept").focus({ preventScroll:true });
+    }
+    if (!rebuyOfferTimer) rebuyOfferTimer = window.setInterval(updateRebuyOfferControls, 250);
+    updateRebuyOfferControls();
+  }
+
+  function openRebuyOfferDialog() {
+    if (!rebuyOfferCurrentId) return;
+    var dialog = byId("rebuy-offer-dialog");
+    if (!dialog) return;
+    if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+    else dialog.setAttribute("open", "");
+    byId("rebuy-offer-accept").focus({ preventScroll:true });
+  }
+
+  async function submitRebuy(acceptOffer) {
+    var view = state.tableView;
+    var tableId = String(state.activeTableId || "");
+    var offerId = rebuyOfferCurrentId;
+    if (rebuyActionPending || !offerId || !tableId || !view || rebuyOfferSecondsRemaining() <= 0) return;
+    rebuyActionPending = true;
+    updateRebuyOfferControls();
+    try {
+      var path = "/tables/" + encodeURIComponent(tableId) + "/rebuy" + (acceptOffer ? "" : "/decline");
+      var response = await mutate(path, acceptOffer ? { offer_id:offerId, confirm:true } : { offer_id:offerId });
+      if (state.activeTableId !== tableId || rebuyOfferCurrentId !== offerId) return;
+      var table = response.table || response;
+      rebuyActionPending = false;
+      state.tableView = table;
+      renderTable();
+      await refreshSelected();
+      await refreshAll(true);
+      showNotice(acceptOffer
+        ? "Rebuy confirmed. Table totals updated; no external payment was processed."
+        : "Rebuy declined. The table will continue.", "success", false);
+    } catch (err) {
+      if (state.activeTableId === tableId && rebuyOfferCurrentId === offerId) {
+        rebuyActionPending = false;
+        updateRebuyOfferControls();
+        showNotice(err.message || "The rebuy offer could not be updated.", "error", false);
+        try { await refreshSelected(); } catch (refreshError) {}
+      }
+    }
+  }
+
   function renderTable() {
     var view = pageMode === "table" ? state.tableView : null;
     var hasTable = Boolean(view);
@@ -4517,6 +5226,8 @@
     byId("table-view").hidden = !hasTable;
     byId("app-panel").classList.toggle("has-active-table", hasTable);
     if (!view) {
+      clearRebuyOffer();
+      closeAvatarViewer(false);
       clearChat();
       routeNoticeForTable();
       renderChatButton();
@@ -4565,13 +5276,29 @@
     var layout = seatLayout(view);
     var seats = layout.seats;
     var max = layout.max;
-    byId("view-table-subtitle").textContent = seats.length + " of " + max + " seats" + (view.prize_pool_cents == null ? "" : " · " + credits(view.prize_pool_cents) + " play credits in the pool") + (status === "lobby" && view.config ? " · Buy-in " + view.config.buy_in + " · " + view.config.payout_percentages.join(" / ") + "%" : "");
+    var viewer = view.viewer || {};
+    var seatBuyInCount = seats.reduce(function (sum, seat) { return sum + number(seat.buy_in_count, 0); }, 0);
+    var totalRebuys = seats.reduce(function (sum, seat) { return sum + number(seat.rebuy_count, 0); }, 0);
+    var totalBuyInCents = seats.length && seats.every(function (seat) { return seat.total_buy_in_cents != null; })
+      ? seats.reduce(function (sum, seat) { return sum + number(seat.total_buy_in_cents, 0); }, 0) : null;
+    var subtitle = seats.length + " of " + max + " seats";
+    if (view.prize_pool_cents != null) subtitle += " · Prize pool " + dollars(view.prize_pool_cents);
+    if (status === "lobby" && view.config) subtitle += " · Buy-in " + dollars(number(view.config.buy_in, 0) * 100) + " · " + view.config.payout_percentages.join(" / ") + "%";
+    if (viewer.total_buy_in_cents != null) {
+      subtitle += " · Your buy-ins " + dollars(viewer.total_buy_in_cents) + " (" +
+        number(viewer.buy_in_count, 0) + " total, " + number(viewer.rebuy_count, 0) + " rebuys)";
+    }
+    byId("view-table-subtitle").textContent = subtitle;
     byId("hand-number").textContent = number(view.hand_no, 0) > 0 ? "HAND " + number(view.hand_no, 0) : "NO HAND DEALT";
     byId("hand-status-label").textContent = view.paused ? "GAME PAUSED" : (status === "playing" ? "HAND IN PROGRESS" : (status === "completed" ? "TOURNAMENT COMPLETE" : (status === "ended" ? "ENDED BY HOST" : "TABLE LOBBY")));
     routeNoticeForTable();
-    byId("table-player-count").textContent = seats.length + " seated";
-    byId("button-caption").textContent = status === "ended" ? "Ended by host" : (status === "playing" || status === "completed" ? "" : "Play chips · No rebuys");
+    byId("table-player-count").textContent = seats.length + " seated" +
+      (seatBuyInCount ? " · " + seatBuyInCount + " buy-ins · " + totalRebuys + " rebuys · " +
+        (totalBuyInCents == null ? "total amounts not recorded" : dollars(totalBuyInCents)) : "");
+    byId("button-caption").textContent = status === "ended" ? "Ended by host" :
+      (status === "playing" || status === "completed" ? "" : "Game ledger only · no external payment");
 
+    syncRebuyOffer(view);
     renderBlindStrip(view);
     renderBoard(view);
     renderActions(view);
@@ -4650,6 +5377,7 @@
     byId("admin-panel").hidden = !state.isAdmin;
     byId("identity").hidden = false;
     byId("profile-photo-button").hidden = state.isAdmin;
+    byId("profile-account-button").hidden = state.isAdmin;
     byId("profile-photo-menu-button").hidden = state.isAdmin;
     byId("lobby-history-button").hidden = state.isAdmin;
     byId("logout-button").hidden = state.isAdmin;
@@ -4658,7 +5386,8 @@
     byId("table-logout-button").hidden = state.isAdmin;
     byId("reaction-settings-button").hidden = state.isAdmin;
     document.body.classList.toggle("admin-active", state.isAdmin);
-    byId("welcome-name").textContent = state.player ? state.player.name : "";
+    byId("welcome-name").textContent = state.player
+      ? (state.player.display_name || state.player.name || state.player.username || "") : "";
     renderIdentityAvatar();
     clearNotice();
     loadGlobalConfig().catch(function () {});
@@ -4667,6 +5396,7 @@
       state.tableView = null;
       setHashTable("");
       renderTable();
+      loadAvatarPresets(true).then(function () { renderAdminAvatarCatalog(); });
       loadAdminConfig();
       if (byId("admin-tables-details").open) loadAdminTables();
       if (byId("admin-history-details").open) loadAdminHistory(0, false);
@@ -4855,7 +5585,20 @@
     }
     return parts.map(Number);
   }
-  function credits(cents) { return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(cents / 100); }
+  function dollars(cents) {
+    return "$" + new Intl.NumberFormat("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })
+      .format(number(cents, 0) / 100);
+  }
+  function buyInAccountingCopy(row) {
+    if (!row || row.buy_in_count == null) return "";
+    var count = number(row.buy_in_count, 0);
+    var rebuys = number(row.rebuy_count, Math.max(0, count - 1));
+    var total = row.total_buy_in_cents == null ? null : number(row.total_buy_in_cents, 0);
+    var text = count + " buy-in" + (count === 1 ? "" : "s");
+    if (rebuys) text += ", " + rebuys + " rebuy" + (rebuys === 1 ? "" : "s");
+    if (total != null) text += " · " + dollars(total) + " total";
+    return " · " + text;
+  }
   function settingsPayload() {
     var view = state.tableView || {};
     var payload = {
@@ -5101,7 +5844,9 @@
   }
   function historyResults(results) {
     return (results || []).map(function (r) {
-      return esc((r.tied ? "T-" : "") + r.place + ". " + r.name + (r.award_cents == null ? "" : " · " + credits(r.award_cents) + " credits"));
+      return esc((r.tied ? "T-" : "") + r.place + ". " + r.name +
+        (r.award_cents == null ? "" : " · " + (r.award_is_estimate ? "Estimated " : "") + dollars(r.award_cents)) +
+        buyInAccountingCopy(r));
     }).join("<br>");
   }
   function historySummaryText(tournament) {
@@ -5144,7 +5889,7 @@
       } else {
         el.innerHTML = (data.tournaments || []).map(function (t) {
           var mine = (t.results || []).find(function (row) {return row.player_id === state.player?.id;});
-          return '<div class="history-entry"><h3>' + esc(t.name) + '</h3><p>' + esc(new Date((t.started || t.created)*1000).toLocaleDateString()) + ' · ' + esc(statusName(t.status)) + ' · ' + esc(t.hand_count) + ' saved hands' + (mine ? ' · Place ' + esc(mine.place) + (mine.award_cents == null ? "" : ' · ' + credits(mine.award_cents) + ' credits') : '') + '</p><button class="button button-outline button-small" data-history-table="' + esc(t.id) + '">View hands &amp; results</button></div>';
+          return '<div class="history-entry"><h3>' + esc(t.name) + '</h3><p>' + esc(new Date((t.started || t.created)*1000).toLocaleDateString()) + ' · ' + esc(statusName(t.status)) + ' · ' + esc(t.hand_count) + ' saved hands' + (mine ? ' · Place ' + esc(mine.place) + (mine.award_cents == null ? "" : ' · ' + (mine.award_is_estimate ? 'Estimated ' : '') + dollars(mine.award_cents)) + esc(buyInAccountingCopy(mine)) : '') + '</p><button class="button button-outline button-small" data-history-table="' + esc(t.id) + '">View hands &amp; results</button></div>';
         }).join("") || "<p>You haven’t played a tournament yet.</p>";
       }
       if (offset || data.next_offset != null) {
@@ -5216,6 +5961,34 @@
   byId("lobby-history-button").addEventListener("click", openHistoryDialog);
   byId("profile-photo-button").addEventListener("click", openProfilePhotoDialog);
   byId("profile-photo-menu-button").addEventListener("click", openProfilePhotoDialog);
+  byId("profile-photo-presets").addEventListener("click", function (event) {
+    var button = event.target.closest("[data-avatar-preset-id]");
+    if (button) selectAvatarPreset(button.getAttribute("data-avatar-preset-id"));
+  });
+  byId("profile-account-button").addEventListener("click", openProfileAccountDialog);
+  byId("admin-avatar-preset-form").addEventListener("submit", saveAdminAvatarPreset);
+  byId("admin-avatar-preset-name").addEventListener("input", function () { setAdminAvatarError(""); });
+  byId("admin-avatar-preset-file").addEventListener("change", function () {
+    setAdminAvatarError("");
+    byId("admin-avatar-preset-preview-wrap").hidden = true;
+    byId("admin-avatar-preset-status").textContent = "";
+  });
+  byId("profile-account-close").addEventListener("click", function () { closeProfileAccountDialog(true); });
+  byId("profile-account-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    if (!profileAccountBusy) closeProfileAccountDialog(true);
+  });
+  byId("profile-account-dialog").addEventListener("click", function (event) {
+    if (!profileAccountBusy && isDialogBackdropClick(byId("profile-account-dialog"), event)) closeProfileAccountDialog(true);
+  });
+  byId("profile-account-form").addEventListener("submit", saveProfileAccount);
+  ["profile-account-username", "profile-account-display-name", "profile-account-current-password",
+    "profile-account-new-password"].forEach(function (id) {
+    byId(id).addEventListener("input", function () {
+      setProfileAccountError("");
+      updateProfileAccountForm();
+    });
+  });
   byId("profile-photo-close").addEventListener("click", function () { closeProfilePhotoDialog(true); });
   byId("profile-photo-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();
@@ -5229,6 +6002,8 @@
     var file = byId("profile-photo-file").files && byId("profile-photo-file").files[0];
     if (!file) return;
     invalidateProfilePhotoWork();
+    profilePhotoPresetId = "";
+    renderAvatarPresets();
     setProfilePhotoPreview(String(state.player && state.player.avatar_url || ""), false);
     setProfilePhotoError("");
     profilePhotoBusy = true;
@@ -5263,6 +6038,8 @@
     resetProfilePhotoEditor();
     profilePhotoDraft = "";
     profilePhotoRemovePending = Boolean(state.player && state.player.avatar_url);
+    profilePhotoPresetId = "";
+    renderAvatarPresets();
     byId("profile-photo-file").value = "";
     setProfilePhotoError("");
     setProfilePhotoPreview("", false);
@@ -5638,10 +6415,29 @@
     byId(id).addEventListener("click", logoutFromRoom);
   });
 
-  async function createNewGame() {
+  async function createNewGame(event, reservedWindow, photoReady) {
     var button = byId("create-game-tab");
     if (!state.player || state.isAdmin || button.disabled) return;
-    var tableWindow = reserveTableWindow();
+    if (!photoReady && !state.player.avatar_url) {
+      if (pendingPhotoGatePopup) return;
+      var gatedWindow = reservedWindow === undefined ? reserveTableWindow() : reservedWindow;
+      pendingPhotoGatePopup = gatedWindow || null;
+      var openedPhotoGate = openProfilePhotoDialog({ currentTarget: button }, function () {
+        var popup = pendingPhotoGatePopup;
+        pendingPhotoGatePopup = null;
+        createNewGame(null, popup, true);
+      }, function () {
+        var popup = pendingPhotoGatePopup;
+        pendingPhotoGatePopup = null;
+        try { if (popup && !popup.closed) popup.close(); } catch (closeError) {}
+      });
+      if (!openedPhotoGate) {
+        pendingPhotoGatePopup = null;
+        try { if (gatedWindow && !gatedWindow.closed) gatedWindow.close(); } catch (closeError) {}
+      }
+      return;
+    }
+    var tableWindow = reservedWindow === undefined ? reserveTableWindow() : reservedWindow;
     button.disabled = true;
     try {
       var tableName = String(state.player.name || "Friends") + "’s table";
@@ -5673,15 +6469,10 @@
   }
   byId("create-game-tab").addEventListener("click", createNewGame);
 
-  async function handleSeatControlClick(event) {
-    var button = event.target.closest("[data-take-seat]");
-    if (!button || button.disabled || !state.activeTableId || state.isAdmin) return;
-    event.stopPropagation();
-    var tableId = String(state.activeTableId);
-    var playerId = String(state.player && state.player.id || "");
-    var seatNo = number(button.getAttribute("data-take-seat"), -1);
-    if (seatNo < 0) return;
-    button.disabled = true;
+  async function postTakeSeat(tableId, playerId, seatNo) {
+    var seatSelector = '[data-take-seat="' + String(seatNo) + '"]';
+    var button = byId("seat-grid").querySelector(seatSelector);
+    if (button) button.disabled = true;
     try {
       await mutate("/tables/" + encodeURIComponent(tableId) + "/seat", { seat_no: seatNo });
       if (state.activeTableId !== tableId || String(state.player && state.player.id || "") !== playerId) return;
@@ -5690,8 +6481,68 @@
     } catch (err) {
       if (state.activeTableId === tableId) showNotice(err.message, "error", false);
     } finally {
-      if (button.isConnected) button.disabled = false;
+      var current = byId("seat-grid").querySelector(seatSelector);
+      if (current) current.disabled = false;
     }
+  }
+
+  async function addBotToTableSeat(button, seatNo) {
+    var view = state.tableView;
+    var tableId = String(state.activeTableId || "");
+    var playerId = String(state.player && state.player.id || "");
+    if (!view || view.status !== "lobby" || !tableId || !playerId ||
+        String(view.host_id || "") !== playerId || seatNo < 0 ||
+        (Array.isArray(view.seats) && view.seats.some(function (seat) {
+          return number(seat.seat_no, -1) === seatNo;
+        }))) return;
+    button.disabled = true;
+    try {
+      var response = await mutate("/tables/" + encodeURIComponent(tableId) + "/bots", { seat_no: seatNo });
+      if (state.activeTableId !== tableId || String(state.player && state.player.id || "") !== playerId) return;
+      var updated = response.table || response;
+      if (adoptSnapshot(updated, tableId)) renderTable();
+      await refreshSelected();
+      await refreshAll(true);
+    } catch (err) {
+      if (state.activeTableId === tableId) showNotice(err.message || "The bot could not be added.", "error", false);
+    } finally {
+      var current = byId("seat-grid").querySelector('[data-table-add-bot="' + String(seatNo) + '"]');
+      if (current) current.disabled = false;
+    }
+  }
+
+  async function handleSeatControlClick(event, photoReady) {
+    var botButton = event.target.closest("[data-table-add-bot]");
+    if (botButton) {
+      if (botButton.disabled) return;
+      event.stopPropagation();
+      await addBotToTableSeat(botButton, number(botButton.getAttribute("data-table-add-bot"), -1));
+      return;
+    }
+    var button = event.target.closest("[data-take-seat]");
+    if (!button || button.disabled || !state.activeTableId || state.isAdmin) return;
+    event.stopPropagation();
+    var tableId = String(state.activeTableId);
+    var playerId = String(state.player && state.player.id || "");
+    var seatNo = number(button.getAttribute("data-take-seat"), -1);
+    if (seatNo < 0 || !playerId) return;
+    if (!photoReady && !state.player.avatar_url) {
+      var gateKey = playerId + "|" + tableId + "|" + seatNo;
+      if (pendingPhotoGateSeat) return;
+      pendingPhotoGateSeat = gateKey;
+      button.id = "take-seat-photo-gate-" + seatNo;
+      var openedPhotoGate = openProfilePhotoDialog({ currentTarget: button }, function () {
+        pendingPhotoGateSeat = "";
+        if (state.activeTableId === tableId && String(state.player && state.player.id || "") === playerId) {
+          postTakeSeat(tableId, playerId, seatNo);
+        }
+      }, function () {
+        pendingPhotoGateSeat = "";
+      });
+      if (!openedPhotoGate) pendingPhotoGateSeat = "";
+      return;
+    }
+    await postTakeSeat(tableId, playerId, seatNo);
   }
 
   byId("seat-controls").addEventListener("click", handleSeatControlClick);
@@ -5881,6 +6732,11 @@
   byId("action-panel").addEventListener("click", function (event) {
     var reactionButton = event.target.closest("[data-send-reaction]");
     if (!reactionButton || reactionButton.disabled || state.isAdmin) return;
+    if (reactionTouchSuppressClickButton === reactionButton) {
+      event.preventDefault();
+      reactionTouchSuppressClickButton = null;
+      return;
+    }
     var view = state.tableView;
     var seat = view && viewerSeat(view);
     var viewer = view && view.viewer || {};
@@ -5893,7 +6749,14 @@
   });
 
   byId("seat-grid").addEventListener("click", function (event) {
-    var seatAction = event.target.closest("[data-take-seat]");
+    var avatarButton = event.target.closest(".avatar-photo-trigger");
+    if (avatarButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      openAvatarViewer(avatarButton);
+      return;
+    }
+    var seatAction = event.target.closest("[data-take-seat], [data-table-add-bot]");
     if (seatAction) {
       handleSeatControlClick(event);
       return;
@@ -5904,6 +6767,87 @@
     renderTable();
     var nextToggle = byId("seat-grid").querySelector("[data-chip-display-toggle]");
     if (nextToggle) nextToggle.focus({ preventScroll: true });
+  });
+
+  byId("avatar-view-dialog").addEventListener("click", function () {
+    closeAvatarViewer(true);
+  });
+  byId("avatar-view-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeAvatarViewer(true);
+  });
+  byId("avatar-view-close").addEventListener("click", function () {
+    closeAvatarViewer(true);
+  });
+
+  byId("rebuy-offer-button").addEventListener("click", openRebuyOfferDialog);
+  byId("rebuy-offer-accept").addEventListener("click", function () { submitRebuy(true); });
+  byId("rebuy-offer-decline").addEventListener("click", function () { submitRebuy(false); });
+  byId("rebuy-offer-close").addEventListener("click", function () {
+    var dialog = byId("rebuy-offer-dialog");
+    if (dialog.open) dialog.close();
+  });
+  byId("rebuy-offer-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    byId("rebuy-offer-dialog").close();
+  });
+  byId("rebuy-offer-dialog").addEventListener("click", function (event) {
+    if (isDialogBackdropClick(byId("rebuy-offer-dialog"), event)) byId("rebuy-offer-dialog").close();
+  });
+
+  byId("reaction-shortcuts").addEventListener("contextmenu", function (event) {
+    var button = event.target.closest("[data-reaction-slot]");
+    if (!button || state.isAdmin) return;
+    event.preventDefault();
+    openReactionSettingsDialog(number(button.getAttribute("data-reaction-slot"), -1), button);
+  });
+  byId("reaction-shortcuts").addEventListener("keydown", function (event) {
+    if (!((event.key === "ContextMenu") || (event.shiftKey && event.key === "F10"))) return;
+    var button = event.target.closest("[data-reaction-slot]");
+    if (!button || state.isAdmin) return;
+    event.preventDefault();
+    openReactionSettingsDialog(number(button.getAttribute("data-reaction-slot"), -1), button);
+  });
+  byId("reaction-shortcuts").addEventListener("pointerdown", function (event) {
+    var button = event.target.closest("[data-reaction-slot]");
+    if (!button || event.pointerType !== "touch" || state.isAdmin) return;
+    if (reactionTouchHoldTimer) window.clearTimeout(reactionTouchHoldTimer);
+    reactionTouchHoldButton = button;
+    reactionTouchHoldPointerId = event.pointerId;
+    reactionTouchHoldStart = { x:event.clientX, y:event.clientY };
+    reactionTouchHoldFired = false;
+    reactionTouchHoldTimer = window.setTimeout(function () {
+      if (reactionTouchHoldButton !== button) return;
+      reactionTouchHoldFired = true;
+      reactionTouchSuppressClickButton = button;
+      window.setTimeout(function () {
+        if (reactionTouchSuppressClickButton === button) reactionTouchSuppressClickButton = null;
+      }, 1200);
+      openReactionSettingsDialog(number(button.getAttribute("data-reaction-slot"), -1), button);
+    }, 650);
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (name) {
+    byId("reaction-shortcuts").addEventListener(name, function (event) {
+      if (!reactionTouchHoldButton || (reactionTouchHoldPointerId != null && event.pointerId !== reactionTouchHoldPointerId)) return;
+      if (reactionTouchHoldTimer) window.clearTimeout(reactionTouchHoldTimer);
+      reactionTouchHoldTimer = 0;
+      reactionTouchHoldButton = null;
+      reactionTouchHoldPointerId = null;
+      reactionTouchHoldStart = null;
+      reactionTouchHoldFired = false;
+    });
+  });
+  byId("reaction-shortcuts").addEventListener("pointermove", function (event) {
+    if (!reactionTouchHoldButton || reactionTouchHoldPointerId !== event.pointerId || !reactionTouchHoldStart) return;
+    var dx = event.clientX - reactionTouchHoldStart.x;
+    var dy = event.clientY - reactionTouchHoldStart.y;
+    if (Math.hypot(dx, dy) > 12) {
+      if (reactionTouchHoldTimer) window.clearTimeout(reactionTouchHoldTimer);
+      reactionTouchHoldTimer = 0;
+      reactionTouchHoldButton = null;
+      reactionTouchHoldPointerId = null;
+      reactionTouchHoldStart = null;
+    }
   });
 
   byId("chat-button").addEventListener("click", function () {
@@ -5923,21 +6867,9 @@
     if (state.chat.sending || state.chat.postInFlight) return;
     byId("chat-form").requestSubmit();
   });
-  byId("chat-quick-input").addEventListener("input", function () {
-    this.dataset.chatEditVersion = String(number(this.dataset.chatEditVersion, 0) + 1);
-    setChatError("");
-    updateChatCharacterCount();
-  });
-  byId("chat-quick-input").addEventListener("keydown", function (event) {
-    if (event.key === "Enter" && (event.isComposing || event.keyCode === 229)) event.preventDefault();
-  });
   byId("chat-form").addEventListener("submit", function (event) {
     event.preventDefault();
     sendChatMessage(byId("chat-input"));
-  });
-  byId("chat-quick-form").addEventListener("submit", function (event) {
-    event.preventDefault();
-    sendChatMessage(byId("chat-quick-input"));
   });
   byId("sit-out-button").addEventListener("click", toggleSitOut);
 

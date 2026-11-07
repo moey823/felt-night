@@ -1,5 +1,6 @@
 // Focused player-display acceptance: original geometry, protected photos, persistent actions, and readable cards.
 import {readFileSync, writeFileSync} from 'node:fs';
+import {seedAvatar} from './avatar-fixture.mjs';
 
 const viewports = [[1366,768],[390,844],[360,740],[320,568],[768,1024],[667,375],[844,390]];
 
@@ -53,7 +54,9 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     if (!result.ok) throw Error('/register ' + result.status + ' ' + JSON.stringify(result.data));
     const cookie = result.response.headers.get('set-cookie')?.split(';')[0];
     if (!cookie) throw Error('Registration did not issue a session cookie');
-    return {...result.data,cookie,username,password};
+    const account = {...result.data,cookie,username,password};
+    await seedAvatar(request,account);
+    return account;
   }
   async function signIn(page,user,path) {
     await ev(page,next => window.location.assign(next),path);
@@ -166,8 +169,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
           display:style.display,visibility:style.visibility};
       };
       const selectors = [
-        ['topbar','.topbar'],['tableHeading','.table-heading'],['chatTopline','#chat-topline'],
-        ['chatPreview','#chat-preview'],['chatQuickForm','#chat-quick-form'],
+        ['topbar','.topbar'],['tableHeading','.table-heading'],
         ['tableView','#table-view'],['tableSurface','#table-surface'],
         ['feltTopline','.felt-topline'],['felt','#felt'],['seatGrid','#seat-grid'],
         ['board','#felt .board-center'],['boardCards','#board-cards'],['pot','#pot-display'],
@@ -193,7 +195,12 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
         .map(node => ({relative:Number(node.closest('.seat-card')?.dataset.relativeSeat),layout:layoutSize(node),rect:rect(node),
           loaded:node.classList.contains('has-avatar') && node.querySelector('img')?.naturalWidth === 256}))
         .sort((a,b) => a.relative - b.relative);
-      return {viewport:{width:innerWidth,height:innerHeight},scrollY,parts};
+      const headerActions=rect(document.querySelector('#table-header-actions'));
+      const inlineChatPresent=Boolean(document.querySelector('#chat-topline,#chat-preview,#chat-quick-form,#chat-quick-input'));
+      const chatMenuButton=document.querySelector('#chat-button');
+      const menuButtonRect=rect(document.querySelector('#table-menu > summary'));
+      return {viewport:{width:innerWidth,height:innerHeight},scrollY,parts,headerActions,menuButtonRect,inlineChatPresent,
+        chatMenuButtonInMenu:chatMenuButton?.closest('#table-menu')===document.querySelector('#table-menu')};
     });
   }
   function compareGeometry(baseline,actual) {
@@ -209,9 +216,26 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     };
     if (!baseline || baseline.viewport.width !== actual.viewport.width || baseline.viewport.height !== actual.viewport.height)
       return ['viewport mismatch'];
+    // Removing the chat lane expands the felt upward by exactly its old height.
+    // Keep horizontal geometry, control sizes, and all unrelated positions strict.
+    baseline = JSON.parse(JSON.stringify(baseline));
+    const reclaimed = Number(baseline.parts.chatTopline?.height || 0);
+    const landscape = actual.viewport.height <= 450 && actual.viewport.width > actual.viewport.height;
+    const smallPortrait = actual.viewport.width <= 340 && actual.viewport.height <= 600 && !landscape;
+    const boardAnchor = landscape ? .46 : (smallPortrait ? .54 : .48);
+    for (const key of ['tableSurface','felt','seatGrid']) {
+      baseline.parts[key].top -= reclaimed;
+      baseline.parts[key].height += reclaimed;
+    }
+    baseline.parts.blindStrip.top -= reclaimed;
+    for (const key of ['board','boardCards','pot']) baseline.parts[key].top -= reclaimed * (1 - boardAnchor);
+    if (landscape) {
+      for (const key of ['actionPanel','actionControls']) baseline.parts[key].top -= reclaimed / 2;
+      for (const row of baseline.parts.primaryActions || []) row.rect.top -= reclaimed / 2;
+    }
     if (actual.scrollY !== 0) errors.push('page scrollY ' + actual.scrollY);
     for (const key of Object.keys(actual.parts)) {
-      if (['seats','primaryActions','cardSizes','avatars'].includes(key)) continue;
+      if (['seats','primaryActions','cardSizes','avatars','chatTopline','chatPreview','chatQuickForm'].includes(key)) continue;
       compareRect(baseline.parts[key],actual.parts[key],'parts.' + key);
     }
     const beforeSeats = baseline.parts.seats || [], afterSeats = actual.parts.seats || [];
@@ -392,6 +416,14 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   for (const [width,height] of viewports) {
     const key=width+'x'+height;
     geometry[key]=await captureGeometry(playerPage,width,height);
+    const snapshot=geometry[key], header=snapshot.headerActions, menu=snapshot.menuButtonRect;
+    assert(!snapshot.inlineChatPresent && snapshot.chatMenuButtonInMenu &&
+      header && header.width>0 && header.left>=0 && header.right<=width+1 &&
+      header.top>=0 && header.bottom<=height+1 && menu &&
+      menu.left>=header.left-1 && menu.right<=header.right+1 &&
+      menu.top>=header.top-1 && menu.bottom<=header.bottom+1,
+    'Table controls must stay contained beside Menu, with chat accessible from the menu only, at '+
+      key+': '+JSON.stringify({header,menu,inlineChatPresent:snapshot.inlineChatPresent,chatMenuButtonInMenu:snapshot.chatMenuButtonInMenu}));
     if(process.env.PLAYER_DISPLAY_BASELINE_CAPTURE!=='1'){
       if(['1366x768','390x844','320x568','667x375'].includes(key))
         await playerPage.screenshot('player-displays-'+key);
@@ -414,7 +446,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     const key = width + 'x' + height;
     geometryErrors.push(...compareGeometry(baseline.geometry?.[key],geometry[key]).map(error => key + ': ' + error));
   }
-  assert(!geometryErrors.length,'Outer player/table geometry moved from original 837201f: ' +
+  assert(!geometryErrors.length,'Player/table geometry changed beyond the removed chat lane: ' +
     geometryErrors.slice(0,30).join('; '));
 
   assert(geometry['1366x768'].parts.primaryActions.length === 3 &&

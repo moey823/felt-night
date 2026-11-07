@@ -1,5 +1,5 @@
 {
-  "name": "Felt Night \u2014 Private Play-Money Poker",
+  "name": "Felt Night \u2014 Private Poker Room",
   "short_name": "Felt Night",
   "id": "/poker/",
   "start_url": "/poker/lobby",
@@ -8,7 +8,7 @@
   "orientation": "any",
   "background_color": "#111c19",
   "theme_color": "#111c19",
-  "description": "A private poker table for play chips.",
+  "description": "A private poker room with dollar buy-in and payout tracking.",
   "icons": [
     {
       "src": "/poker/icon-192.png",

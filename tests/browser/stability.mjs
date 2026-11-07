@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Exercise a real nine-player game across phone, landscape, and desktop viewports.
 export default async function stability([playerPage, secondPage], sleep, roomPassword) {
   const ev = (page, fn, ...args) =>
@@ -196,8 +198,9 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
   const stamp=Date.now().toString(36), players=[];
   for (let i=0;i<9;i++) {
     const username="Stab"+stamp+"P"+i, password="StabilityPass_"+stamp+"_"+i;
-    const session=await newSession("/register",{username,password,room_password:roomPassword});
-    players.push({...session,username,password});
+    const session={...await newSession("/register",{username,password,room_password:roomPassword}),username,password};
+    await seedAvatar(request,session);
+    players.push(session);
   }
   const host=players[0], name=("Stability "+stamp).slice(0,48);
   const table=await request("/tables",host,{
@@ -258,32 +261,35 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
 
   const chatText="Stability chat "+stamp;
   const compactChat=await ev(playerPage,()=>({
-    top:!document.querySelector("#chat-topline")?.hidden,
-    preview:!document.querySelector("#chat-preview")?.hidden,
-    form:!document.querySelector("#chat-quick-form")?.hidden,
+    inlineAbsent:!document.querySelector("#chat-topline,#chat-preview,#chat-quick-form,#chat-quick-input"),
+    buttonInMenu:document.querySelector("#chat-button")?.closest("#table-menu")===document.querySelector("#table-menu"),
     drawerHidden:document.querySelector("#chat-panel")?.hidden,
     menuClosed:!document.querySelector("#table-menu")?.open
   }));
-  assert(compactChat.top&&compactChat.preview&&compactChat.form&&compactChat.drawerHidden&&compactChat.menuClosed,
-    "Quick chat is not visible outside the menu and drawer: "+JSON.stringify(compactChat));
+  assert(compactChat.inlineAbsent&&compactChat.buttonInMenu&&compactChat.drawerHidden&&compactChat.menuClosed,
+    "Chat must stay in the menu until opened, without an inline preview or composer: "+JSON.stringify(compactChat));
+  await clickAt(playerPage,"#chat-button");
+  await wait(playerPage,()=>!document.querySelector("#chat-panel")?.hidden);
   await ev(playerPage,message=>{
-    const input=document.querySelector("#chat-quick-input");
-    if(!input)throw Error("Missing compact chat input");
+    const input=document.querySelector("#chat-input");
+    if(!input)throw Error("Missing full chat input");
     input.value=message;
     input.dispatchEvent(new Event("input",{bubbles:true}));
   },chatText);
-  await clickAt(playerPage,"#chat-quick-send");
+  await clickAt(playerPage,"#chat-send-button");
   await wait(playerPage,message=>
-    document.querySelector("#chat-preview .chat-preview-line")?.textContent.includes(message),chatText);
+    document.querySelector("#chat-messages")?.textContent.includes(message),chatText);
   const persisted=await request(tablePath+"/chat",firstActor);
-  assert(persisted.messages?.some(row=>row.text===chatText),"Quick chat did not persist.");
+  assert(persisted.messages?.some(row=>row.text===chatText),"Full chat did not persist.");
   await ev(playerPage,()=>{
-    const input=document.querySelector("#chat-quick-input");
+    const input=document.querySelector("#chat-input");
     input.value="Layout target";
     input.dispatchEvent(new Event("input",{bubbles:true}));
     input.blur();
     window.scrollTo(0,0);
   });
+  await playerPage.pressEscape();
+  await wait(playerPage,()=>document.querySelector("#chat-panel")?.hidden);
 
   await wait(playerPage,()=>document.querySelectorAll(".seat-card[data-player-id]").length===9&&
     document.querySelectorAll(".seat-card > .dealer-marker").length===1&&
@@ -398,7 +404,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
       }
       if(document.querySelector("#table-menu")?.open)errors.push("menu unexpectedly open");
       if(!document.querySelector("#chat-panel")?.hidden)errors.push("chat drawer unexpectedly open");
-      for(const selector of ["#chat-topline","#chat-preview","#chat-quick-form","#blind-level-countdown"]) {
+      for(const selector of ["#table-header-actions","#fullscreen-button","#table-menu > summary","#blind-level-countdown"]) {
         const node=document.querySelector(selector),r=node&&rect(node);
         if(!node||node.hidden||!node.offsetWidth||!r?.width||!r?.height)errors.push(selector+" not visible");
         else if(r.left<0||r.right>innerWidth+1||r.top<0||r.bottom>innerHeight+1)errors.push(selector+" outside viewport");
@@ -418,7 +424,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
       return {errors,viewport:{width:innerWidth,height:innerHeight},
         document:{width:doc.scrollWidth,height:doc.scrollHeight,scrollTop:scroller?.scrollTop||0},
         actionPanel:rect(document.querySelector("#action-panel")),
-        chat:rect(document.querySelector("#chat-topline")),
+        headerActions:rect(document.querySelector("#table-header-actions")),
         wagerRects:wagers.map(node=>({rect:rect(node),value:node.querySelector("strong")?.textContent.trim()||"",
           lane:node.closest(".seat-local-markers")&&rect(node.closest(".seat-local-markers"))})),
         actionRects:actions.map(rect),presetRects:presets.map(rect),

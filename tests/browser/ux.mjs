@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Headless UX regressions against the isolated game server.
 export default async function ux([one, two], sleep, roomPassword) {
   const pages = [one, two];
@@ -140,12 +142,13 @@ export default async function ux([one, two], sleep, roomPassword) {
   for (let index = 0; index < 16; index++) {
     const username = ('UX' + stamp + 'P' + index).slice(0, 24);
     const password = 'FeltQA_' + stamp + '_' + index + '_Pass';
-    const session = await request('/register', null, {
+    const session = {...await request('/register', null, {
       room_password: roomPassword,
       username,
       password,
-    });
-    users.push({...session, username, password});
+    }), username, password};
+    await seedAvatar(request, session);
+    users.push(session);
   }
 
   const admin = await request('/login', null, {username:'admin', password:''});
@@ -1359,9 +1362,7 @@ export default async function ux([one, two], sleep, roomPassword) {
       return style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&r.width>0&&r.height>0;
     };
     const n=box(node), f=box(felt);
-    const controls=[...document.querySelectorAll('#action-panel button,#chat-button,#pause-button,.reaction-shortcuts')]
-      .filter(visible).map(box);
-    const chat=[...document.querySelectorAll('#chat-topline,#chat-preview,#chat-quick-form')]
+    const controls=[...document.querySelectorAll('#action-panel button,#table-header-actions button,#table-menu > summary,#chat-button,#pause-button,.reaction-shortcuts')]
       .filter(visible).map(box);
     return {
       directChild:Boolean(node&&node.parentElement===felt),
@@ -1369,8 +1370,7 @@ export default async function ux([one, two], sleep, roomPassword) {
         Math.abs((n.top+n.bottom-f.top-f.bottom)/2)<=4),
       inViewport:Boolean(n&&n.left>=0&&n.top>=0&&n.right<=innerWidth&&n.bottom<=innerHeight),
       controlOverlaps:controls.some(control=>overlaps(n,control)),
-      chatOverlaps:chat.some(row=>overlaps(n,row)),
-      announcement:n,felt:f,controls,chat
+      announcement:n,felt:f,controls
     };
   });
   const announcementLines=announcement.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
@@ -1378,8 +1378,8 @@ export default async function ux([one, two], sleep, roomPassword) {
     announcementLines[1]==='Small: 20'&&announcementLines[2]==='Big: 40',
     'Blind announcement did not use the requested three lines: '+JSON.stringify(announcementLines));
   assert(announcementGeometry.directChild&&announcementGeometry.centered&&announcementGeometry.inViewport&&
-    !announcementGeometry.controlOverlaps&&!announcementGeometry.chatOverlaps,
-    'Blind announcement must be centered in the felt, in view, and clear of controls/chat: '+
+    !announcementGeometry.controlOverlaps,
+    'Blind announcement must be centered in the felt, in view, and clear of table controls: '+
       JSON.stringify(announcementGeometry));
   assert(
     /level\s*2/i.test(blindStrip) && /20/.test(blindStrip) && /40/.test(blindStrip) &&

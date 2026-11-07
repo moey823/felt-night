@@ -1,3 +1,5 @@
+import {seedAvatar} from './avatar-fixture.mjs';
+
 // Two isolated browsers play on a disposable development server.
 // See README for the headless test command.
 export default async function game([one, two], sleep, roomPassword) {
@@ -43,6 +45,13 @@ export default async function game([one, two], sleep, roomPassword) {
     if (!response.ok) throw Error(path+' '+JSON.stringify(body));
     return path==='/login' ? {...body,cookie:response.headers.get('set-cookie').split(';')[0]} : body;
   }
+  const robin = await adminRequest('/login',null,{username:'Robin',password:'poker-test-password',room_password:roomPassword});
+  const morgan = await adminRequest('/login',null,{username:'Morgan',password:'poker-test-password',room_password:roomPassword});
+  await Promise.all([seedAvatar(adminRequest,robin),seedAvatar(adminRequest,morgan)]);
+  for (const page of pages) {
+    await page.reload();
+    await wait(page,visible,'#app-panel');
+  }
   const admin = await adminRequest('/login',null,{username:'admin',password:''});
   await adminRequest('/admin/config',admin,{runout_seconds:1.75,showdown_seconds:0,
     blind_announcement_seconds:0,elimination_announcement_seconds:0});
@@ -70,7 +79,18 @@ export default async function game([one, two], sleep, roomPassword) {
       for(const p of pages) if(await ev(p,visible,'#action-panel:not([hidden]) #action-controls [data-poker-action]:not([disabled])')) return p;
       await sleep(125);
     }
-    throw Error('No actionable controls');
+    const state = await Promise.all(pages.map(p => ev(p, () => ({
+      url:location.pathname + location.search,
+      table:document.querySelector('#view-table-name')?.textContent || '',
+      status:document.querySelector('#view-status')?.textContent || '',
+      hand:document.querySelector('#hand-status-label')?.textContent || '',
+      startDisabled:document.querySelector('#start-button')?.disabled,
+      actionHidden:document.querySelector('#action-panel')?.hidden,
+      actionText:document.querySelector('#action-panel')?.innerText || '',
+      seats:[...document.querySelectorAll('#seat-grid .seat-card')].map(n => n.innerText.trim()),
+      notice:document.querySelector('#notice')?.innerText || ''
+    }))));
+    throw Error('No actionable controls: ' + JSON.stringify(state));
   }
   async function verifyLeftmost(p, action) {
     const pass=await ev(p, wanted=>{
@@ -154,6 +174,35 @@ export default async function game([one, two], sleep, roomPassword) {
     if (!seat || Number(seat.stack) !== 0 || !(seat.all_in || seat.is_all_in)) {
       throw Error(context + ' did not leave the viewer all-in with zero chips: ' + JSON.stringify(seat));
     }
+  }
+  async function declineFinalRebuy(expectedBuyIn, expectedStack) {
+    let offerPage = null;
+    for (let attempt = 0; attempt < 220 && !offerPage; attempt++) {
+      for (const page of pages) {
+        if (await ev(page, () => Boolean(document.querySelector('#rebuy-offer-dialog')?.open))) {
+          offerPage = page;
+          break;
+        }
+      }
+      if (!offerPage) await sleep(100);
+    }
+    if (!offerPage) return false;
+    const offer = await ev(offerPage, () => ({
+      summary:document.querySelector('#rebuy-offer-summary')?.textContent || '',
+      countdown:document.querySelector('#rebuy-offer-countdown')?.textContent || '',
+      label:document.querySelector('#rebuy-offer-countdown')?.getAttribute('aria-label') || '',
+      acceptDisabled:document.querySelector('#rebuy-offer-accept')?.disabled,
+    }));
+    const seconds = Number(offer.label.match(/(\d+) seconds left/)?.[1] || 0);
+    if (!offer.summary.includes('$' + Number(expectedBuyIn).toFixed(2)) ||
+        !offer.summary.includes(Number(expectedStack).toLocaleString('en-US')) || !offer.summary.includes('no external payment') ||
+        seconds < 1 || seconds > 60 || offer.acceptDisabled) {
+      throw Error('Final rebuy offer copy/countdown was incorrect: ' + JSON.stringify(offer));
+    }
+    await click(offerPage, '#rebuy-offer-decline');
+    await wait(one, visible, '#dismiss-results-button');
+    for (const page of pages) await wait(page, visible, '#dismiss-results-button');
+    return true;
   }
   const name='Release check '+Date.now(); await create(name,{'#buy-in':13,'#payout':'75, 25','#max-seats':9});
   await one.resize(320,740); await two.resize(1280,800);
@@ -287,11 +336,17 @@ export default async function game([one, two], sleep, roomPassword) {
         const markerBoxes = Array.from(document.querySelectorAll('.dealer-marker,.seat-action,.seat-wager'))
           .filter(node => !node.hidden && node.offsetWidth)
           .map(bounds);
+        const oddsMarkerOverlapDetails = Array.from(document.querySelectorAll('.dealer-marker,.seat-action,.seat-wager'))
+          .filter(node => {const style=getComputedStyle(node);return style.display!=='none'&&style.visibility!=='hidden'&&node.offsetWidth&&overlaps(oddsBox,bounds(node));})
+          .map(node=>({className:node.className,text:node.textContent.trim(),seat:node.closest('.seat-card')?.dataset.seatNo||'',box:bounds(node),boxSizing:getComputedStyle(node).boxSizing,height:getComputedStyle(node).height,minHeight:getComputedStyle(node).minHeight,inline:node.getAttribute('style')}));
         return seatBox && cardBox && oddsBox && feltBox ? {
           seat:seatBox,cards:cardBox,miniCards,odds:oddsBox,felt:feltBox,
           blockerOverlaps:blockers.filter(box => overlaps(seatBox,box)).length,
           oddsBlockerOverlaps:blockers.filter(box => overlaps(oddsBox,box)).length,
           oddsMarkerOverlaps:markerBoxes.filter(box => overlaps(oddsBox,box)).length,
+          oddsMarkerOverlapDetails,
+          markerLane:seat.querySelector('.seat-local-markers')?bounds(seat.querySelector('.seat-local-markers')):null,
+          seatStatus:seat.querySelector('.seat-status')?bounds(seat.querySelector('.seat-status')):null,
           oddsInsideFelt:oddsBox.left >= feltBox.left-1 && oddsBox.right <= feltBox.right+1 &&
             oddsBox.top >= feltBox.top-1 && oddsBox.bottom <= feltBox.bottom+1
         } : null;
@@ -327,6 +382,10 @@ export default async function game([one, two], sleep, roomPassword) {
       const complete=document.querySelector('#view-status')?.textContent.includes('Complete');
       return complete || street==='RIVER' || street==='SHOWDOWN';
     });
+    if (!(await ev(one,()=>document.querySelector('#hand-status-label').innerText.includes('COMPLETE')))) {
+      await declineFinalRebuy(13, 1000);
+      await wait(one,()=>document.querySelector('#hand-status-label')?.textContent.includes('COMPLETE'));
+    }
     if(await ev(one,()=>document.querySelector('#hand-status-label').innerText.includes('COMPLETE'))) break;
     await wait(one,()=>document.querySelector('#action-panel').offsetWidth || document.querySelector('.seat-turn-clock')?.offsetWidth);
   }
@@ -335,7 +394,7 @@ export default async function game([one, two], sleep, roomPassword) {
     const info=await ev(p,()=>({history:window.historyQA.map(JSON.parse), standings:document.querySelector('#results-panel').innerText, overflow:document.documentElement.scrollWidth>innerWidth+1}));
     if(info.history.some(([n])=>n===1 || n===2)) throw Error('Partial flop displayed');
     for(const n of [0,3,4]) if(!info.history.some(([count,odds])=>count===n && odds.length===2 && new Set(odds.map(o=>o[0])).size===2 && odds.every(o=>o[1].includes('%')))) throw Error('Missing live all-in odds before settlement at board size '+n+' '+JSON.stringify(info.history));
-    if(/\bchips\b/i.test(info.standings) || !info.standings.includes('26 play credits awarded') || !info.standings.includes('20 credits') || !info.standings.includes('6 credits') || !info.standings.includes('Robin') || !info.standings.includes('Morgan') || info.overflow) throw Error(JSON.stringify(info));
+    if(/\\bchips\\b/i.test(info.standings) || !info.standings.includes('$26.00') || !info.standings.includes('$19.50') || !info.standings.includes('$6.50') || !info.standings.includes('Robin') || !info.standings.includes('Morgan') || info.overflow) throw Error(JSON.stringify(info));
     await assertNoRetiredControls(p);
     await click(p,'#dismiss-results-button'); await click(p,'#reopen-results-button'); await wait(p,visible,'#dismiss-results-button');
     await click(p,'#dismiss-results-button');
@@ -415,6 +474,7 @@ export default async function game([one, two], sleep, roomPassword) {
   const call=await submitOnce(bigBlind,'[data-poker-action="call"]','call');
   await assertServerAllIn(bigBlind,call.table,'Immediate all-in call');
   for(const p of pages) await assertNoRetiredControls(p);
+  await declineFinalRebuy(10, 100);
   await waitForHandEnd(short,shortHand);
   await click(one,'#table-logout-button'); await wait(one,visible,'#login-name');
   await input(one,'#login-name','Robin'); await input(one,'#login-password','poker-test-password'); await submit(one,'#login-form');
