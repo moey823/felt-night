@@ -445,11 +445,17 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     if(process.env.PLAYER_DISPLAY_BASELINE_CAPTURE!=='1'){
       if(['1366x768','390x844','320x568','667x375'].includes(key))
         await playerPage.screenshot('player-displays-'+key);
-      const suits=await ev(playerPage,()=>[...document.querySelectorAll('#hero-seat .mini-suit')].map(node=>({
-        font:parseFloat(getComputedStyle(node).fontSize),height:node.closest('.mini-card').clientHeight
-      })));
-      assert(suits.length===2&&suits.every(row=>row.font>=row.height*.5),
-        'Hole-card suits are too small at '+key+': '+JSON.stringify(suits));
+      const faces=await ev(playerPage,()=>[...document.querySelectorAll('#hero-seat .mini-card:not(.back)')].map(card=>{
+        const rank=card.querySelector('.mini-rank'),suit=card.querySelector('.mini-suit');
+        return {height:card.clientHeight,rankHeight:rank.offsetHeight,suitHeight:suit.offsetHeight,
+          rankFont:parseFloat(getComputedStyle(rank).fontSize),suitFont:parseFloat(getComputedStyle(suit).fontSize),
+          rankTop:rank.offsetTop,suitTop:suit.offsetTop};
+      }));
+      assert(faces.length===2&&faces.every(row=>
+        Math.abs(row.rankHeight-row.height/2)<=1&&Math.abs(row.suitHeight-row.height/2)<=1&&
+        row.rankTop===0&&Math.abs(row.suitTop-row.height/2)<=1&&
+        row.rankFont>=row.height*.49&&Math.abs(row.rankFont-row.suitFont)<.1),
+        'Rank and suit do not fill equal card halves at '+key+': '+JSON.stringify(faces));
       const containment=await checkSeatChildren(playerPage);
 
       assert(!containment.errors.length,'Seat child containment failed at '+key+': '+containment.errors.slice(0,12).join('; '));

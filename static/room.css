@@ -4635,23 +4635,35 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
 }
 body.gameplay-active #app-panel #table-view > #shot-clock-alert:not([hidden])[data-paused="true"] { animation:none !important; }
 
-/* Readable, prominent suits inside every exposed hole card. The second card
-   overlaps only the first card's right edge, so keep the suit in its left lane. */
-body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-suit {
-  top: auto !important;
-  bottom: 2px !important;
-  left: 2px !important;
+/* Give the rank and suit equal halves of the complete card face. Keep both
+   faces visible so the larger centered symbols cannot hide under their neighbor. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card:not(.back):not(.placeholder) {
+  flex: 1 1 0 !important;
   width: auto !important;
-  height: auto !important;
-  font-size: min(52cqh, 80cqw) !important;
-  line-height: .9 !important;
+  min-width: 0 !important;
+  max-width: var(--face-width) !important;
+  margin-left: 0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-rank,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+  position: absolute !important;
+  top: 0 !important;
+  bottom: auto !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  font-family: Georgia, serif !important;
+  font-size: 50cqh !important;
+  line-height: 1 !important;
   font-weight: 900 !important;
 }
-body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-rank {
-  top: 2px !important;
-  left: 2px !important;
-  font-size: min(17px, 35cqh) !important;
-  line-height: .95 !important;
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards .mini-card .mini-suit {
+  top: 50% !important;
 }
 
 /* Street contributions belong on the felt, outside the player's container.
