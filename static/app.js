@@ -962,7 +962,7 @@
     if (state.blindAnnouncementTimer) window.clearTimeout(state.blindAnnouncementTimer);
     var blindText = "Blind level " + number(announcement.level, 1) + ": small blind " +
       chips(announcement.small) + " chips, big blind " +
-      chips(announcement.big) + " chips. The next hand waits until this announcement ends.";
+      chips(announcement.big) + " chips.";
     if (node.textContent !== blindText) node.textContent = blindText;
     node.dataset.secondsRemaining = String(Math.ceil(remainingMs / 1000));
     node.hidden = false;
