@@ -612,38 +612,17 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
     'Exposed showdown cards or the viewer hand were hidden or replaced by backs: ' + JSON.stringify(showdownCards));
   await hostPage.screenshot('profile-table-showdown');
 
-  // Profile removal is persisted by the same authenticated mutation and clears the other player's seat image.
+  // Saved portraits are replaceable, with no removal control.
   await click(hostPage, '#table-menu > summary');
   await click(hostPage, '#profile-photo-menu-button');
   await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === true);
-  await click(hostPage, '#profile-photo-remove');
-  await click(hostPage, '#profile-photo-save');
-  await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === false);
-  const removal = await evaluate(hostPage, () => window.__avatarCalls.posts.at(-1));
-  assert(removal.body.image_data === '' && removal.response?.player?.avatar_url === '',
-    'Removing a photo did not send an empty image and receive an empty avatar URL.');
+  assert(await evaluate(hostPage, () => !document.querySelector('#profile-photo-remove')),
+    'A saved profile photo still has a removal control.');
+  await click(hostPage, '#profile-photo-close');
   await hostPage.reload();
-  await wait(hostPage, () => document.querySelector('#app-panel')?.hidden === false &&
-    !document.querySelector('#identity-avatar')?.classList.contains('has-avatar'));
-  const removedIdentity = await evaluate(hostPage, () => ({url:document.querySelector('#identity-avatar').dataset.avatarUrl,
-    fallback:document.querySelector('#identity-avatar .avatar-fallback-text').textContent}));
-  assert(!removedIdentity.url && removedIdentity.fallback === hostName[0].toUpperCase(),
-    'The removed profile photo reappeared after refresh: ' + JSON.stringify(removedIdentity));
-
+  await wait(hostPage, () => document.querySelector('#identity-avatar')?.classList.contains('has-avatar'));
   await guestPage.reload();
-  await wait(guestPage, id => !document.querySelector('#table-view')?.hidden &&
-    Boolean(document.querySelector('.seat-card[data-player-id="' + id + '"]')), host.player.id);
-  await sleep(350);
-  const guestNoAvatar = await evaluate(guestPage, id => {
-    const wrapper = document.querySelector('.seat-card[data-player-id="' + id + '"] .seat-avatar');
-    return {loaded:wrapper.classList.contains('has-avatar'),url:wrapper.dataset.avatarUrl,
-      trigger:wrapper.classList.contains('avatar-photo-trigger'),
-      fallback:wrapper.querySelector('.avatar-fallback-text').textContent};
-  }, host.player.id);
-  assert(!guestNoAvatar.loaded && !guestNoAvatar.url && !guestNoAvatar.trigger &&
-    guestNoAvatar.fallback === hostName[0].toUpperCase(),
-    'The removed photo persisted on the opponent seat: ' + JSON.stringify(guestNoAvatar));
-  await guestPage.screenshot('profile-photo-removed-seat');
+  await wait(guestPage, id => document.querySelector('.seat-card[data-player-id="' + id + '"] .seat-avatar')?.classList.contains('has-avatar'), host.player.id);
 
   // Edit login credentials and display name without changing the stable player identity.
   await evaluate(hostPage, path => window.location.assign(path), '/poker/lobby');
@@ -790,15 +769,15 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   await wait(hostPage, () => document.querySelector('#login-panel')?.hidden === false);
   await signIn(hostPage, creatorName, creatorPassword, '/poker/lobby');
   await installNetworkRecorder(hostPage);
-  await evaluate(hostPage, () => { window.open = () => null; });
+  await evaluate(hostPage, () => { window.__photoOpenCalls = 0; window.open = () => { window.__photoOpenCalls++; return null; }; });
   await clickTrusted(hostPage, '#create-game-tab');
   await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === true);
-  assert(await evaluate(hostPage, () => window.__avatarCalls.tableCreates.length) === 0,
-    'Creating a table was dispatched before the required portrait was saved.');
+  assert(await evaluate(hostPage, () => window.__avatarCalls.tableCreates.length === 0 && window.__photoOpenCalls === 0),
+    'Creating a table opened a window or sent a request before the required portrait was saved.');
   await click(hostPage, '#profile-photo-close');
   await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === false);
-  assert(await evaluate(hostPage, () => window.__avatarCalls.tableCreates.length) === 0,
-    'Canceling the create-game portrait gate still created a table.');
+  assert(await evaluate(hostPage, () => window.__avatarCalls.tableCreates.length === 0 && window.__photoOpenCalls === 0),
+    'Canceling the create-game portrait gate still created a table or opened a window.');
 
   await clickTrusted(hostPage, '#create-game-tab');
   await wait(hostPage, () => document.querySelector('#profile-photo-dialog')?.open === true);
@@ -823,14 +802,21 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   await click(guestPage, '#logout-button');
   await wait(guestPage, () => document.querySelector('#login-panel')?.hidden === false);
   const gatedTableUrl = '/poker/table?table=' + encodeURIComponent(createdTableId);
-  await signIn(guestPage, joinerName, joinerPassword, gatedTableUrl);
-  await wait(guestPage, () => !document.querySelector('#table-view')?.hidden &&
-    Boolean(document.querySelector('#seat-grid [data-take-seat]')));
+  await signIn(guestPage, joinerName, joinerPassword, '/poker/lobby');
   await installNetworkRecorder(guestPage);
-  await click(guestPage, '#seat-grid [data-take-seat]');
+  await evaluate(guestPage, () => { window.__photoOpenCalls = 0; window.open = () => { window.__photoOpenCalls++; return null; }; });
+  await click(guestPage, '[data-open-table="' + createdTableId + '"]');
   await wait(guestPage, () => document.querySelector('#profile-photo-dialog')?.open === true);
-  assert(await evaluate(guestPage, () => window.__avatarCalls.seats.length) === 0,
-    'Taking a seat was dispatched before the required portrait was saved.');
+  assert(await evaluate(guestPage, () => window.__photoOpenCalls === 0 &&
+    document.querySelector('#table-view').hidden && window.__avatarCalls.seats.length === 0),
+    'A lobby game button opened a window or joined before a photo was saved.');
+  await click(guestPage, '#profile-photo-close');
+  assert(await evaluate(guestPage, () => window.__photoOpenCalls === 0 && document.querySelector('#table-view').hidden),
+    'Canceling game entry opened a window.');
+  await evaluate(guestPage, path => window.location.assign(path), gatedTableUrl);
+  await wait(guestPage, () => location.pathname === '/poker/lobby' &&
+    document.querySelector('#profile-photo-dialog')?.open === true && document.querySelector('#table-view').hidden);
+  await installNetworkRecorder(guestPage);
   await evaluate(guestPage, () => { window.__failNextAvatarSave = true; });
   await click(guestPage, '[data-avatar-preset-id="fox"]');
   await wait(guestPage, () => !document.querySelector('#profile-photo-save').disabled &&
@@ -850,16 +836,16 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   await wait(guestPage, () => !document.querySelector('#profile-photo-save').disabled &&
     document.querySelector('#profile-photo-status').textContent.includes('ready to save'));
   await click(guestPage, '#profile-photo-save');
+  await wait(guestPage, () => location.pathname === '/poker/table' &&
+    !document.querySelector('#table-view')?.hidden && Boolean(document.querySelector('#seat-grid [data-take-seat]')));
+  await installNetworkRecorder(guestPage);
+  await click(guestPage, '#seat-grid [data-take-seat]');
   await wait(guestPage, () => window.__avatarCalls.seats.length === 1 &&
     window.__avatarCalls.seats[0].status >= 200 && !document.querySelector('#profile-photo-dialog')?.open);
   await wait(guestPage, id => Boolean(document.querySelector('.seat-card[data-player-id="' + id + '"]')), joiner.player.id);
-  const seatedAfterPhoto = await evaluate(guestPage, id => ({
-    seatRequests:window.__avatarCalls.seats.length,
-    savedPreset:window.__avatarCalls.posts.at(-1)?.body?.preset_id,
-    seated:Boolean(document.querySelector('.seat-card[data-player-id="' + id + '"]'))
-  }), joiner.player.id);
-  assert(seatedAfterPhoto.seatRequests === 1 && seatedAfterPhoto.savedPreset === 'crab' && seatedAfterPhoto.seated,
-    'Saving a portrait did not complete exactly one pending seat action: ' + JSON.stringify(seatedAfterPhoto));
+  assert(await evaluate(guestPage, () => window.__avatarCalls.seats.length === 1 &&
+    Boolean(document.querySelector('#identity-avatar').dataset.avatarUrl)),
+    'The saved photo did not permit exactly one seat action.');
 
-  console.log('12 real default portraits, preset and upload selection, bounded private 256/1024 JPEGs, shared admin portraits, account edits with one-character password, authenticated full-image viewing, stable seat DOM, removal fallback, and create/seat photo gates passed.');
+  console.log('12 real default portraits, preset and upload selection, bounded private 256/1024 JPEGs, shared admin portraits, account edits with one-character password, authenticated full-image viewing, stable seat DOM, replacement-only editing, and create/open/direct-link photo gates passed.');
 }

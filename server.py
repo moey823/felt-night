@@ -824,36 +824,34 @@ class Store:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM players WHERE id=?", (player_id,)).fetchone() is None:
                 raise AppError(404, "player_not_found", "Player not found.")
-            if image_data is None:
-                conn.execute("DELETE FROM player_avatars WHERE player_id=?", (player_id,))
-                avatar_url = ""
-                avatar_full_url = ""
-            else:
-                digest = hashlib.sha256(image_data).hexdigest()
-                full_digest = hashlib.sha256(full_image_data).hexdigest() if full_image_data else None
-                conn.execute(
-                    """INSERT INTO player_avatars
-                       (player_id,content_type,image_data,sha256,updated,
-                        full_content_type,full_image_data,full_sha256)
-                       VALUES(?,?,?,?,?,?,?,?)
-                       ON CONFLICT(player_id) DO UPDATE SET
-                           content_type=excluded.content_type,
-                           image_data=excluded.image_data,
-                           sha256=excluded.sha256,
-                           updated=excluded.updated,
-                           full_content_type=excluded.full_content_type,
-                           full_image_data=excluded.full_image_data,
-                           full_sha256=excluded.full_sha256""",
-                    (player_id, content_type, sqlite3.Binary(image_data), digest, now,
-                     full_content_type,
-                     sqlite3.Binary(full_image_data) if full_image_data else None,
-                     full_digest),
-                )
-                avatar_url = "/poker/api/players/%s/avatar?v=%s" % (player_id, digest)
-                avatar_full_url = (
-                    "/poker/api/players/%s/avatar/full?v=%s" % (player_id, full_digest)
-                    if full_digest else ""
-                )
+            if not image_data:
+                raise AppError(409, "profile_photo_required",
+                               "Choose a replacement profile photo. Photos cannot be removed.")
+            digest = hashlib.sha256(image_data).hexdigest()
+            full_digest = hashlib.sha256(full_image_data).hexdigest() if full_image_data else None
+            conn.execute(
+                """INSERT INTO player_avatars
+                   (player_id,content_type,image_data,sha256,updated,
+                    full_content_type,full_image_data,full_sha256)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(player_id) DO UPDATE SET
+                       content_type=excluded.content_type,
+                       image_data=excluded.image_data,
+                       sha256=excluded.sha256,
+                       updated=excluded.updated,
+                       full_content_type=excluded.full_content_type,
+                       full_image_data=excluded.full_image_data,
+                       full_sha256=excluded.full_sha256""",
+                (player_id, content_type, sqlite3.Binary(image_data), digest, now,
+                 full_content_type,
+                 sqlite3.Binary(full_image_data) if full_image_data else None,
+                 full_digest),
+            )
+            avatar_url = "/poker/api/players/%s/avatar?v=%s" % (player_id, digest)
+            avatar_full_url = (
+                "/poker/api/players/%s/avatar/full?v=%s" % (player_id, full_digest)
+                if full_digest else ""
+            )
             conn.commit()
             return avatar_url, avatar_full_url
         except Exception:
@@ -2467,8 +2465,9 @@ class Handler(BaseHTTPRequestHandler):
                         full_content_type, full_image_data = _decode_avatar_data_uri(
                             body["full_image_data"], MAX_FULL_AVATAR_BYTES,
                         )
-                if image_data is None and (full_image_data is not None or preset_id is not None):
-                    raise AppError(400, "invalid_avatar", "Remove both image sizes together.")
+                if image_data is None:
+                    raise AppError(409, "profile_photo_required",
+                                   "Choose a replacement profile photo. Photos cannot be removed.")
                 if (image_data is not None and full_image_data is not None
                         and content_type != full_content_type):
                     raise AppError(400, "invalid_avatar", "Use the same image format for both sizes.")
@@ -2700,22 +2699,18 @@ class Handler(BaseHTTPRequestHandler):
             if operation == "join":
                 def join_player(value):
                     if (not player.get("is_admin")
-                            and not any(seat.get("player_id") == player["id"]
-                                        for seat in value.get("seats", []))
                             and not self.app.store.has_player_avatar(player["id"])):
                         raise AppError(409, "profile_photo_required",
-                                       "Add a profile photo before taking a new seat.")
+                                       "Add a profile photo before joining a game.")
                     return engine.join(value, player["id"], player["name"], now)
                 state = self.app.store.mutate_table(table_id, join_player, now)
             elif operation == "seat":
                 seat_no = self._integer(body.get("seat_no"), "seat_no", 0, 8)
                 def move_player(value):
                     if (not player.get("is_admin")
-                            and not any(seat.get("player_id") == player["id"]
-                                        for seat in value.get("seats", []))
                             and not self.app.store.has_player_avatar(player["id"])):
                         raise AppError(409, "profile_photo_required",
-                                       "Add a profile photo before taking a new seat.")
+                                       "Add a profile photo before joining a game.")
                     return engine.join(
                         value, player["id"], player["name"], now, seat_no=seat_no)
                 state = self.app.store.mutate_table(table_id, move_player, now)
@@ -2797,6 +2792,9 @@ class Handler(BaseHTTPRequestHandler):
                     now,
                 )
             elif operation == "start":
+                if not self.app.store.has_player_avatar(player["id"]):
+                    raise AppError(409, "profile_photo_required",
+                                   "Add a profile photo before starting a game.")
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.start(value, player["id"], now), now)
             elif operation == "leave":

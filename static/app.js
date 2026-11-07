@@ -290,13 +290,17 @@
   }
 
   function reserveTableWindow() {
-    if (isStandaloneApp()) return null;
+    if (!state.player || (!state.isAdmin && !state.player.avatar_url) || isStandaloneApp()) return null;
     try { return window.open("about:blank", "_blank", tableWindowFeatures()); }
     catch (err) { return null; }
   }
 
   function openTableWindow(tableId, setup, reservedWindow) {
-    if (!tableId) return false;
+    if (!tableId || !state.player) return false;
+    if (!state.isAdmin && !state.player.avatar_url) {
+      openProfilePhotoDialog(null, function () { openTableWindow(tableId, setup); });
+      return false;
+    }
     var url = tableWindowUrl(tableId, setup);
     if (isStandaloneApp()) {
       try { if (reservedWindow && !reservedWindow.closed) reservedWindow.close(); } catch (closeError) {}
@@ -356,7 +360,6 @@
   var profileAccountGeneration = 0;
   var profileAccountTrigger = null;
   var adminAvatarBusy = false;
-  var profilePhotoRemovePending = false;
   var profilePhotoBusy = false;
   var profilePhotoTriggerId = "";
   var profilePhotoGeneration = 0;
@@ -785,8 +788,7 @@
   }
 
   function updateProfilePhotoButtons() {
-    var savedUrl = String(state.player && state.player.avatar_url || "");
-    byId("profile-photo-save").disabled = profilePhotoBusy || profilePhotoEncoding || (!profilePhotoDraft && !profilePhotoRemovePending);
+    byId("profile-photo-save").disabled = profilePhotoBusy || profilePhotoEncoding || !profilePhotoDraft;
     byId("profile-photo-save").setAttribute("aria-busy", String(profilePhotoBusy || profilePhotoEncoding));
     ["profile-photo-zoom", "profile-photo-x", "profile-photo-y", "profile-photo-reset"].forEach(function (id) {
       byId(id).disabled = profilePhotoBusy || !profilePhotoSource;
@@ -794,7 +796,6 @@
     byId("profile-photo-canvas").setAttribute("aria-disabled", String(profilePhotoBusy || !profilePhotoSource));
     byId("profile-photo-choose").disabled = profilePhotoBusy;
     byId("profile-photo-file").disabled = profilePhotoBusy;
-    byId("profile-photo-remove").disabled = profilePhotoBusy || (!savedUrl && !profilePhotoDraft);
   }
 
   function invalidateProfilePhotoWork() {
@@ -803,7 +804,6 @@
     profilePhotoDraft = "";
     profilePhotoFullDraft = "";
     profilePhotoPresetId = "";
-    profilePhotoRemovePending = false;
     profilePhotoBusy = false;
     if (byId("profile-photo-presets")) renderAvatarPresets();
     var file = byId("profile-photo-file");
@@ -820,7 +820,6 @@
     profilePhotoDraft = "";
     profilePhotoFullDraft = "";
     profilePhotoPresetId = "";
-    profilePhotoRemovePending = false;
     profilePhotoBusy = false;
     byId("profile-photo-file").value = "";
     byId("profile-photo-status").textContent = "";
@@ -1002,7 +1001,6 @@
     profilePhotoCrop.x = Math.max(0, Math.min(1, profilePhotoCrop.x));
     profilePhotoCrop.y = Math.max(0, Math.min(1, profilePhotoCrop.y));
     profilePhotoDraft = "";
-    profilePhotoRemovePending = false;
     profilePhotoEncoding = true;
     setProfilePhotoError("");
     byId("profile-photo-status").textContent = "Preparing crop…";
@@ -1014,7 +1012,7 @@
   }
 
   async function saveProfilePhoto() {
-    if (profilePhotoBusy || profilePhotoEncoding || (!profilePhotoDraft && !profilePhotoRemovePending)) return;
+    if (profilePhotoBusy || profilePhotoEncoding || !profilePhotoDraft) return;
     var generation = profilePhotoGeneration;
     var playerId = String(state.player && state.player.id || "");
     profilePhotoBusy = true;
@@ -1023,10 +1021,10 @@
     updateProfilePhotoButtons();
     try {
       var photoPayload = {
-        image_data: profilePhotoRemovePending ? "" : profilePhotoDraft,
-        full_image_data: profilePhotoRemovePending ? "" : profilePhotoFullDraft
+        image_data: profilePhotoDraft,
+        full_image_data: profilePhotoFullDraft
       };
-      if (!profilePhotoRemovePending && profilePhotoPresetId) photoPayload.preset_id = profilePhotoPresetId;
+      if (profilePhotoPresetId) photoPayload.preset_id = profilePhotoPresetId;
       var data = await mutate("/profile/avatar", photoPayload);
       if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) {
         refreshAll(true);
@@ -1584,7 +1582,6 @@
   var rebuyOfferUpdatedAt = 0;
   var rebuyOfferTimer = 0;
   var rebuyActionPending = false;
-  var pendingPhotoGatePopup = null;
   var pendingPhotoGateSeat = "";
   var reactionTouchSuppressClickButton = null;
 
@@ -5370,6 +5367,12 @@
     persistAuth();
     state.isAdmin = Boolean(player && player.is_admin);
     if (!state.activeTableId) setActiveTableId(requestedTableId());
+    var photoGatedTableId = !state.isAdmin && !player.avatar_url ? String(state.activeTableId || "") : "";
+    if (photoGatedTableId) {
+      setActiveTableId("");
+      state.tableView = null;
+      setHashTable("");
+    }
     state.restoreTableId = state.activeTableId ? String(state.activeTableId) : "";
     state.polling = !state.isAdmin;
     byId("login-panel").hidden = true;
@@ -5405,6 +5408,11 @@
       renderTables();
       renderTable();
       refreshAll(true);
+      if (photoGatedTableId) {
+        openProfilePhotoDialog(null, function () {
+          window.location.assign(tableWindowUrl(photoGatedTableId, false));
+        });
+      }
     }
   }
 
@@ -6033,19 +6041,6 @@
       }
     }
   });
-  byId("profile-photo-remove").addEventListener("click", function () {
-    if (profilePhotoBusy) return;
-    resetProfilePhotoEditor();
-    profilePhotoDraft = "";
-    profilePhotoRemovePending = Boolean(state.player && state.player.avatar_url);
-    profilePhotoPresetId = "";
-    renderAvatarPresets();
-    byId("profile-photo-file").value = "";
-    setProfilePhotoError("");
-    setProfilePhotoPreview("", false);
-    byId("profile-photo-status").textContent = profilePhotoRemovePending ? "Save changes to remove your photo." : "No saved photo to remove.";
-    updateProfilePhotoButtons();
-  });
   ["zoom", "x", "y"].forEach(function (field) {
     byId("profile-photo-" + field).addEventListener("input", function (event) {
       if (profilePhotoBusy || !profilePhotoSource) return;
@@ -6415,26 +6410,13 @@
     byId(id).addEventListener("click", logoutFromRoom);
   });
 
-  async function createNewGame(event, reservedWindow, photoReady) {
+  async function createNewGame(event, reservedWindow) {
     var button = byId("create-game-tab");
     if (!state.player || state.isAdmin || button.disabled) return;
-    if (!photoReady && !state.player.avatar_url) {
-      if (pendingPhotoGatePopup) return;
-      var gatedWindow = reservedWindow === undefined ? reserveTableWindow() : reservedWindow;
-      pendingPhotoGatePopup = gatedWindow || null;
-      var openedPhotoGate = openProfilePhotoDialog({ currentTarget: button }, function () {
-        var popup = pendingPhotoGatePopup;
-        pendingPhotoGatePopup = null;
-        createNewGame(null, popup, true);
-      }, function () {
-        var popup = pendingPhotoGatePopup;
-        pendingPhotoGatePopup = null;
-        try { if (popup && !popup.closed) popup.close(); } catch (closeError) {}
+    if (!state.player.avatar_url) {
+      openProfilePhotoDialog({ currentTarget: button }, function () {
+        createNewGame();
       });
-      if (!openedPhotoGate) {
-        pendingPhotoGatePopup = null;
-        try { if (gatedWindow && !gatedWindow.closed) gatedWindow.close(); } catch (closeError) {}
-      }
       return;
     }
     var tableWindow = reservedWindow === undefined ? reserveTableWindow() : reservedWindow;
@@ -6526,7 +6508,7 @@
     var playerId = String(state.player && state.player.id || "");
     var seatNo = number(button.getAttribute("data-take-seat"), -1);
     if (seatNo < 0 || !playerId) return;
-    if (!photoReady && !state.player.avatar_url) {
+    if (!state.player.avatar_url) {
       var gateKey = playerId + "|" + tableId + "|" + seatNo;
       if (pendingPhotoGateSeat) return;
       pendingPhotoGateSeat = gateKey;
@@ -6630,6 +6612,10 @@
   });
 
   byId("start-button").addEventListener("click", async function () {
+    if (state.player && !state.player.avatar_url) {
+      openProfilePhotoDialog(null, function () { byId("start-button").click(); });
+      return;
+    }
     var view = state.tableView;
     if (!state.activeTableId || !view || view.status !== "lobby") return;
     var tableId = String(state.activeTableId);

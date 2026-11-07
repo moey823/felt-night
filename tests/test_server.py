@@ -399,7 +399,7 @@ class ServerAuthTests(unittest.TestCase):
 
         return self.app.store.mutate_table(table_id, settle, now)
 
-    def test_avatar_upload_get_persistence_and_remove(self):
+    def test_avatar_upload_persistence_replacement_and_removal_rejection(self):
         cookie, proof, csrf, player = self.login("Avatar Player", with_avatar=False)
         self.assertEqual(player["avatar_url"], "")
         data_uri = _test_png_data_uri()
@@ -451,13 +451,27 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(me["player"]["avatar_url"], avatar_url)
 
-        status, _, removed = self.upload_avatar(cookie, proof, csrf, "")
-        self.assertEqual(status, 200, removed)
-        self.assertEqual(removed["player"]["avatar_url"], "")
-        status, _, missing = self.request(
-            "GET", avatar_url, cookie=cookie, proof=proof,
+        for payload in ({"image_data": ""}, {"image_data": "", "full_image_data": ""},
+                        {"image_data": None}, {}):
+            status, _, rejected = self.request(
+                "POST", "/poker/api/profile/avatar", payload,
+                cookie=cookie, proof=proof, csrf=csrf,
+            )
+            self.assertIn(status, (400, 409), rejected)
+            status, _, me = self.request("GET", "/poker/api/me", cookie=cookie, proof=proof)
+            self.assertEqual(me["player"]["avatar_url"], avatar_url)
+        with self.assertRaises(server.AppError):
+            self.app.store.set_player_avatar(player["id"], None, None, None, None, time.time())
+        status, _, image = self.request("GET", avatar_url, cookie=cookie, proof=proof)
+        self.assertEqual(status, 200)
+        status, _, changed = self.request(
+            "POST", "/poker/api/profile/avatar", {"preset_id": "fish"},
+            cookie=cookie, proof=proof, csrf=csrf,
         )
-        self.assertEqual(status, 404)
+        self.assertEqual(status, 200, changed)
+        self.assertTrue(changed["player"]["avatar_url"])
+        self.assertNotEqual(changed["player"]["avatar_url"], avatar_url)
+        self.assertTrue(changed["player"]["avatar_full_url"])
 
     def test_avatar_validation_rejects_bad_types_signatures_dimensions_and_sizes(self):
         cookie, proof, csrf, player = self.login("Avatar Validation", with_avatar=False)
@@ -897,16 +911,32 @@ class ServerAuthTests(unittest.TestCase):
         )
         self.assertTrue(all("avatar_url" in seat for seat in seats))
         self.assertTrue(all("image_data" not in seat and "avatar_data" not in seat for seat in seats))
-        status, _, removed_guest_photo = self.request(
-            "POST", "/poker/api/profile/avatar", {"image_data": ""},
-            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        # Simulate a legacy saved seat whose account predates mandatory photos.
+        with self.app.store.connect() as conn:
+            conn.execute("DELETE FROM player_avatars WHERE player_id=?", (guest["id"],))
+        for operation, payload in (("join", {}), ("seat", {"seat_no": 1})):
+            status, _, reconnect = self.request(
+                "POST", "/poker/api/tables/" + table_id + "/" + operation, payload,
+                cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+            )
+            self.assertEqual(status, 409, reconnect)
+            self.assertEqual(reconnect["error"]["code"], "profile_photo_required")
+        status, _, _ = self.upload_avatar(
+            guest_cookie, guest_proof, guest_csrf, _test_png_data_uri(),
         )
-        self.assertEqual(status, 200, removed_guest_photo)
-        status, _, reconnect = self.request(
-            "POST", "/poker/api/tables/" + table_id + "/join", {},
-            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        self.assertEqual(status, 200)
+        with self.app.store.connect() as conn:
+            conn.execute("DELETE FROM player_avatars WHERE player_id=?", (host["id"],))
+        status, _, denied_start = self.request(
+            "POST", "/poker/api/tables/" + table_id + "/start", {},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
         )
-        self.assertEqual(status, 200, reconnect)
+        self.assertEqual(status, 409, denied_start)
+        self.assertEqual(denied_start["error"]["code"], "profile_photo_required")
+        status, _, _ = self.upload_avatar(
+            host_cookie, host_proof, host_csrf, _test_png_data_uri(),
+        )
+        self.assertEqual(status, 200)
 
         table_path = "/poker/api/tables/" + table_id
         status, _, started = self.request(
