@@ -343,6 +343,12 @@
   var profilePhotoTriggerId = "";
   var profilePhotoGeneration = 0;
   var profileAvatarOverride = null;
+  var profilePhotoSource = null;
+  var profilePhotoCrop = { zoom:1, x:0.5, y:0.5 };
+  var profilePhotoCropRevision = 0;
+  var profilePhotoEncodeTimer = null;
+  var profilePhotoEncoding = false;
+  var profilePhotoDrag = null;
   var MAX_AVATAR_INPUT_BYTES = 12 * 1024 * 1024;
   var MAX_AVATAR_OUTPUT_BYTES = 256 * 1024;
   var MAX_AVATAR_SOURCE_PIXELS = 64 * 1000 * 1000;
@@ -465,7 +471,13 @@
     var initial = state.player && state.player.name ? state.player.name.charAt(0).toUpperCase() : "♠";
     var fallback = wrapper.querySelector(".avatar-fallback-text");
     var image = wrapper.querySelector(".avatar-image");
-    wrapper.setAttribute("data-avatar-url", String(state.player && state.player.avatar_url || ""));
+    var url = String(state.player && state.player.avatar_url || "");
+    if (wrapper.getAttribute("data-avatar-url") === url) {
+      if (fallback) fallback.textContent = initial;
+      hydrateAvatarNodes(wrapper);
+      return;
+    }
+    wrapper.setAttribute("data-avatar-url", url);
     wrapper.classList.remove("has-avatar");
     if (fallback) fallback.textContent = initial;
     if (image) image.removeAttribute("src");
@@ -502,8 +514,12 @@
 
   function updateProfilePhotoButtons() {
     var savedUrl = String(state.player && state.player.avatar_url || "");
-    byId("profile-photo-save").disabled = profilePhotoBusy || (!profilePhotoDraft && !profilePhotoRemovePending);
-    byId("profile-photo-save").setAttribute("aria-busy", String(profilePhotoBusy));
+    byId("profile-photo-save").disabled = profilePhotoBusy || profilePhotoEncoding || (!profilePhotoDraft && !profilePhotoRemovePending);
+    byId("profile-photo-save").setAttribute("aria-busy", String(profilePhotoBusy || profilePhotoEncoding));
+    ["profile-photo-zoom", "profile-photo-x", "profile-photo-y", "profile-photo-reset"].forEach(function (id) {
+      byId(id).disabled = profilePhotoBusy || !profilePhotoSource;
+    });
+    byId("profile-photo-canvas").setAttribute("aria-disabled", String(profilePhotoBusy || !profilePhotoSource));
     byId("profile-photo-choose").disabled = profilePhotoBusy;
     byId("profile-photo-file").disabled = profilePhotoBusy;
     byId("profile-photo-remove").disabled = profilePhotoBusy || (!savedUrl && !profilePhotoDraft);
@@ -511,6 +527,7 @@
 
   function invalidateProfilePhotoWork() {
     profilePhotoGeneration += 1;
+    resetProfilePhotoEditor();
     profilePhotoDraft = "";
     profilePhotoRemovePending = false;
     profilePhotoBusy = false;
@@ -601,7 +618,7 @@
     });
   }
 
-  async function cropAvatarFile(file) {
+  async function loadAvatarFile(file) {
     if (!file || !/^image\/(jpeg|png)$/i.test(file.type || "")) throw Error("Choose a JPEG or PNG image.");
     if (file.size <= 0 || file.size > MAX_AVATAR_INPUT_BYTES) throw Error("Choose an image smaller than 12 MB.");
     var dimensions = await readImageDimensions(file);
@@ -610,29 +627,90 @@
       throw Error("This photo is too large to resize safely. Choose a smaller image.");
     }
     if ((file.type || "").toLowerCase() !== dimensions.type) throw Error("The file contents do not match its image type.");
-    var source = await loadImageForAvatar(file, dimensions);
-    var canvas = document.createElement("canvas");
-    canvas.width = 256;
-    canvas.height = 256;
-    var context = canvas.getContext("2d", { alpha: false });
+    return loadImageForAvatar(file, dimensions);
+  }
+
+  function resetProfilePhotoEditor() {
+    profilePhotoCropRevision += 1;
+    window.clearTimeout(profilePhotoEncodeTimer);
+    profilePhotoEncodeTimer = null;
+    profilePhotoEncoding = false;
+    var canvas = byId("profile-photo-canvas");
+    if (profilePhotoDrag && canvas.hasPointerCapture(profilePhotoDrag.id)) canvas.releasePointerCapture(profilePhotoDrag.id);
+    profilePhotoDrag = null;
+    if (profilePhotoSource && profilePhotoSource.close) profilePhotoSource.close();
+    profilePhotoSource = null;
+    profilePhotoCrop = { zoom:1, x:0.5, y:0.5 };
+    byId("profile-photo-editor").hidden = true;
+    var context = canvas.getContext("2d");
+    if (context) context.clearRect(0, 0, 256, 256);
+  }
+
+  function drawProfilePhotoCrop() {
+    if (!profilePhotoSource) return;
+    var source = profilePhotoSource, canvas = byId("profile-photo-canvas");
+    var context = canvas.getContext("2d");
     if (!context) throw Error("Photo editing is unavailable in this browser.");
+    var side = Math.min(source.width, source.height) / profilePhotoCrop.zoom;
     context.fillStyle = "#17251e";
     context.fillRect(0, 0, 256, 256);
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
-    var side = Math.min(source.width, source.height);
-    context.drawImage(source, (source.width - side) / 2, (source.height - side) / 2, side, side, 0, 0, 256, 256);
-    if (source.close) source.close();
-    var qualities = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32];
-    for (var i = 0; i < qualities.length; i += 1) {
-      var blob = await canvasBlob(canvas, qualities[i]);
-      if (blob && blob.size <= MAX_AVATAR_OUTPUT_BYTES) return blobAsDataUrl(blob);
+    context.drawImage(source, (source.width - side) * profilePhotoCrop.x,
+      (source.height - side) * profilePhotoCrop.y, side, side, 0, 0, 256, 256);
+    byId("profile-photo-zoom").value = String(profilePhotoCrop.zoom);
+    byId("profile-photo-zoom-value").value = profilePhotoCrop.zoom.toFixed(2) + "×";
+    byId("profile-photo-x").value = String(profilePhotoCrop.x * 100);
+    byId("profile-photo-y").value = String(profilePhotoCrop.y * 100);
+  }
+
+  async function prepareProfilePhotoCrop(revision) {
+    var generation = profilePhotoGeneration;
+    profilePhotoEncoding = true;
+    updateProfilePhotoButtons();
+    try {
+      var canvas = byId("profile-photo-canvas");
+      var qualities = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32], dataUrl = "";
+      for (var i = 0; i < qualities.length; i += 1) {
+        var blob = await canvasBlob(canvas, qualities[i]);
+        if (revision !== profilePhotoCropRevision || generation !== profilePhotoGeneration) return;
+        if (blob && blob.size <= MAX_AVATAR_OUTPUT_BYTES) { dataUrl = await blobAsDataUrl(blob); break; }
+      }
+      if (revision !== profilePhotoCropRevision || generation !== profilePhotoGeneration) return;
+      if (!dataUrl) throw Error("This photo could not be compressed below 256 KB. Choose another image.");
+      profilePhotoDraft = dataUrl;
+      setProfilePhotoPreview(dataUrl, true);
+      byId("profile-photo-status").textContent = "Photo ready to save.";
+    } catch (err) {
+      if (revision === profilePhotoCropRevision && generation === profilePhotoGeneration) {
+        setProfilePhotoError(err.message || "Could not prepare that crop.");
+      }
+    } finally {
+      if (revision === profilePhotoCropRevision && generation === profilePhotoGeneration) {
+        profilePhotoEncoding = false;
+        updateProfilePhotoButtons();
+      }
     }
-    throw Error("This photo could not be compressed below 256 KB. Choose another image.");
+  }
+
+  function changeProfilePhotoCrop() {
+    if (!profilePhotoSource || profilePhotoBusy) return;
+    profilePhotoCrop.x = Math.max(0, Math.min(1, profilePhotoCrop.x));
+    profilePhotoCrop.y = Math.max(0, Math.min(1, profilePhotoCrop.y));
+    profilePhotoDraft = "";
+    profilePhotoRemovePending = false;
+    profilePhotoEncoding = true;
+    setProfilePhotoError("");
+    byId("profile-photo-status").textContent = "Preparing crop…";
+    drawProfilePhotoCrop();
+    updateProfilePhotoButtons();
+    var revision = ++profilePhotoCropRevision;
+    window.clearTimeout(profilePhotoEncodeTimer);
+    profilePhotoEncodeTimer = window.setTimeout(function () { prepareProfilePhotoCrop(revision); }, 80);
   }
 
   async function saveProfilePhoto() {
-    if (profilePhotoBusy || (!profilePhotoDraft && !profilePhotoRemovePending)) return;
+    if (profilePhotoBusy || profilePhotoEncoding || (!profilePhotoDraft && !profilePhotoRemovePending)) return;
     var generation = profilePhotoGeneration;
     var playerId = String(state.player && state.player.id || "");
     profilePhotoBusy = true;
@@ -648,7 +726,6 @@
       if (!data.player) throw Error("The saved profile could not be loaded. Try again.");
       state.player = data.player;
       profileAvatarOverride = { playerId: String(data.player.id || ""), url: String(data.player.avatar_url || ""), expiresAt: Date.now() + 20000 };
-      clearAvatarCache();
       renderIdentityAvatar();
       if (byId("welcome-name")) byId("welcome-name").textContent = state.player.name || "";
       refreshAll(true);
@@ -2909,7 +2986,20 @@
     var felt = byId("felt");
     var restoreChipToggleFocus = Boolean(document.activeElement && document.activeElement.matches &&
       document.activeElement.matches("[data-chip-display-toggle]"));
+    var previousAvatars = Object.create(null);
+    grid.querySelectorAll(".seat-card[data-player-id] .seat-avatar").forEach(function (avatar) {
+      var playerId = avatar.closest(".seat-card").getAttribute("data-player-id");
+      if (avatar.getAttribute("data-avatar-url")) previousAvatars[playerId] = avatar;
+    });
     grid.innerHTML = html;
+    grid.querySelectorAll(".seat-card[data-player-id] .seat-avatar").forEach(function (avatar) {
+      var playerId = avatar.closest(".seat-card").getAttribute("data-player-id");
+      var previous = previousAvatars[playerId];
+      if (previous && previous.getAttribute("data-avatar-url") === avatar.getAttribute("data-avatar-url")) {
+        previous.querySelector(".avatar-fallback-text").textContent = avatar.querySelector(".avatar-fallback-text").textContent;
+        avatar.replaceWith(previous);
+      }
+    });
     hydrateAvatarNodes(grid);
     if (restoreChipToggleFocus) {
       var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
@@ -5138,6 +5228,8 @@
   byId("profile-photo-file").addEventListener("change", async function () {
     var file = byId("profile-photo-file").files && byId("profile-photo-file").files[0];
     if (!file) return;
+    invalidateProfilePhotoWork();
+    setProfilePhotoPreview(String(state.player && state.player.avatar_url || ""), false);
     setProfilePhotoError("");
     profilePhotoBusy = true;
     byId("profile-photo-status").textContent = "Preparing photo…";
@@ -5145,12 +5237,15 @@
     var generation = profilePhotoGeneration;
     var playerId = String(state.player && state.player.id || "");
     try {
-      var preparedPhoto = await cropAvatarFile(file);
-      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "") || !byId("profile-photo-dialog").open) return;
-      profilePhotoDraft = preparedPhoto;
-      profilePhotoRemovePending = false;
-      setProfilePhotoPreview(profilePhotoDraft, true);
-      byId("profile-photo-status").textContent = "Photo ready to save.";
+      var source = await loadAvatarFile(file);
+      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "") || !byId("profile-photo-dialog").open) {
+        if (source.close) source.close();
+        return;
+      }
+      profilePhotoSource = source;
+      byId("profile-photo-editor").hidden = false;
+      drawProfilePhotoCrop();
+      await prepareProfilePhotoCrop(++profilePhotoCropRevision);
     } catch (err) {
       if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) return;
       byId("profile-photo-status").textContent = "";
@@ -5165,6 +5260,7 @@
   });
   byId("profile-photo-remove").addEventListener("click", function () {
     if (profilePhotoBusy) return;
+    resetProfilePhotoEditor();
     profilePhotoDraft = "";
     profilePhotoRemovePending = Boolean(state.player && state.player.avatar_url);
     byId("profile-photo-file").value = "";
@@ -5172,6 +5268,51 @@
     setProfilePhotoPreview("", false);
     byId("profile-photo-status").textContent = profilePhotoRemovePending ? "Save changes to remove your photo." : "No saved photo to remove.";
     updateProfilePhotoButtons();
+  });
+  ["zoom", "x", "y"].forEach(function (field) {
+    byId("profile-photo-" + field).addEventListener("input", function (event) {
+      if (profilePhotoBusy || !profilePhotoSource) return;
+      profilePhotoCrop[field] = Number(event.target.value) / (field === "zoom" ? 1 : 100);
+      changeProfilePhotoCrop();
+    });
+  });
+  byId("profile-photo-reset").addEventListener("click", function () {
+    if (profilePhotoBusy || !profilePhotoSource) return;
+    profilePhotoCrop = { zoom:1, x:0.5, y:0.5 };
+    changeProfilePhotoCrop();
+  });
+  var cropCanvas = byId("profile-photo-canvas");
+  cropCanvas.addEventListener("pointerdown", function (event) {
+    if (profilePhotoBusy || !profilePhotoSource || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    cropCanvas.focus({ preventScroll:true });
+    cropCanvas.setPointerCapture(event.pointerId);
+    profilePhotoDrag = { id:event.pointerId, x:event.clientX, y:event.clientY,
+      cropX:profilePhotoCrop.x, cropY:profilePhotoCrop.y };
+  });
+  cropCanvas.addEventListener("pointermove", function (event) {
+    if (!profilePhotoDrag || profilePhotoDrag.id !== event.pointerId || profilePhotoBusy || !profilePhotoSource) return;
+    var side = Math.min(profilePhotoSource.width, profilePhotoSource.height) / profilePhotoCrop.zoom;
+    var box = cropCanvas.getBoundingClientRect();
+    var availableX = profilePhotoSource.width - side, availableY = profilePhotoSource.height - side;
+    if (availableX > 0) profilePhotoCrop.x = profilePhotoDrag.cropX - (event.clientX - profilePhotoDrag.x) / box.width * side / availableX;
+    if (availableY > 0) profilePhotoCrop.y = profilePhotoDrag.cropY - (event.clientY - profilePhotoDrag.y) / box.height * side / availableY;
+    changeProfilePhotoCrop();
+  });
+  ["pointerup", "pointercancel", "lostpointercapture"].forEach(function (type) {
+    cropCanvas.addEventListener(type, function (event) {
+      if (profilePhotoDrag && profilePhotoDrag.id === event.pointerId) profilePhotoDrag = null;
+    });
+  });
+  cropCanvas.addEventListener("keydown", function (event) {
+    if (profilePhotoBusy || !profilePhotoSource || !/^Arrow(Left|Right|Up|Down)$/.test(event.key)) return;
+    event.preventDefault();
+    var step = event.shiftKey ? 0.1 : 0.025;
+    if (event.key === "ArrowLeft") profilePhotoCrop.x += step;
+    if (event.key === "ArrowRight") profilePhotoCrop.x -= step;
+    if (event.key === "ArrowUp") profilePhotoCrop.y += step;
+    if (event.key === "ArrowDown") profilePhotoCrop.y -= step;
+    changeProfilePhotoCrop();
   });
   byId("profile-photo-save").addEventListener("click", saveProfilePhoto);
   byId("history-close").addEventListener("click", function () {

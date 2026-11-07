@@ -4281,3 +4281,23 @@ body.gameplay-active #app-panel #table-view #table-surface #felt .board-center {
     transform:translateX(-50%) !important;
   }
 }
+
+/* Photo editor keeps the square export and circular seat framing visible. */
+.profile-photo-editor:not([hidden]) { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:1rem; align-items:center; margin-top:1rem; }
+.profile-photo-crop-frame { position:relative; width:100%; max-width:256px; aspect-ratio:1; justify-self:center; }
+.profile-photo-crop-frame::after { content:""; position:absolute; inset:0; border:1px solid #edf4d5; border-radius:50%; box-shadow:0 0 0 100px #0005; clip-path:inset(0); pointer-events:none; }
+#profile-photo-canvas { display:block; width:100%; height:100%; border-radius:4px; cursor:grab; touch-action:none; }
+#profile-photo-canvas:active { cursor:grabbing; }
+#profile-photo-canvas:focus-visible { outline:3px solid #c5e37c; outline-offset:3px; }
+.profile-photo-crop-controls { min-width:0; display:grid; gap:.3rem; }
+.profile-photo-crop-controls label { font-size:12px; font-weight:700; }
+.profile-photo-crop-controls p { margin:0 0 .4rem; font-size:12px; line-height:1.4; }
+.profile-photo-crop-controls input[type=range] { width:100%; min-width:0; height:32px; accent-color:#c5e37c; }
+.profile-photo-crop-controls output { float:right; font-variant-numeric:tabular-nums; }
+.profile-photo-crop-controls button { min-height:44px; }
+.profile-photo-dialog > .section-heading { position:sticky; top:-1.5rem; z-index:2; background:#15251e; padding-block:.35rem; }
+@media (max-width:520px) {
+  .profile-photo-editor:not([hidden]) { grid-template-columns:minmax(0,1fr); }
+  .profile-photo-crop-frame { width:min(100%,220px); }
+  .profile-photo-dialog > .section-heading { top:-1rem; }
+}

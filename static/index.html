@@ -45,7 +45,7 @@
           <div><div class="panel-kicker">YOUR PROFILE</div><h2 id="profile-photo-title">Profile photo</h2></div>
           <button id="profile-photo-close" type="button" class="button button-quiet button-small">Close</button>
         </div>
-        <p class="muted">Choose a photo for your seat. It is centered and resized to a square before saving.</p>
+        <p class="muted">Choose a photo for your seat, then zoom and position it before saving.</p>
         <div class="profile-photo-content">
           <span id="profile-photo-preview" class="profile-photo-preview" data-avatar-url="" aria-hidden="true"><span class="avatar-fallback-text">♠</span><img class="avatar-image" alt=""></span>
           <div class="profile-photo-controls">
@@ -54,6 +54,21 @@
             <p id="profile-photo-help" class="muted">JPEG or PNG, up to 12 MB. The saved image is a 256 × 256 JPEG up to 256 KB.</p>
             <p id="profile-photo-error" class="profile-photo-error" role="alert" hidden></p>
             <p id="profile-photo-status" class="profile-photo-status" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+        <div id="profile-photo-editor" class="profile-photo-editor" hidden>
+          <div class="profile-photo-crop-frame">
+            <canvas id="profile-photo-canvas" width="256" height="256" tabindex="0" role="img" aria-label="Photo crop preview" aria-describedby="profile-photo-crop-help"></canvas>
+          </div>
+          <div class="profile-photo-crop-controls">
+            <p id="profile-photo-crop-help" class="muted">Drag the photo to position it, or use the sliders. Arrow keys also move the photo.</p>
+            <label for="profile-photo-zoom">Zoom <output id="profile-photo-zoom-value" for="profile-photo-zoom">1.00×</output></label>
+            <input id="profile-photo-zoom" type="range" min="1" max="4" step="0.01" value="1">
+            <label for="profile-photo-x">Horizontal position</label>
+            <input id="profile-photo-x" type="range" min="0" max="100" step="0.1" value="50">
+            <label for="profile-photo-y">Vertical position</label>
+            <input id="profile-photo-y" type="range" min="0" max="100" step="0.1" value="50">
+            <button id="profile-photo-reset" class="button button-quiet button-small" type="button">Reset crop</button>
           </div>
         </div>
         <div class="profile-photo-actions">

@@ -205,6 +205,8 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
     const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 256;
     const context = canvas.getContext('2d'); context.fillStyle = '#c84242'; context.fillRect(0,0,256,256);
     context.fillStyle = '#356dcc'; context.fillRect(256,0,256,256);
+    context.fillStyle = '#36a85d'; context.fillRect(0,128,256,128);
+    context.fillStyle = '#e7c34b'; context.fillRect(256,0,256,128);
     const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/png'));
     const file = new File([blob],'portrait.png',{type:'image/png'});
     const transfer = new DataTransfer(); transfer.items.add(file);
@@ -222,6 +224,56 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   assert(staged.width === 256 && staged.height === 256 && staged.type === 'image/jpeg' &&
     staged.size <= 256 * 1024 && staged.dataLength < 360000,
     'The selected photo was not center-cropped/resized to a bounded square JPEG: ' + JSON.stringify(staged));
+  async function cropReady() {
+    await wait(hostPage,()=>!document.querySelector('#profile-photo-save').disabled&&
+      document.querySelector('#profile-photo-status').textContent.includes('ready to save')&&
+      document.querySelector('#profile-photo-preview').classList.contains('has-avatar'));
+  }
+  async function cropPixel() {
+    return evaluate(hostPage,()=>[...document.querySelector('#profile-photo-canvas').getContext('2d').getImageData(128,128,1,1).data]);
+  }
+  await input(hostPage,'#profile-photo-zoom',2);
+  await input(hostPage,'#profile-photo-x',0);
+  await input(hostPage,'#profile-photo-y',0);
+  await cropReady();
+  const redCrop=await cropPixel();
+  assert(redCrop[0]>180&&redCrop[1]<90&&redCrop[2]<90,'Zoom/pan did not select the upper-left crop: '+redCrop);
+  await input(hostPage,'#profile-photo-x',100);
+  await input(hostPage,'#profile-photo-y',100);
+  await cropReady();
+  const blueCrop=await cropPixel();
+  assert(blueCrop[2]>180&&blueCrop[0]<90,'Position controls did not select the lower-right crop: '+blueCrop);
+  await evaluate(hostPage,()=>document.querySelector('#profile-photo-canvas').scrollIntoView({block:'center'}));
+  await hostPage.bringToFront();
+  const cropBox=await evaluate(hostPage,()=>{const r=document.querySelector('#profile-photo-canvas').getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/2};});
+  await hostPage.dragAt(cropBox.x,cropBox.y,cropBox.x+25,cropBox.y+25);
+  await cropReady();
+  const dragged=await evaluate(hostPage,()=>({x:Number(document.querySelector('#profile-photo-x').value),y:Number(document.querySelector('#profile-photo-y').value)}));
+  assert(dragged.x<100&&dragged.y<100,'Dragging did not reposition the crop: '+JSON.stringify(dragged));
+  await evaluate(hostPage,()=>document.querySelector('#profile-photo-canvas').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true})));
+  await cropReady();
+  assert(await evaluate(hostPage,previous=>Number(document.querySelector('#profile-photo-x').value)<previous,dragged.x),
+    'Keyboard repositioning did not move the crop.');
+  await click(hostPage,'#profile-photo-reset');await cropReady();
+  assert(await evaluate(hostPage,()=>document.querySelector('#profile-photo-zoom').value==='1'&&
+    document.querySelector('#profile-photo-x').value==='50'&&document.querySelector('#profile-photo-y').value==='50'),
+    'Reset crop did not restore the full centered photo.');
+  await input(hostPage,'#profile-photo-zoom',2);
+  await input(hostPage,'#profile-photo-x',0);
+  await input(hostPage,'#profile-photo-y',0);
+  await cropReady();
+  await hostPage.resize(320,568);await sleep(150);
+  await evaluate(hostPage,()=>document.querySelector('#profile-photo-y').scrollIntoView({block:'center'}));
+  const mobileCrop=await evaluate(hostPage,()=>{
+    const dialog=document.querySelector('#profile-photo-dialog'),close=document.querySelector('#profile-photo-close');
+    const d=dialog.getBoundingClientRect(),c=close.getBoundingClientRect();
+    return{overflow:dialog.scrollWidth>dialog.clientWidth+1,closeVisible:c.top>=d.top&&c.bottom<=d.bottom,
+      zoom:document.querySelector('#profile-photo-zoom').value};
+  });
+  assert(!mobileCrop.overflow&&mobileCrop.closeVisible&&mobileCrop.zoom==='2',
+    'The mobile crop dialog overflows or hides Close: '+JSON.stringify(mobileCrop));
+  await hostPage.screenshot('profile-photo-editor-mobile');
+  await hostPage.resize(800,600);await sleep(100);
   await hostPage.screenshot('profile-photo-preview');
 
   // Hold the response after the server accepts it; Close remains usable, and the late response is ignored.
@@ -229,6 +281,15 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   await click(hostPage, '#profile-photo-save');
   await wait(hostPage, () => window.__avatarCalls.posts.some(post => post.held));
   const profilePost = await evaluate(hostPage, () => window.__avatarCalls.posts[window.__avatarCalls.posts.length - 1]);
+  const savedPixel=await evaluate(hostPage,dataUrl=>new Promise((resolve,reject)=>{
+    const image=new Image();image.onload=()=>{
+      const canvas=document.createElement('canvas');canvas.width=canvas.height=256;
+      const context=canvas.getContext('2d');context.drawImage(image,0,0);
+      resolve([...context.getImageData(128,128,1,1).data]);
+    };image.onerror=reject;image.src=dataUrl;
+  }),profilePost.body.image_data);
+  assert(savedPixel[0]>180&&savedPixel[1]<90&&savedPixel[2]<90,
+    'The uploaded JPEG did not contain the chosen zoomed crop: '+savedPixel);
   assert(profilePost.body.image_data.startsWith('data:image/jpeg;base64,') &&
     profilePost.body.image_data.length < 360000 && profilePost.session && profilePost.csrf,
     'The avatar POST did not carry the prepared JPEG and authenticated mutation headers.');
@@ -311,6 +372,24 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   assert(dealtCards.opponentBacks === 2 && dealtCards.ownFaces === 2 && dealtCards.redBack && dealtCards.portrait >= 22,
     'A dealt hidden hand, own faces, red back, or 24px profile slot rendered incorrectly: ' + JSON.stringify(dealtCards));
   await hostPage.resize(390,844);
+  await wait(hostPage,id=>document.querySelector('.seat-card[data-player-id="'+id+'"] .seat-avatar')?.classList.contains('has-avatar'),host.player.id);
+  await hostPage.bringToFront();
+  const stability=await evaluate(hostPage,async id=>{
+    const selector='.seat-card[data-player-id="'+id+'"] .seat-avatar';
+    const original=document.querySelector(selector),image=original.querySelector('img');
+    const result={redraws:0,replacements:0,blankFrames:0};
+    for(let n=0;n<24;n++){
+      window.dispatchEvent(new Event('resize'));
+      const current=document.querySelector(selector);
+      result.redraws++;
+      if(current!==original||current?.querySelector('img')!==image)result.replacements++;
+      if(!current?.classList.contains('has-avatar')||!image.complete||!image.naturalWidth)result.blankFrames++;
+      await new Promise(requestAnimationFrame);
+    }
+    return result;
+  },host.player.id);
+  assert(stability.redraws===24&&!stability.replacements&&!stability.blankFrames,
+    'Gameplay redraws replace the decoded portrait or show fallback frames: '+JSON.stringify(stability));
   await hostPage.screenshot('profile-table-dealt-390x844');
 
   async function setFixture(mode, selector, expectedCount) {
@@ -366,5 +445,5 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
     'The removed photo persisted on the opponent seat: ' + JSON.stringify(guestNoAvatar));
   await guestPage.screenshot('profile-photo-removed-seat');
 
-  console.log('Profile photos crop to bounded JPEGs, persist across reloads, load through authenticated avatar requests, render on seats, and cleanly fall back after removal; dealt/folded/waiting/busted/showdown card states passed.');
+  console.log('Profile photos support zoom, position sliders, dragging, keyboard movement and reset; decoded portraits remain stable across 24 gameplay redraws; crops save to bounded JPEGs, persist across reloads, load through authenticated avatar requests, render on seats, and cleanly fall back after removal; dealt/folded/waiting/busted/showdown card states passed.');
 }

@@ -473,6 +473,24 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   assert(view.street === 'flop','The nine-player hand did not reach a flop: ' +
     JSON.stringify({street:view.street,actor:view.actor_id}));
 
+  await wait(playerPage,()=>[...document.querySelectorAll('#seat-grid .seat-avatar')].every(node=>
+    node.classList.contains('has-avatar')&&node.querySelector('img')?.naturalWidth===256));
+  await ev(playerPage,()=>{
+    const grid=document.querySelector('#seat-grid');
+    const originals=new Map([...grid.querySelectorAll('.seat-card[data-player-id]')].map(seat=>
+      [seat.dataset.playerId,seat.querySelector('.seat-avatar')]));
+    window.__portraitStability={redraws:0,replacements:0,blankPortraits:0};
+    window.__portraitObserver=new MutationObserver(()=>{
+      const result=window.__portraitStability;result.redraws++;
+      for(const seat of grid.querySelectorAll('.seat-card[data-player-id]')){
+        const avatar=seat.querySelector('.seat-avatar');
+        if(avatar!==originals.get(seat.dataset.playerId))result.replacements++;
+        if(!avatar?.classList.contains('has-avatar')||!avatar.querySelector('img')?.naturalWidth)result.blankPortraits++;
+      }
+    });
+    window.__portraitObserver.observe(grid,{childList:true});
+  });
+
   const aId = view.actor_id;
   const afterBet = await act(tablePath,view,playersById,'bet',40);
   const bId = afterBet.actor_id;
@@ -562,6 +580,11 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   }
   await actionPage.resize(1366,768); await sleep(250); await actionPage.screenshot('player-displays-actions-desktop-1366x768');
   await actionPage.resize(390,844); await sleep(250); await actionPage.screenshot('player-displays-actions-phone-390x844');
+
+  const livePortraits=await wait(playerPage,()=>window.__portraitStability?.redraws>=2?window.__portraitStability:false);
+  assert(!livePortraits.replacements&&!livePortraits.blankPortraits,
+    'Live calls/raises replaced loaded portraits or showed fallbacks: '+JSON.stringify(livePortraits));
+  await ev(playerPage,()=>window.__portraitObserver.disconnect());
 
   const beforeClose = await getView(tablePath,playersById.get(bId));
   assert(beforeClose.actor_id === bId && beforeClose.street === 'flop',
