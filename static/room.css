@@ -4739,3 +4739,38 @@ body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:n
   body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(2) { top: 3px !important; }
   body.gameplay-active #seat-grid .seat-card > .seat-contribution .wager-stack i:nth-child(3) { top: 6px !important; }
 }
+
+/* Normalize visible glyph bounds, rather than centering unequal font line boxes. */
+.card-glyph { display: inline-block; width: .9em; height: .9em; vertical-align: middle; overflow: visible; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.seat-readable[data-player-id]:not(.seat-empty) > .seat-cards :is(.mini-rank, .mini-suit) > .card-glyph {
+  display: block;
+  width: 88%;
+  height: 90%;
+}
+
+/* Give board ranks and suits the same large, centered halves as hole cards. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #board-cards .playing-card:not(.placeholder) {
+  position: relative !important;
+  display: block !important;
+  padding: 0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #board-cards .playing-card :is(.rank, .suit) {
+  position: absolute !important;
+  inset: 0 auto auto 0 !important;
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 50cqh !important;
+  line-height: 1 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #board-cards .playing-card .suit { top: 50% !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #board-cards .playing-card :is(.rank, .suit) > .card-glyph {
+  display: block;
+  width: 88%;
+  height: 90%;
+}

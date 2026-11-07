@@ -730,11 +730,40 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
   }),allInIds);
   assert(allInFallback.every(row=>row.detail&&row.statusVisible&&!row.badge),
     'A remaining zero-stack player lost its readable status or retained a stale action at showdown: '+JSON.stringify(allInFallback));
+  async function checkCardGlyphs(page) {
+    return ev(page,()=>{
+      const errors=[];
+      for(const card of document.querySelectorAll('#seat-grid .mini-card:not(.back):not(.placeholder),#board-cards .playing-card:not(.placeholder)')){
+        const halves=[...card.querySelectorAll('.mini-rank,.mini-suit,.rank,.suit')];
+        if(halves.length!==2){errors.push('card is missing a rank or suit');continue;}
+        for(const half of halves){
+          const svg=half.querySelector('.card-glyph'),text=svg?.querySelector('text');
+          if(!svg||!text){errors.push('card symbol has no normalized glyph');continue;}
+          if(parseFloat(getComputedStyle(text).fontSize)!==100)errors.push('glyph measurement and rendered font differ');
+          const parent=half.getBoundingClientRect(),box=svg.getBoundingClientRect(),view=svg.viewBox.baseVal;
+          if(Math.abs((box.left+box.right)-(parent.left+parent.right))>1||
+             Math.abs((box.top+box.bottom)-(parent.top+parent.bottom))>1)errors.push('glyph is off center');
+          if(Math.abs(parent.height-card.clientHeight/2)>1)errors.push('card half has unequal height');
+          if(box.width<parent.width*.85||box.height<parent.height*.88)errors.push('card glyph is too small');
+          const canvas=document.createElement('canvas'),context=canvas.getContext('2d');
+          context.font='900 100px Georgia, serif';
+          const metric=context.measureText(text.textContent);
+          if(Math.abs(view.x+metric.actualBoundingBoxLeft)>.1||
+             Math.abs(view.y+metric.actualBoundingBoxAscent)>.1||
+             Math.abs(view.width-metric.actualBoundingBoxLeft-metric.actualBoundingBoxRight)>.1||
+             Math.abs(view.height-metric.actualBoundingBoxAscent-metric.actualBoundingBoxDescent)>.1)
+            errors.push('glyph ink bounds are not normalized: '+text.textContent);
+        }
+      }
+      return errors;
+    });
+  }
   const showdownErrors=[];
   for(const [w,h] of viewports){
     await actionPage.resize(w,h);await sleep(200);
     const result=await checkSeatChildren(actionPage);
     showdownErrors.push(...result.errors.map(error=>w+'x'+h+': '+error));
+    showdownErrors.push(...(await checkCardGlyphs(actionPage)).map(error=>w+'x'+h+': '+error));
     await actionPage.screenshot('player-displays-showdown-'+w+'x'+h);
   }
   assert(!showdownErrors.length,'Showdown cards or markers escaped their seats: '+showdownErrors.slice(0,20).join('; '));

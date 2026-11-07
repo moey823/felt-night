@@ -2628,6 +2628,30 @@
     return { symbol: "", name: "" };
   }
 
+  var cardGlyphCanvas = null;
+  var cardGlyphCache = Object.create(null);
+  function cardGlyphHTML(symbol) {
+    if (cardGlyphCache[symbol]) return cardGlyphCache[symbol];
+    if (!cardGlyphCanvas) cardGlyphCanvas = document.createElement("canvas");
+    var context = cardGlyphCanvas.getContext("2d");
+    if (!context) return esc(symbol);
+    context.font = "900 100px Georgia, serif";
+    var metrics = context.measureText(symbol);
+    var left = number(metrics.actualBoundingBoxLeft, 0);
+    var right = number(metrics.actualBoundingBoxRight, metrics.width);
+    var ascent = number(metrics.actualBoundingBoxAscent, 75);
+    var descent = number(metrics.actualBoundingBoxDescent, 0);
+    // Font line boxes include unequal side bearings and baseline padding.
+    // Fit the actual ink bounds into a shared centered viewport instead.
+    var box = [-left, -ascent, Math.max(1, left + right), Math.max(1, ascent + descent)];
+    var glyph = '<svg class="card-glyph" viewBox="' + box.join(" ") +
+      '" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">' +
+      '<text x="0" y="0" fill="currentColor" font-family="Georgia,serif" font-size="100" font-weight="900">' +
+      esc(symbol) + '</text></svg>';
+    cardGlyphCache[symbol] = glyph;
+    return glyph;
+  }
+
   function playingCardHTML(card, small) {
     var info = cardInfo(card);
     if (!info) return '<span class="' + (small ? "mini-card" : "playing-card") + ' placeholder" aria-hidden="true"></span>';
@@ -2635,8 +2659,8 @@
     var rank = String(info.rank || "").toUpperCase();
     var cls = small ? "mini-card" : "playing-card";
     if (suit.name) cls += " suit-" + suit.name;
-    if (small) return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="mini-rank">' + esc(rank) + '</b><span class="mini-suit">' + esc(suit.symbol) + '</span></span>';
-    return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="rank">' + esc(rank) + '</b><span class="suit">' + esc(suit.symbol) + '</span></span>';
+    if (small) return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="mini-rank">' + cardGlyphHTML(rank) + '</b><span class="mini-suit">' + cardGlyphHTML(suit.symbol) + '</span></span>';
+    return '<span class="' + cls + '" aria-label="' + esc(rank + " " + suit.symbol) + '"><b class="rank">' + cardGlyphHTML(rank) + '</b><span class="suit">' + cardGlyphHTML(suit.symbol) + '</span></span>';
   }
 
   function hiddenCardHTML(small, folded) {
