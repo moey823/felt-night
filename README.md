@@ -12,6 +12,8 @@ The table uses a dedicated gameplay view with a seat ring, centered board and po
 
 Room admins can select loaded past games for bulk deletion with a count-specific confirmation; active games and accounts are preserved. Clicking outside a dialog dismisses it. Reaction choices include poop and facepalm.
 
+Players can upload or remove a cropped profile photo from the profile control. Photos are stored with the player account and shown at occupied seats; players without a photo use the existing fallback.
+
 A separate, explicitly enabled room admin configures shared preflop/postflop bet presets, all-in street delay, blind/elimination announcements, showdown result holds, and the winner hold after everyone else folds. The no-showdown hold accepts 0–60 seconds and defaults to 1.5 seconds; blind and elimination announcements follow it. Admin changes apply to future pacing transitions without resetting an active deadline. Only admin can add or remove test bots. The admin account cannot create a game, take a seat, or submit poker actions. Normal players retain their personal accounts, reconnectable seats, and private tournament histories.
 
 Sit-out persists until switched off and immediately checks when free or folds facing a bet. Blind levels change only between hands, one level at a time. Each level’s timer starts when its first hand is dealt, after any showdown or announcements. Buy-ins, payouts, starting stacks, and blind amounts stay locked after play begins. The completed table keeps the final board and participants visible; the last-hand viewer steps through each street and shows winners and exposed hand ranks. Chip counts can toggle to big blinds. A compact panel on the felt beside the board identifies the last player action and its amount; a bright ring marks the current turn and a gold ring marks each hand winner.
@@ -78,9 +80,10 @@ BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs layout
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs compact
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs stability
 BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs reactions
+BROWSER_BIN=/path/to/chrome-headless-shell node tests/browser/run.mjs profile-avatars
 ```
 
-The reactions suite checks private shortcuts, local favorites, live burst delivery, reconnect behavior, and nine-seat mobile layout.
+The reactions suite checks private shortcuts, local favorites, live burst delivery, reconnect behavior, and nine-seat mobile layout. The profile-avatars suite checks photo upload/crop/save/remove, authenticated loading and refresh persistence, seat/fold/no-card/showdown display, and retry/failure fallback.
 
 Set `QA_SCREEN_DIR` to a directory on the development machine to retain screenshots. The default suite plays real hands and checks action submission, reconnects, and history. The flow suite covers host setup, payouts, admin separation, mobile dialogs, and ending a game. The layout suite checks crowded tables across screen sizes. The stability suite checks a nine-player game, timer pause/resume, compact chat, viewport controls, seat markers, winner badges, and the admin past-game flow. See [the design and verification priorities](docs/ux-design.md).
 

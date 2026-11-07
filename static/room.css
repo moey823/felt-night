@@ -560,8 +560,7 @@ body.gameplay-active #felt #hero-seat {
   font-size: 13px;
 }
 #table-surface #seat-grid .seat-card .mini-card.back {
-  border-color: rgba(231, 238, 221, .2);
-  background: linear-gradient(145deg, rgba(69, 104, 79, .72), rgba(41, 70, 54, .76));
+  border-color: rgba(255, 222, 199, .72);
 }
 #table-surface #seat-grid .seat-card.is-me > .seat-top,
 #table-surface #seat-grid .seat-card.is-me > .seat-stack,
@@ -2882,4 +2881,112 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
     font-size: clamp(16px, 4.8vw, 20px) !important;
     line-height: 1.35 !important;
   }
+}
+
+
+/* Player portraits stay small enough to preserve readable seat names. */
+.identity-avatar,
+.seat-avatar,
+.profile-photo-preview { position: relative; overflow: hidden; flex: 0 0 auto; }
+.identity-avatar { padding: 0; }
+.seat-avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(197, 227, 124, .14);
+  color: #d7e9ad;
+  font-size: 10px;
+  line-height: 1;
+}
+.avatar-fallback-text { display: grid; place-items: center; width: 100%; height: 100%; }
+.avatar-image { display: none; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+.has-avatar > .avatar-fallback-text { display: none; }
+.has-avatar > .avatar-image { display: block; }
+.profile-photo-dialog {
+  box-sizing: border-box;
+  width: min(34rem, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: min(88dvh, 620px);
+  padding: clamp(1rem, 4vw, 1.5rem);
+  overflow: auto;
+  color: var(--text, #ede9d9);
+  border: 1px solid rgba(225, 237, 227, .18);
+  border-radius: 16px;
+  background: #15251e;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, .55);
+}
+.profile-photo-dialog::backdrop { background: rgba(3, 9, 6, .76); backdrop-filter: blur(5px); }
+.profile-photo-dialog > .section-heading { gap: 1rem; }
+.profile-photo-dialog #profile-photo-close { min-width: 64px; min-height: 44px; }
+.profile-photo-dialog h2 { margin: .2rem 0 0; }
+.profile-photo-dialog > .muted { max-width: 34rem; margin: .8rem 0 1rem; font-size: 13px; line-height: 1.5; }
+.profile-photo-content { display: flex; align-items: center; gap: 1.2rem; min-width: 0; }
+.profile-photo-preview {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  flex: 0 0 112px;
+  background: linear-gradient(145deg, rgba(197, 227, 124, .17), rgba(16, 31, 24, .95));
+  border: 2px solid rgba(197, 227, 124, .38);
+  color: #d7e9ad;
+  font-size: 32px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .24);
+}
+.profile-photo-controls { min-width: 0; display: grid; justify-items: start; gap: .55rem; }
+.profile-photo-controls .button { min-height: 44px; }
+.profile-photo-controls p { margin: 0; font-size: 12px; line-height: 1.45; }
+.profile-photo-error { color: #ff9f96; font-size: 12px; line-height: 1.4; }
+.profile-photo-status { color: #d2e3a7; font-size: 12px; line-height: 1.4; }
+.profile-photo-actions { display: flex; justify-content: flex-end; gap: .6rem; margin-top: 1.25rem; }
+.profile-photo-actions .button { min-height: 44px; }
+@media (max-width: 520px) {
+  .profile-photo-dialog { width: calc(100vw - 16px); max-width: calc(100vw - 16px); max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px); padding: 1rem; }
+  .profile-photo-content { align-items: flex-start; gap: .85rem; }
+  .profile-photo-preview { width: 88px; height: 88px; flex-basis: 88px; }
+  .profile-photo-actions { position: sticky; bottom: -1rem; padding: .75rem 0 .1rem; background: #15251e; }
+  .profile-photo-actions .button { flex: 1; }
+}
+
+/* Player portraits use the lower marker row's reserved first column. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer > .seat-top .seat-name-wrap {
+  width: calc(100% - 20px) !important;
+  max-width: calc(100% - 20px) !important;
+  flex: 0 1 calc(100% - 20px) !important;
+  margin-right: auto !important;
+  justify-content: center !important;
+}
+@media (max-width: 820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.has-dealer .seat-name { font-size: 11px !important; }
+}
+
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) > .seat-local-markers {
+  grid-template-columns: 26px minmax(0, 1fr) !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers > .seat-avatar {
+  position: relative !important;
+  grid-column: 1 !important;
+  grid-row: 1 / span 2 !important;
+  justify-self: center !important;
+  align-self: center !important;
+  width: 24px !important;
+  height: 24px !important;
+  transform: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers > .seat-action {
+  grid-column: 2 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers:not(:has(> .seat-avatar)) > .seat-action {
+  grid-column: 1 / -1 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers > .seat-wager {
+  grid-column: 2 !important;
+}
+
+@media (max-width: 820px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers .seat-wager .wager-stack { display: none !important; }
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-local-markers > .seat-wager { gap: 1px !important; padding-inline: 1px !important; }
 }

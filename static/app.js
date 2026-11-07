@@ -334,6 +334,335 @@
       .replace(/'/g, "&#39;");
   }
 
+  var avatarDataCache = Object.create(null);
+  var avatarCacheOrder = [];
+  var avatarCacheGeneration = 0;
+  var profilePhotoDraft = "";
+  var profilePhotoRemovePending = false;
+  var profilePhotoBusy = false;
+  var profilePhotoTriggerId = "";
+  var profilePhotoGeneration = 0;
+  var profileAvatarOverride = null;
+  var MAX_AVATAR_INPUT_BYTES = 12 * 1024 * 1024;
+  var MAX_AVATAR_OUTPUT_BYTES = 256 * 1024;
+  var MAX_AVATAR_SOURCE_PIXELS = 64 * 1000 * 1000;
+
+  function safeAvatarPath(value) {
+    if (typeof value !== "string" || !value) return "";
+    try {
+      var parsed = new URL(value, window.location.origin);
+      if (parsed.origin !== window.location.origin ||
+          !/^\/poker\/api\/players\/[A-Za-z0-9_-]+\/avatar$/.test(parsed.pathname)) return "";
+      return parsed.pathname + parsed.search;
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function clearAvatarCache() {
+    avatarCacheGeneration += 1;
+    avatarDataCache = Object.create(null);
+    avatarCacheOrder = [];
+    document.querySelectorAll("[data-avatar-url]").forEach(function (wrapper) {
+      wrapper.classList.remove("has-avatar");
+      var image = wrapper.querySelector(".avatar-image");
+      if (image) image.removeAttribute("src");
+    });
+  }
+
+  function rememberAvatarPath(path) {
+    var oldIndex = avatarCacheOrder.indexOf(path);
+    if (oldIndex >= 0) avatarCacheOrder.splice(oldIndex, 1);
+    avatarCacheOrder.push(path);
+    while (avatarCacheOrder.length > 36) {
+      var expired = avatarCacheOrder.shift();
+      delete avatarDataCache[expired];
+    }
+  }
+
+  function blobAsDataUrl(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(typeof reader.result === "string" ? reader.result : ""); };
+      reader.onerror = function () { reject(Error("The photo could not be read.")); };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function fetchAvatarData(value) {
+    var path = safeAvatarPath(value);
+    if (!path || !state.sessionProof) return Promise.resolve("");
+    var entry = avatarDataCache[path];
+    if (entry && entry.data) {
+      rememberAvatarPath(path);
+      return Promise.resolve(entry.data);
+    }
+    if (entry && entry.promise) return entry.promise;
+    if (entry && entry.retryAt > Date.now()) return Promise.resolve("");
+    if (!entry) entry = avatarDataCache[path] = { data: "", promise: null, retryAt: 0 };
+    var proof = state.sessionProof;
+    var generation = avatarCacheGeneration;
+    entry.promise = fetch(path, {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "Accept": "image/jpeg,image/png", "X-SitNgo-Session": proof }
+    }).then(function (response) {
+      if (!response.ok) throw Error("Avatar request failed.");
+      var contentType = String(response.headers.get("Content-Type") || "").split(";")[0].toLowerCase();
+      if (contentType !== "image/jpeg" && contentType !== "image/png") throw Error("Unsupported avatar image.");
+      return response.blob();
+    }).then(function (blob) {
+      if (blob.size > MAX_AVATAR_OUTPUT_BYTES) throw Error("Avatar image is too large.");
+      return blobAsDataUrl(blob);
+    }).then(function (dataUrl) {
+      if (proof !== state.sessionProof || generation !== avatarCacheGeneration) return "";
+      entry.data = dataUrl;
+      entry.retryAt = 0;
+      entry.promise = null;
+      rememberAvatarPath(path);
+      return dataUrl;
+    }).catch(function () {
+      entry.promise = null;
+      entry.retryAt = Date.now() + 30000;
+      return "";
+    });
+    return entry.promise;
+  }
+
+  function hydrateAvatarNodes(root) {
+    if (!root) return;
+    var nodes = [];
+    if (root.matches && root.matches("[data-avatar-url]")) nodes.push(root);
+    if (root.querySelectorAll) nodes = nodes.concat(Array.prototype.slice.call(root.querySelectorAll("[data-avatar-url]")));
+    nodes.forEach(function (wrapper) {
+      if (wrapper.getAttribute("data-avatar-local") === "true") return;
+      var url = wrapper.getAttribute("data-avatar-url") || "";
+      var image = wrapper.querySelector(".avatar-image");
+      if (!url || !image) return;
+      image.onload = function () { wrapper.classList.add("has-avatar"); };
+      image.onerror = function () {
+        wrapper.classList.remove("has-avatar");
+        image.removeAttribute("src");
+      };
+      fetchAvatarData(url).then(function (dataUrl) {
+        if (dataUrl && wrapper.isConnected && wrapper.getAttribute("data-avatar-url") === url && image.getAttribute("src") !== dataUrl) {
+          image.src = dataUrl;
+        }
+      });
+    });
+  }
+
+  function avatarMarkup(url, name, className) {
+    var initial = String(name || "").trim().charAt(0).toUpperCase() || "♠";
+    return '<span class="' + className + '" data-avatar-url="' + esc(url || "") + '" aria-hidden="true">' +
+      '<span class="avatar-fallback-text">' + esc(initial) + '</span><img class="avatar-image" alt=""></span>';
+  }
+
+  function renderIdentityAvatar() {
+    var wrapper = byId("identity-avatar");
+    if (!wrapper) return;
+    var initial = state.player && state.player.name ? state.player.name.charAt(0).toUpperCase() : "♠";
+    var fallback = wrapper.querySelector(".avatar-fallback-text");
+    var image = wrapper.querySelector(".avatar-image");
+    wrapper.setAttribute("data-avatar-url", String(state.player && state.player.avatar_url || ""));
+    wrapper.classList.remove("has-avatar");
+    if (fallback) fallback.textContent = initial;
+    if (image) image.removeAttribute("src");
+    hydrateAvatarNodes(wrapper);
+  }
+
+  function setProfilePhotoPreview(value, localData) {
+    var wrapper = byId("profile-photo-preview");
+    if (!wrapper) return;
+    var fallback = wrapper.querySelector(".avatar-fallback-text");
+    var image = wrapper.querySelector(".avatar-image");
+    var initial = state.player && state.player.name ? state.player.name.charAt(0).toUpperCase() : "♠";
+    wrapper.classList.remove("has-avatar");
+    wrapper.removeAttribute("data-avatar-local");
+    wrapper.setAttribute("data-avatar-url", localData ? "" : String(value || ""));
+    if (fallback) fallback.textContent = initial;
+    if (image) {
+      image.onload = function () { wrapper.classList.add("has-avatar"); };
+      image.onerror = function () { wrapper.classList.remove("has-avatar"); image.removeAttribute("src"); };
+      image.removeAttribute("src");
+      if (localData && value) {
+        wrapper.setAttribute("data-avatar-local", "true");
+        image.src = value;
+      }
+    }
+    if (!localData) hydrateAvatarNodes(wrapper);
+  }
+
+  function setProfilePhotoError(message) {
+    var node = byId("profile-photo-error");
+    node.textContent = message || "";
+    node.hidden = !message;
+  }
+
+  function updateProfilePhotoButtons() {
+    var savedUrl = String(state.player && state.player.avatar_url || "");
+    byId("profile-photo-save").disabled = profilePhotoBusy || (!profilePhotoDraft && !profilePhotoRemovePending);
+    byId("profile-photo-save").setAttribute("aria-busy", String(profilePhotoBusy));
+    byId("profile-photo-choose").disabled = profilePhotoBusy;
+    byId("profile-photo-file").disabled = profilePhotoBusy;
+    byId("profile-photo-remove").disabled = profilePhotoBusy || (!savedUrl && !profilePhotoDraft);
+  }
+
+  function invalidateProfilePhotoWork() {
+    profilePhotoGeneration += 1;
+    profilePhotoDraft = "";
+    profilePhotoRemovePending = false;
+    profilePhotoBusy = false;
+    var file = byId("profile-photo-file");
+    if (file) file.value = "";
+  }
+
+  function openProfilePhotoDialog(event) {
+    if (!state.player || state.isAdmin) return;
+    invalidateProfilePhotoWork();
+    profilePhotoTriggerId = event && event.currentTarget ? event.currentTarget.id : "profile-photo-button";
+    profilePhotoDraft = "";
+    profilePhotoRemovePending = false;
+    profilePhotoBusy = false;
+    byId("profile-photo-file").value = "";
+    byId("profile-photo-status").textContent = "";
+    setProfilePhotoError("");
+    setProfilePhotoPreview(String(state.player.avatar_url || ""), false);
+    updateProfilePhotoButtons();
+    var dialog = byId("profile-photo-dialog");
+    if (!dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    }
+  }
+
+  function closeProfilePhotoDialog(restoreFocus) {
+    invalidateProfilePhotoWork();
+    var dialog = byId("profile-photo-dialog");
+    if (dialog && dialog.open) dialog.close();
+    byId("profile-photo-status").textContent = "";
+    setProfilePhotoError("");
+    if (restoreFocus) focusTableControl(profilePhotoTriggerId || "profile-photo-button");
+    profilePhotoTriggerId = "";
+  }
+
+  function readImageDimensions(file) {
+    return file.slice(0, Math.min(file.size, 1024 * 1024)).arrayBuffer().then(function (buffer) {
+      var bytes = new Uint8Array(buffer);
+      if (bytes.length >= 24 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) {
+        return { type: "image/png", width: bytes[16] * 16777216 + bytes[17] * 65536 + bytes[18] * 256 + bytes[19],
+          height: bytes[20] * 16777216 + bytes[21] * 65536 + bytes[22] * 256 + bytes[23] };
+      }
+      if (bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216) {
+        var position = 2;
+        while (position + 4 < bytes.length) {
+          while (position < bytes.length && bytes[position] !== 255) position += 1;
+          while (position < bytes.length && bytes[position] === 255) position += 1;
+          var marker = bytes[position++];
+          if (marker === 217 || marker === 218) break;
+          if (marker === 0 || marker === 1 || (marker >= 208 && marker <= 215)) continue;
+          if (position + 1 >= bytes.length) break;
+          var length = bytes[position] * 256 + bytes[position + 1];
+          if (length < 2 || position + length > bytes.length) break;
+          if ([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207].indexOf(marker) >= 0) {
+            return { type: "image/jpeg", height: bytes[position + 3] * 256 + bytes[position + 4],
+              width: bytes[position + 5] * 256 + bytes[position + 6] };
+          }
+          position += length;
+        }
+      }
+      throw Error("That file is not a readable JPEG or PNG image.");
+    });
+  }
+
+  function loadImageForAvatar(file, dimensions) {
+    if (window.createImageBitmap) {
+      var scale = Math.min(1, 1200 / Math.max(dimensions.width, dimensions.height));
+      return createImageBitmap(file, { resizeWidth: Math.max(1, Math.round(dimensions.width * scale)),
+        resizeHeight: Math.max(1, Math.round(dimensions.height * scale)), resizeQuality: "high" });
+    }
+    if (dimensions.width * dimensions.height > 24 * 1000 * 1000) {
+      return Promise.reject(Error("This browser cannot resize a photo of that size. Choose a smaller image."));
+    }
+    return blobAsDataUrl(file).then(function (dataUrl) {
+      return new Promise(function (resolve, reject) {
+        var image = new Image();
+        image.onload = function () { resolve(image); };
+        image.onerror = function () { reject(Error("The photo could not be decoded.")); };
+        image.src = dataUrl;
+      });
+    });
+  }
+
+  function canvasBlob(canvas, quality) {
+    return new Promise(function (resolve) {
+      canvas.toBlob(resolve, "image/jpeg", quality);
+    });
+  }
+
+  async function cropAvatarFile(file) {
+    if (!file || !/^image\/(jpeg|png)$/i.test(file.type || "")) throw Error("Choose a JPEG or PNG image.");
+    if (file.size <= 0 || file.size > MAX_AVATAR_INPUT_BYTES) throw Error("Choose an image smaller than 12 MB.");
+    var dimensions = await readImageDimensions(file);
+    if (dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 20000 || dimensions.height > 20000 ||
+        dimensions.width * dimensions.height > MAX_AVATAR_SOURCE_PIXELS) {
+      throw Error("This photo is too large to resize safely. Choose a smaller image.");
+    }
+    if ((file.type || "").toLowerCase() !== dimensions.type) throw Error("The file contents do not match its image type.");
+    var source = await loadImageForAvatar(file, dimensions);
+    var canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    var context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw Error("Photo editing is unavailable in this browser.");
+    context.fillStyle = "#17251e";
+    context.fillRect(0, 0, 256, 256);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    var side = Math.min(source.width, source.height);
+    context.drawImage(source, (source.width - side) / 2, (source.height - side) / 2, side, side, 0, 0, 256, 256);
+    if (source.close) source.close();
+    var qualities = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32];
+    for (var i = 0; i < qualities.length; i += 1) {
+      var blob = await canvasBlob(canvas, qualities[i]);
+      if (blob && blob.size <= MAX_AVATAR_OUTPUT_BYTES) return blobAsDataUrl(blob);
+    }
+    throw Error("This photo could not be compressed below 256 KB. Choose another image.");
+  }
+
+  async function saveProfilePhoto() {
+    if (profilePhotoBusy || (!profilePhotoDraft && !profilePhotoRemovePending)) return;
+    var generation = profilePhotoGeneration;
+    var playerId = String(state.player && state.player.id || "");
+    profilePhotoBusy = true;
+    setProfilePhotoError("");
+    byId("profile-photo-status").textContent = "Saving profile photo…";
+    updateProfilePhotoButtons();
+    try {
+      var data = await mutate("/profile/avatar", { image_data: profilePhotoRemovePending ? "" : profilePhotoDraft });
+      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) {
+        refreshAll(true);
+        return;
+      }
+      if (!data.player) throw Error("The saved profile could not be loaded. Try again.");
+      state.player = data.player;
+      profileAvatarOverride = { playerId: String(data.player.id || ""), url: String(data.player.avatar_url || ""), expiresAt: Date.now() + 20000 };
+      clearAvatarCache();
+      renderIdentityAvatar();
+      if (byId("welcome-name")) byId("welcome-name").textContent = state.player.name || "";
+      refreshAll(true);
+      profilePhotoBusy = false;
+      closeProfilePhotoDialog(true);
+    } catch (err) {
+      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) return;
+      profilePhotoBusy = false;
+      byId("profile-photo-status").textContent = "";
+      setProfilePhotoError(err.message || "Could not save the profile photo. Try again.");
+      updateProfilePhotoButtons();
+    }
+  }
+
   function reactionFavoritesKey(player) {
     var id = String(player && player.id || "");
     return id ? REACTION_FAVORITES_STORAGE_PREFIX + id : "";
@@ -1045,7 +1374,10 @@
     clearChat();
     state.sitOutRequestId += 1;
     state.sitOutPending = false;
+    closeProfilePhotoDialog(false);
+    clearAvatarCache();
     state.player = null;
+    renderIdentityAvatar();
     state.reactionFavorites = DEFAULT_REACTION_FAVORITES.slice();
     resetReactionStream();
     state.isAdmin = false;
@@ -2473,7 +2805,7 @@
       if (cards.length) {
         cardRowClass += exposed ? " is-exposed" : " is-viewer-cards";
         cardContents = cards.map(function (card) { return playingCardHTML(card, true); }).join("");
-      } else if (currentHand && !folded && !eliminated && (stack > 0 || allIn)) {
+      } else if (currentHand && !isMe && seat.in_hand === true && !folded && !eliminated) {
         cardContents = hiddenCardHTML(true, false) + hiddenCardHTML(true, false);
       } else {
         cardRowClass += " is-empty";
@@ -2486,6 +2818,12 @@
         (eliminated ? '<span class="seat-label eliminated-label">OUT</span>' : '');
       var tagsMarkup = '<div class="seat-tags"' + (tags ? '' : ' aria-hidden="true"') + '>' + tags + '</div>';
       var seatName = String(seat.name || (bot ? "Test bot" : "Player"));
+      var seatAvatarUrl = Object.prototype.hasOwnProperty.call(seat, "avatar_url")
+        ? String(seat.avatar_url || "") : (isMe && state.player ? String(state.player.avatar_url || "") : "");
+      if (isMe && profileAvatarOverride && profileAvatarOverride.playerId === id && Date.now() < profileAvatarOverride.expiresAt) {
+        seatAvatarUrl = profileAvatarOverride.url;
+      }
+      var seatAvatar = avatarMarkup(seatAvatarUrl, seatName, "seat-avatar");
       var dealerChip = dealer
         ? '<span class="dealer-marker" data-marker-seat="' + esc(seatNo) + '" aria-label="Dealer button">D</span>'
         : "";
@@ -2510,7 +2848,7 @@
         markerHtml = '<span class="seat-hand-strength" data-hand-strength="' + esc(id) +
           '" aria-label="' + esc(seatName + ": " + shownRank) + '"><span>' + esc(shownRank) + '</span></span>';
       }
-      var markerLane = '<div class="seat-local-markers"' + (markerHtml ? '' : ' aria-hidden="true"') + '>' + markerHtml + '</div>';
+      var markerLane = '<div class="seat-local-markers">' + seatAvatar + markerHtml + '</div>';
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         '<div class="seat-top"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span></div>' + dealerChip +
         tagsMarkup +
@@ -2525,6 +2863,7 @@
     var restoreChipToggleFocus = Boolean(document.activeElement && document.activeElement.matches &&
       document.activeElement.matches("[data-chip-display-toggle]"));
     grid.innerHTML = html;
+    hydrateAvatarNodes(grid);
     if (restoreChipToggleFocus) {
       var replacementToggle = grid.querySelector("[data-chip-display-toggle]");
       if (replacementToggle) replacementToggle.focus({ preventScroll: true });
@@ -4067,11 +4406,24 @@
     var ownSeat = seats.find(function (seat) {
       return String(seat.id || seat.player_id || "") === playerId;
     }) || null;
+    if (ownSeat && state.player && Object.prototype.hasOwnProperty.call(ownSeat, "avatar_url")) {
+      var snapshotAvatarUrl = String(ownSeat.avatar_url || "");
+      if (profileAvatarOverride && profileAvatarOverride.playerId === playerId) {
+        if (snapshotAvatarUrl === profileAvatarOverride.url) profileAvatarOverride = null;
+        else if (Date.now() < profileAvatarOverride.expiresAt) snapshotAvatarUrl = profileAvatarOverride.url;
+        else profileAvatarOverride = null;
+      }
+      if (String(state.player.avatar_url || "") !== snapshotAvatarUrl) {
+        state.player.avatar_url = snapshotAvatarUrl;
+        renderIdentityAvatar();
+      }
+    }
     var seated = Boolean(viewer.seated || ownSeat);
     var host = String(view.host_id || "") === playerId;
     byId("cancel-button").hidden = !(host && status === "lobby");
     byId("end-game-button").hidden = !(host && status === "playing");
     byId("history-button").hidden = state.isAdmin;
+    byId("profile-photo-menu-button").hidden = state.isAdmin;
     byId("table-logout-button").hidden = state.isAdmin;
     byId("reaction-settings-button").hidden = state.isAdmin;
     var menu = byId("table-menu");
@@ -4098,6 +4450,8 @@
     var previousPlayerId = String(state.player && state.player.id || "");
     var nextPlayerId = String(player && player.id || "");
     if (previousPlayerId !== nextPlayerId) {
+      closeProfilePhotoDialog(false);
+      clearAvatarCache();
       resetReactionStream();
       closeLastHandDialog(false);
       clearChat();
@@ -4117,6 +4471,8 @@
     byId("app-panel").hidden = state.isAdmin;
     byId("admin-panel").hidden = !state.isAdmin;
     byId("identity").hidden = false;
+    byId("profile-photo-button").hidden = state.isAdmin;
+    byId("profile-photo-menu-button").hidden = state.isAdmin;
     byId("lobby-history-button").hidden = state.isAdmin;
     byId("logout-button").hidden = state.isAdmin;
     byId("admin-logout-button").hidden = !state.isAdmin;
@@ -4125,7 +4481,7 @@
     byId("reaction-settings-button").hidden = state.isAdmin;
     document.body.classList.toggle("admin-active", state.isAdmin);
     byId("welcome-name").textContent = state.player ? state.player.name : "";
-    byId("identity-avatar").textContent = state.player && state.player.name ? state.player.name.charAt(0).toUpperCase() : "♠";
+    renderIdentityAvatar();
     clearNotice();
     loadGlobalConfig().catch(function () {});
     if (state.isAdmin) {
@@ -4680,6 +5036,56 @@
   }
   byId("history-button").addEventListener("click", openHistoryDialog);
   byId("lobby-history-button").addEventListener("click", openHistoryDialog);
+  byId("profile-photo-button").addEventListener("click", openProfilePhotoDialog);
+  byId("profile-photo-menu-button").addEventListener("click", openProfilePhotoDialog);
+  byId("profile-photo-close").addEventListener("click", function () { closeProfilePhotoDialog(true); });
+  byId("profile-photo-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeProfilePhotoDialog(true);
+  });
+  byId("profile-photo-dialog").addEventListener("click", function (event) {
+    if (isDialogBackdropClick(byId("profile-photo-dialog"), event)) closeProfilePhotoDialog(true);
+  });
+  byId("profile-photo-choose").addEventListener("click", function () { byId("profile-photo-file").click(); });
+  byId("profile-photo-file").addEventListener("change", async function () {
+    var file = byId("profile-photo-file").files && byId("profile-photo-file").files[0];
+    if (!file) return;
+    setProfilePhotoError("");
+    profilePhotoBusy = true;
+    byId("profile-photo-status").textContent = "Preparing photo…";
+    updateProfilePhotoButtons();
+    var generation = profilePhotoGeneration;
+    var playerId = String(state.player && state.player.id || "");
+    try {
+      var preparedPhoto = await cropAvatarFile(file);
+      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "") || !byId("profile-photo-dialog").open) return;
+      profilePhotoDraft = preparedPhoto;
+      profilePhotoRemovePending = false;
+      setProfilePhotoPreview(profilePhotoDraft, true);
+      byId("profile-photo-status").textContent = "Photo ready to save.";
+    } catch (err) {
+      if (generation !== profilePhotoGeneration || playerId !== String(state.player && state.player.id || "")) return;
+      byId("profile-photo-status").textContent = "";
+      setProfilePhotoError(err.message || "Could not prepare that photo.");
+      byId("profile-photo-file").value = "";
+    } finally {
+      if (generation === profilePhotoGeneration && playerId === String(state.player && state.player.id || "")) {
+        profilePhotoBusy = false;
+        updateProfilePhotoButtons();
+      }
+    }
+  });
+  byId("profile-photo-remove").addEventListener("click", function () {
+    if (profilePhotoBusy) return;
+    profilePhotoDraft = "";
+    profilePhotoRemovePending = Boolean(state.player && state.player.avatar_url);
+    byId("profile-photo-file").value = "";
+    setProfilePhotoError("");
+    setProfilePhotoPreview("", false);
+    byId("profile-photo-status").textContent = profilePhotoRemovePending ? "Save changes to remove your photo." : "No saved photo to remove.";
+    updateProfilePhotoButtons();
+  });
+  byId("profile-photo-save").addEventListener("click", saveProfilePhoto);
   byId("history-close").addEventListener("click", function () {
     closeHistoryDialog(true);
   });

@@ -29,8 +29,9 @@
         <a class="room-link" href="/poker/security.html">Fair play</a>
         <span class="privacy-chip"><span class="privacy-dot"></span>Private room</span>
         <div id="identity" class="identity" hidden>
-          <span class="identity-avatar" id="identity-avatar" aria-hidden="true">♠</span>
+          <span class="identity-avatar" id="identity-avatar" aria-hidden="true"><span class="avatar-fallback-text">♠</span><img class="avatar-image" alt=""></span>
           <span id="welcome-name" class="welcome-name"></span>
+          <button id="profile-photo-button" class="button button-quiet button-small" type="button">Profile photo</button>
           <button id="lobby-history-button" class="button button-quiet button-small" type="button">My history</button>
           <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
         </div>
@@ -39,6 +40,27 @@
 
     <main>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <dialog id="profile-photo-dialog" class="history-dialog profile-photo-dialog" aria-labelledby="profile-photo-title">
+        <div class="section-heading">
+          <div><div class="panel-kicker">YOUR PROFILE</div><h2 id="profile-photo-title">Profile photo</h2></div>
+          <button id="profile-photo-close" type="button" class="button button-quiet button-small">Close</button>
+        </div>
+        <p class="muted">Choose a photo for your seat. It is centered and resized to a square before saving.</p>
+        <div class="profile-photo-content">
+          <span id="profile-photo-preview" class="profile-photo-preview" data-avatar-url="" aria-hidden="true"><span class="avatar-fallback-text">♠</span><img class="avatar-image" alt=""></span>
+          <div class="profile-photo-controls">
+            <button id="profile-photo-choose" type="button" class="button button-outline">Choose photo</button>
+            <input id="profile-photo-file" class="visually-hidden" type="file" accept="image/jpeg,image/png" aria-describedby="profile-photo-help profile-photo-error">
+            <p id="profile-photo-help" class="muted">JPEG or PNG, up to 12 MB. The saved image is a 256 × 256 JPEG up to 256 KB.</p>
+            <p id="profile-photo-error" class="profile-photo-error" role="alert" hidden></p>
+            <p id="profile-photo-status" class="profile-photo-status" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+        <div class="profile-photo-actions">
+          <button id="profile-photo-remove" type="button" class="button button-danger button-small">Remove photo</button>
+          <button id="profile-photo-save" type="button" class="button button-primary button-small" disabled>Save photo</button>
+        </div>
+      </dialog>
       <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title"><div class="section-heading"><div><div class="panel-kicker">PLAYER RECORD</div><h2 id="history-title">My history</h2></div><button type="button" class="button button-quiet button-small" id="history-close">Close</button></div><div id="history-content" aria-live="polite"></div></dialog>
 
 
@@ -182,6 +204,7 @@
                     <button id="reaction-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="reaction-settings-dialog" aria-expanded="false">Reaction shortcuts</button>
                     <button id="sit-out-button" class="button button-quiet button-small" type="button" aria-pressed="false" hidden>Sit out</button>
                     <button id="fullscreen-button" class="button button-quiet button-small" type="button">Full screen</button>
+                    <button id="profile-photo-menu-button" class="button button-quiet button-small" type="button">Profile photo</button>
                     <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
                     <button id="table-logout-button" class="button button-quiet button-small" type="button">Log out</button>
                     <button id="cancel-button" class="button button-quiet button-small" type="button" hidden>Cancel lobby</button>

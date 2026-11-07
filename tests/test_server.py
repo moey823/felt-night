@@ -1,9 +1,11 @@
+import base64
 import contextlib
 import http.client
 import io
 import os
 import json
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -11,6 +13,7 @@ import threading
 import time
 import types
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +21,22 @@ import server
 
 
 TEST_ROOM_PASSWORD = "test-room-invite"
+
+
+def _test_png_data_uri(width=1, height=1):
+    def chunk(kind, payload):
+        checksum = zlib.crc32(kind + payload) & 0xffffffff
+        return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", checksum)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    pixels = b"".join(b"\x00" + bytes(width * 4) for _ in range(height))
+    image = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(pixels))
+        + chunk(b"IEND", b"")
+    )
+    return "data:image/png;base64," + base64.b64encode(image).decode("ascii")
 
 
 class RoomPasswordConfigTests(unittest.TestCase):
@@ -240,7 +259,7 @@ class ServerAuthTests(unittest.TestCase):
         self.temp.cleanup()
 
     def request(self, method, path, payload=None, cookie=None, proof=None, csrf=None,
-                origin=None, host=None):
+                origin=None, host=None, declared_length=None):
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {
             "Host": host or self.app.public_netloc,
@@ -248,7 +267,9 @@ class ServerAuthTests(unittest.TestCase):
         }
         if body is not None:
             headers["Content-Type"] = "application/json"
-            headers["Content-Length"] = str(len(body))
+            headers["Content-Length"] = str(
+                len(body) if declared_length is None else declared_length
+            )
         if cookie:
             headers["Cookie"] = cookie
         if proof:
@@ -340,6 +361,199 @@ class ServerAuthTests(unittest.TestCase):
             cookie=cookie, proof=proof, csrf=csrf,
         )
         return status, headers, body
+
+    def upload_avatar(self, cookie, proof, csrf, image_data):
+        return self.request(
+            "POST", "/poker/api/profile/avatar", {"image_data": image_data},
+            cookie=cookie, proof=proof, csrf=csrf,
+        )
+
+    def test_avatar_upload_get_persistence_and_remove(self):
+        cookie, proof, csrf, player = self.login("Avatar Player")
+        self.assertEqual(player["avatar_url"], "")
+        data_uri = _test_png_data_uri()
+        image_bytes = base64.b64decode(data_uri.split(",", 1)[1])
+
+        status, _, body = self.request(
+            "POST", "/poker/api/profile/avatar", {"image_data": data_uri},
+            cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"]["code"], "csrf_failed")
+
+        status, _, body = self.upload_avatar(cookie, proof, csrf, data_uri)
+        self.assertEqual(status, 200, body)
+        avatar_url = body["player"]["avatar_url"]
+        self.assertRegex(avatar_url, r"^/poker/api/players/[a-f0-9]{32}/avatar\?v=[a-f0-9]{64}$")
+
+        status, _, body = self.request("GET", avatar_url)
+        self.assertEqual(status, 401)
+        status, _, body = self.request("GET", avatar_url, cookie=cookie)
+        self.assertEqual(status, 401)
+        status, headers, served = self.request(
+            "GET", avatar_url, cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(served, image_bytes)
+
+        avatar_id = avatar_url.split("/players/", 1)[1].split("/", 1)[0]
+        status, _, bad_version = self.request(
+            "GET", "/poker/api/players/" + avatar_id + "/avatar?v=bad",
+            cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 400)
+        status, _, stale_version = self.request(
+            "GET", "/poker/api/players/" + avatar_id + "/avatar?v=" + ("0" * 64),
+            cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 404)
+
+        reopened_store = server.Store(str(self.data_dir), self.password)
+        stored = reopened_store.get_player_avatar(player["id"])
+        self.assertEqual(stored["content_type"], "image/png")
+        self.assertEqual(stored["image_data"], image_bytes)
+
+        status, _, me = self.request("GET", "/poker/api/me", cookie=cookie, proof=proof)
+        self.assertEqual(status, 200)
+        self.assertEqual(me["player"]["avatar_url"], avatar_url)
+
+        status, _, removed = self.upload_avatar(cookie, proof, csrf, "")
+        self.assertEqual(status, 200, removed)
+        self.assertEqual(removed["player"]["avatar_url"], "")
+        status, _, missing = self.request(
+            "GET", avatar_url, cookie=cookie, proof=proof,
+        )
+        self.assertEqual(status, 404)
+
+    def test_avatar_validation_rejects_bad_types_signatures_dimensions_and_sizes(self):
+        cookie, proof, csrf, player = self.login("Avatar Validation")
+        invalid_values = (
+            "https://example.com/avatar.png",
+            "data:image/svg+xml;base64,PHN2Zy8+",
+            "data:image/png;base64," + base64.b64encode(b"not a png").decode("ascii"),
+            "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xffnot a jpeg\xff\xd9").decode("ascii"),
+            _test_png_data_uri(width=1025),
+        )
+        for image_data in invalid_values:
+            with self.subTest(image_data=image_data[:40]):
+                status, _, body = self.upload_avatar(cookie, proof, csrf, image_data)
+                self.assertEqual(status, 400, body)
+                self.assertEqual(body["error"]["code"], "invalid_avatar")
+
+        oversized_decoded = base64.b64encode(
+            b"x" * (server.MAX_AVATAR_BYTES + 1)
+        ).decode("ascii")
+        status, _, body = self.upload_avatar(
+            cookie, proof, csrf, "data:image/png;base64," + oversized_decoded,
+        )
+        self.assertEqual(status, 400, body)
+        self.assertEqual(body["error"]["code"], "invalid_avatar")
+
+        status, _, normal_too_large = self.request(
+            "POST", "/poker/api/logout", {"padding": "x"},
+            cookie=cookie, proof=proof, csrf=csrf,
+            declared_length=server.MAX_BODY + 1,
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(normal_too_large["error"]["code"], "body_too_large")
+
+        status, _, avatar_too_large = self.request(
+            "POST", "/poker/api/profile/avatar", {"image_data": "x"},
+            cookie=cookie, proof=proof, csrf=csrf,
+            declared_length=server.MAX_AVATAR_BODY + 1,
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(avatar_too_large["error"]["code"], "body_too_large")
+
+        status, _, me = self.request("GET", "/poker/api/me", cookie=cookie, proof=proof)
+        self.assertEqual(me["player"]["avatar_url"], "")
+
+    def test_avatar_urls_follow_players_in_table_views_without_revealing_opponent_cards(self):
+        host_cookie, host_proof, host_csrf, host = self.login("Avatar Host")
+        guest_cookie, guest_proof, guest_csrf, guest = self.login("Avatar Guest")
+        status, _, uploaded = self.upload_avatar(
+            host_cookie, host_proof, host_csrf, _test_png_data_uri(),
+        )
+        self.assertEqual(status, 200, uploaded)
+        host_avatar_url = uploaded["player"]["avatar_url"]
+
+        status, _, created = self.create_table(
+            host_cookie, host_proof, host_csrf, name="Avatar seats",
+        )
+        self.assertEqual(status, 201, created)
+        table_id = created["table"]["id"]
+        self.assertEqual(
+            next(seat for seat in created["table"]["seats"] if seat["id"] == host["id"])["avatar_url"],
+            host_avatar_url,
+        )
+
+        status, _, joined = self.request(
+            "POST", "/poker/api/tables/" + table_id + "/join", {},
+            cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
+        )
+        self.assertEqual(status, 200, joined)
+        seats = joined["table"]["seats"]
+        self.assertEqual(
+            next(seat for seat in seats if seat["id"] == host["id"])["avatar_url"],
+            host_avatar_url,
+        )
+        self.assertEqual(
+            next(seat for seat in seats if seat["id"] == guest["id"])["avatar_url"],
+            "",
+        )
+        self.assertTrue(all("avatar_url" in seat for seat in seats))
+        self.assertTrue(all("image_data" not in seat and "avatar_data" not in seat for seat in seats))
+
+        table_path = "/poker/api/tables/" + table_id
+        status, _, started = self.request(
+            "POST", table_path + "/start", {},
+            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
+        )
+        self.assertEqual(status, 200, started)
+        status, _, polled = self.request(
+            "GET", table_path, cookie=guest_cookie, proof=guest_proof,
+        )
+        self.assertEqual(status, 200, polled)
+        table = polled["table"]
+        self.assertEqual(
+            next(seat for seat in table["seats"] if seat["id"] == host["id"])["avatar_url"],
+            host_avatar_url,
+        )
+        own_seat = next(seat for seat in table["seats"] if seat["id"] == guest["id"])
+        opponent_seat = next(seat for seat in table["seats"] if seat["id"] == host["id"])
+        self.assertIn("cards", own_seat)
+        self.assertNotIn("cards", opponent_seat)
+
+    def test_existing_database_migrates_avatar_table_without_losing_players(self):
+        with tempfile.TemporaryDirectory(prefix="sitngo-avatar-migration-") as directory:
+            old_store = server.Store(directory, TEST_ROOM_PASSWORD)
+            player_id = "a" * 32
+            conn = old_store.connect()
+            try:
+                conn.execute(
+                    "INSERT INTO players(id,name,created) VALUES(?,?,?)",
+                    (player_id, "Existing", time.time()),
+                )
+                conn.execute("DROP TABLE player_avatars")
+            finally:
+                conn.close()
+
+            migrated_store = server.Store(directory, TEST_ROOM_PASSWORD)
+            conn = migrated_store.connect()
+            try:
+                player = conn.execute(
+                    "SELECT id,name FROM players WHERE id=?", (player_id,),
+                ).fetchone()
+                avatar_table = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='player_avatars'",
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertEqual(player["name"], "Existing")
+            self.assertIsNotNone(avatar_table)
 
     def test_room_assets_and_security_page_are_served_with_safe_content_types(self):
         for path, expected_type in (

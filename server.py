@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import copy
 import hashlib
 import hmac
@@ -19,6 +21,7 @@ sys.dont_write_bytecode = True
 import threading
 import time
 import uuid
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -38,6 +41,10 @@ SESSION_TTL = 30 * 24 * 60 * 60
 LOGIN_WINDOW = 15 * 60
 LOGIN_LIMIT = 5
 MAX_BODY = 16 * 1024
+MAX_AVATAR_BYTES = 256 * 1024
+MAX_AVATAR_BASE64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
+MAX_AVATAR_BODY = MAX_AVATAR_BASE64 + 128
+MAX_AVATAR_DIMENSION = 1024
 CHAT_MAX_LENGTH = 500
 CHAT_READ_LIMIT = 50
 CHAT_TABLE_LIMIT = 100
@@ -81,6 +88,151 @@ class AppError(Exception):
         self.status = status
         self.code = code
         self.message = message
+
+
+def _invalid_avatar():
+    raise AppError(
+        400, "invalid_avatar",
+        "Choose a PNG or JPEG image no larger than 256 KiB and 1024 pixels per side.",
+    )
+
+
+def _check_avatar_dimensions(width, height):
+    if (width < 1 or height < 1 or width > MAX_AVATAR_DIMENSION or
+            height > MAX_AVATAR_DIMENSION or width * height > MAX_AVATAR_DIMENSION ** 2):
+        _invalid_avatar()
+    return width, height
+
+
+def _png_avatar_dimensions(data):
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        _invalid_avatar()
+    position = 8
+    width = height = None
+    saw_idat = False
+    while position < len(data):
+        if position + 12 > len(data):
+            _invalid_avatar()
+        chunk_length = int.from_bytes(data[position:position + 4], "big")
+        chunk_end = position + 12 + chunk_length
+        if chunk_end > len(data):
+            _invalid_avatar()
+        chunk_type = data[position + 4:position + 8]
+        crc_start = position + 8 + chunk_length
+        expected_crc = int.from_bytes(data[crc_start:chunk_end], "big")
+        actual_crc = zlib.crc32(data[position + 4:crc_start]) & 0xffffffff
+        if actual_crc != expected_crc:
+            _invalid_avatar()
+
+        if width is None:
+            if chunk_type != b"IHDR" or chunk_length != 13:
+                _invalid_avatar()
+            chunk_data = data[position + 8:crc_start]
+            width = int.from_bytes(chunk_data[0:4], "big")
+            height = int.from_bytes(chunk_data[4:8], "big")
+            bit_depth = chunk_data[8]
+            color_type = chunk_data[9]
+            allowed_depths = {
+                0: (1, 2, 4, 8, 16),
+                2: (8, 16),
+                3: (1, 2, 4, 8),
+                4: (8, 16),
+                6: (8, 16),
+            }
+            if (color_type not in allowed_depths or
+                    bit_depth not in allowed_depths[color_type] or
+                    chunk_data[10] != 0 or chunk_data[11] != 0 or
+                    chunk_data[12] not in (0, 1)):
+                _invalid_avatar()
+            _check_avatar_dimensions(width, height)
+        elif chunk_type == b"IHDR":
+            _invalid_avatar()
+
+        if chunk_type == b"IDAT":
+            saw_idat = True
+        if chunk_type == b"IEND":
+            if chunk_length != 0 or not saw_idat or chunk_end != len(data):
+                _invalid_avatar()
+            return _check_avatar_dimensions(width, height)
+        position = chunk_end
+    _invalid_avatar()
+
+
+def _jpeg_avatar_dimensions(data):
+    if (len(data) < 12 or not data.startswith(b"\xff\xd8\xff") or
+            not data.endswith(b"\xff\xd9")):
+        _invalid_avatar()
+    sof_markers = {
+        0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+        0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+    }
+    position = 2
+    dimensions = None
+    while position < len(data) - 2:
+        if data[position] != 0xff:
+            _invalid_avatar()
+        while position < len(data) and data[position] == 0xff:
+            position += 1
+        if position >= len(data) - 2:
+            _invalid_avatar()
+        marker = data[position]
+        position += 1
+        if marker == 0x00 or marker in (0xd8, 0xd9):
+            _invalid_avatar()
+        if marker == 0x01 or 0xd0 <= marker <= 0xd7:
+            continue
+        if position + 2 > len(data):
+            _invalid_avatar()
+        segment_length = int.from_bytes(data[position:position + 2], "big")
+        segment_end = position + segment_length
+        if segment_length < 2 or segment_end > len(data) - 2:
+            _invalid_avatar()
+        if marker in sof_markers:
+            if segment_length < 8:
+                _invalid_avatar()
+            height = int.from_bytes(data[position + 3:position + 5], "big")
+            width = int.from_bytes(data[position + 5:position + 7], "big")
+            dimensions = _check_avatar_dimensions(width, height)
+        if marker == 0xda:
+            if dimensions is None or segment_length < 6 or segment_end >= len(data) - 2:
+                _invalid_avatar()
+            return dimensions
+        position = segment_end
+    _invalid_avatar()
+
+
+def _decode_avatar_data_uri(value):
+    if value == "":
+        return None, None
+    if not isinstance(value, str):
+        _invalid_avatar()
+    prefixes = (
+        ("image/png", "data:image/png;base64,"),
+        ("image/jpeg", "data:image/jpeg;base64,"),
+    )
+    content_type = None
+    encoded = None
+    for candidate_type, prefix in prefixes:
+        if value.startswith(prefix):
+            content_type = candidate_type
+            encoded = value[len(prefix):]
+            break
+    if content_type is None or not encoded or len(encoded) > MAX_AVATAR_BASE64:
+        _invalid_avatar()
+    if len(encoded) % 4:
+        _invalid_avatar()
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        _invalid_avatar()
+    if (not data or len(data) > MAX_AVATAR_BYTES or
+            base64.b64encode(data).decode("ascii") != encoded):
+        _invalid_avatar()
+    if content_type == "image/png":
+        _png_avatar_dimensions(data)
+    else:
+        _jpeg_avatar_dimensions(data)
+    return content_type, data
 
 
 def _parse_origin(value):
@@ -273,6 +425,13 @@ class Store:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     created REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS player_avatars (
+                    player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+                    content_type TEXT NOT NULL CHECK(content_type IN ('image/png','image/jpeg')),
+                    image_data BLOB NOT NULL CHECK(length(image_data) BETWEEN 1 AND 262144),
+                    sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+                    updated REAL NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS accounts (
                     username TEXT PRIMARY KEY,
@@ -489,6 +648,82 @@ class Store:
                 "needs_claim": not has_account,
                 "is_admin": is_admin,
             }
+        finally:
+            conn.close()
+
+    def avatar_urls(self, player_ids):
+        requested = [
+            player_id for player_id in player_ids
+            if isinstance(player_id, str)
+        ]
+        urls = {player_id: "" for player_id in requested}
+        valid_ids = [
+            player_id for player_id in dict.fromkeys(requested)
+            if re.fullmatch(r"[a-f0-9]{32}", player_id)
+        ]
+        if not valid_ids:
+            return urls
+        placeholders = ",".join("?" for _ in valid_ids)
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT player_id,sha256 FROM player_avatars WHERE player_id IN (%s)" % placeholders,
+                tuple(valid_ids),
+            ).fetchall()
+            for row in rows:
+                urls[row["player_id"]] = (
+                    "/poker/api/players/%s/avatar?v=%s" %
+                    (row["player_id"], row["sha256"])
+                )
+            return urls
+        finally:
+            conn.close()
+
+    def get_player_avatar(self, player_id):
+        conn = self.connect()
+        try:
+            row = conn.execute(
+                "SELECT content_type,image_data,sha256 FROM player_avatars WHERE player_id=?",
+                (player_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "content_type": row["content_type"],
+                "image_data": bytes(row["image_data"]),
+                "sha256": row["sha256"],
+            }
+        finally:
+            conn.close()
+
+    def set_player_avatar(self, player_id, content_type, image_data, now):
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM players WHERE id=?", (player_id,)).fetchone() is None:
+                raise AppError(404, "player_not_found", "Player not found.")
+            if image_data is None:
+                conn.execute("DELETE FROM player_avatars WHERE player_id=?", (player_id,))
+                avatar_url = ""
+            else:
+                digest = hashlib.sha256(image_data).hexdigest()
+                conn.execute(
+                    """INSERT INTO player_avatars(player_id,content_type,image_data,sha256,updated)
+                       VALUES(?,?,?,?,?)
+                       ON CONFLICT(player_id) DO UPDATE SET
+                           content_type=excluded.content_type,
+                           image_data=excluded.image_data,
+                           sha256=excluded.sha256,
+                           updated=excluded.updated""",
+                    (player_id, content_type, sqlite3.Binary(image_data), digest, now),
+                )
+                avatar_url = "/poker/api/players/%s/avatar?v=%s" % (player_id, digest)
+            conn.commit()
+            return avatar_url
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -1303,6 +1538,10 @@ class Handler(BaseHTTPRequestHandler):
         self.request_offset = 0
         self.request_hand_number = None
         self.reaction_after = None
+        self.avatar_version = None
+        avatar_route = re.fullmatch(
+            r"/poker/api/players/([a-f0-9]{32})/avatar", parsed.path,
+        )
         if parsed.query:
             page_route = self.command == "GET" and parsed.path in PAGE_ROUTES
             history_route = (
@@ -1317,7 +1556,9 @@ class Handler(BaseHTTPRequestHandler):
             last_hand_route = re.fullmatch(
                 r"/poker/api/tables/[a-f0-9]{32}/last-hand", parsed.path,
             )
-            if self.command != "GET" or not (page_route or history_route or reaction_route or last_hand_route):
+            if self.command != "GET" or not (
+                page_route or history_route or reaction_route or last_hand_route or avatar_route
+            ):
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
             if not page_route:
                 try:
@@ -1338,6 +1579,13 @@ class Handler(BaseHTTPRequestHandler):
                     if not re.fullmatch(r"[1-9][0-9]{0,8}", raw_number):
                         raise AppError(400, "invalid_url", "Invalid hand number.")
                     self.request_hand_number = int(raw_number)
+                elif avatar_route:
+                    if set(query) != {"v"} or len(query["v"]) != 1:
+                        raise AppError(400, "invalid_url", "Use one avatar version.")
+                    version = query["v"][0]
+                    if not re.fullmatch(r"[a-f0-9]{64}", version):
+                        raise AppError(400, "invalid_url", "Invalid avatar version.")
+                    self.avatar_version = version
                 else:
                     if set(query) != {"offset"} or len(query["offset"]) != 1:
                         raise AppError(400, "invalid_url", "Use one numeric history offset.")
@@ -1345,6 +1593,8 @@ class Handler(BaseHTTPRequestHandler):
                     if not re.fullmatch(r"[0-9]{1,9}", raw_offset):
                         raise AppError(400, "invalid_url", "Invalid history offset.")
                     self.request_offset = int(raw_offset)
+        elif avatar_route:
+            raise AppError(400, "invalid_url", "Avatar URLs require a version.")
         host = self.headers.get("Host", "").strip().lower()
         if host != self.app.public_netloc:
             raise AppError(421, "misdirected_request", "Request host is not configured.")
@@ -1421,12 +1671,28 @@ class Handler(BaseHTTPRequestHandler):
         if not received or not hmac.compare_digest(received, expected):
             raise AppError(403, "csrf_failed", "Security token expired. Refresh and try again.")
 
+    def _player_payload(self, player):
+        payload = dict(player)
+        player_id = payload.get("id")
+        payload["avatar_url"] = self.app.store.avatar_urls([player_id]).get(player_id, "")
+        return payload
+
+    def _public_table(self, state, viewer_id):
+        view = engine.public_view(state, viewer_id)
+        seats = view.get("seats", [])
+        avatar_urls = self.app.store.avatar_urls(
+            seat.get("id") for seat in seats
+        )
+        for seat in seats:
+            seat["avatar_url"] = avatar_urls.get(seat.get("id"), "")
+        return view
+
     def _require_origin(self):
         origin = self.headers.get("Origin", "")
         if origin != self.app.public_origin:
             raise AppError(403, "origin_rejected", "Request origin is not allowed.")
 
-    def _body(self):
+    def _body(self, max_size=MAX_BODY):
         transfer = self.headers.get("Transfer-Encoding")
         if transfer:
             raise AppError(400, "invalid_body", "Chunked request bodies are not accepted.")
@@ -1435,7 +1701,7 @@ class Handler(BaseHTTPRequestHandler):
             size = int(length) if length is not None else 0
         except ValueError:
             raise AppError(400, "invalid_body", "Invalid content length.")
-        if size < 0 or size > MAX_BODY:
+        if size < 0 or size > max_size:
             raise AppError(413, "body_too_large", "Request body is too large.")
         if size and self.headers.get_content_type() != "application/json":
             raise AppError(415, "content_type", "Use application/json.")
@@ -1493,7 +1759,7 @@ class Handler(BaseHTTPRequestHandler):
             "authenticated": True,
             "csrf": self.app.store.csrf_token(token),
             "session_proof": self.app.store.session_proof(token),
-            "player": player,
+            "player": self._player_payload(player),
         }
         headers = None
         if set_cookie:
@@ -1574,6 +1840,17 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 self._send(200, body, content_type, headers)
                 return
+            avatar_match = re.fullmatch(
+                r"/poker/api/players/([a-f0-9]{32})/avatar", path,
+            )
+            if avatar_match:
+                self._require_player(require_account=False)
+                avatar = self.app.store.get_player_avatar(avatar_match.group(1))
+                if (avatar is None or self.avatar_version is None or
+                        not hmac.compare_digest(avatar["sha256"], self.avatar_version)):
+                    raise AppError(404, "avatar_not_found", "Avatar not found.")
+                self._send(200, avatar["image_data"], avatar["content_type"])
+                return
             if path == "/poker/api/config":
                 self._require_player()
                 self._json(200, {"config": self.app.store.get_global_config()})
@@ -1592,7 +1869,7 @@ class Handler(BaseHTTPRequestHandler):
                     "authenticated": True,
                     "needs_claim": player.get("needs_claim", False),
                     "csrf": self.app.store.csrf_token(token),
-                    "player": player,
+                    "player": self._player_payload(player),
                 })
                 return
             if path == "/poker/api/admin/history":
@@ -1657,7 +1934,7 @@ class Handler(BaseHTTPRequestHandler):
                 player, _ = self._require_player()
                 table_id = match.group(1)
                 state = self.app.store.mutate_table(table_id, lambda value: value, time.time())
-                view = engine.public_view(state, player["id"])
+                view = self._public_table(state, player["id"])
                 view["reaction_cursor"] = self.app.store.list_table_reactions(
                     table_id, None, time.time(),
                 )["cursor"]
@@ -1677,7 +1954,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path = self._headers()
             self._require_origin()
-            body = self._body()
+            body = self._body(
+                MAX_AVATAR_BODY if path == "/poker/api/profile/avatar" else MAX_BODY
+            )
             now = time.time()
 
             if path == "/poker/api/register":
@@ -1777,6 +2056,20 @@ class Handler(BaseHTTPRequestHandler):
                             ("; Secure" if self.app.secure_cookie else "")})
                 return
 
+            if path == "/poker/api/profile/avatar":
+                if player.get("is_admin"):
+                    raise AppError(403, "admin_read_only", "Room admins cannot change player profiles.")
+                if not player.get("account"):
+                    raise AppError(403, "account_required", "Create or claim a personal account first.")
+                if set(body) != {"image_data"}:
+                    raise AppError(400, "invalid_avatar", "Choose a PNG or JPEG image.")
+                content_type, image_data = _decode_avatar_data_uri(body["image_data"])
+                self.app.store.set_player_avatar(
+                    player["id"], content_type, image_data, now,
+                )
+                self._json(200, {"player": self._player_payload(player)})
+                return
+
             if path == "/poker/api/admin/config":
                 if not player.get("is_admin"):
                     raise AppError(403, "admin_required", "Room admin access is required.")
@@ -1824,7 +2117,7 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     now,
                 )
-                self._json(200, {"table": engine.public_view(state, player["id"])})
+                self._json(200, {"table": self._public_table(state, player["id"])})
                 return
 
             if not player.get("account"):
@@ -1885,7 +2178,7 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     now,
                 )
-                self._json(200, {"table": engine.public_view(state, player["id"])})
+                self._json(200, {"table": self._public_table(state, player["id"])})
                 return
 
             if path == "/poker/api/tables":
@@ -1915,7 +2208,7 @@ class Handler(BaseHTTPRequestHandler):
                 if config["small_blind"] >= config["big_blind"] or config["big_blind"] > config["starting_stack"]:
                     raise AppError(400, "invalid_blinds", "Blinds must increase and the big blind must fit the starting stack.")
                 state = self.app.store.create_table(player, player["name"], name, config, now)
-                self._json(201, {"table": engine.public_view(state, player["id"])})
+                self._json(201, {"table": self._public_table(state, player["id"])})
                 return
 
             end_match = re.fullmatch(r"/poker/api/tables/([a-f0-9]{32})/end", path)
@@ -1934,7 +2227,7 @@ class Handler(BaseHTTPRequestHandler):
                     state = self.app.store.end_table_with_confirmation(
                         table_id, player["id"], body["confirmation_token"], now,
                     )
-                    self._json(200, {"table": engine.public_view(state, player["id"])})
+                    self._json(200, {"table": self._public_table(state, player["id"])})
                     return
                 raise AppError(400, "invalid_confirmation", "Confirm this table end again.")
 
@@ -2059,7 +2352,7 @@ class Handler(BaseHTTPRequestHandler):
                         expected_turn_version, now),
                     now,
                 )
-            self._json(200, {"table": engine.public_view(state, player["id"])})
+            self._json(200, {"table": self._public_table(state, player["id"])})
         except AppError as exc:
             self._error(exc.status, exc.code, exc.message)
         except engine.GameError as exc:
@@ -2101,7 +2394,7 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 now,
             )
-            self._json(200, {"table": engine.public_view(state, player["id"])})
+            self._json(200, {"table": self._public_table(state, player["id"])})
         except AppError as exc:
             self._error(exc.status, exc.code, exc.message)
         except engine.GameError as exc:

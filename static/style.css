@@ -346,7 +346,18 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .seat-cards { display: flex; align-items: center; gap: 2px; margin-top: 5px; }
 .mini-card { display: inline-grid; place-items: center; width: 21px; height: 28px; border: 1px solid rgba(21,32,25,.27); border-radius: 4px; background: #e8e9df; color: #26332a; font: 700 10px Georgia, serif; box-shadow: 0 2px 3px rgba(0,0,0,.19); }
 .mini-card.red, .playing-card.red { color: #b84540; }
-.mini-card.back { background: repeating-linear-gradient(45deg, #55795d, #55795d 2px, #385b47 2px, #385b47 4px); border-color: rgba(231,238,221,.36); color: transparent; }
+.mini-card.back {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(255, 222, 199, .72);
+  background:
+    repeating-linear-gradient(45deg, rgba(255, 225, 207, .8) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(-45deg, rgba(255, 225, 207, .62) 0 1px, transparent 1px 4px),
+    linear-gradient(145deg, #c74846, #841e28);
+  color: transparent;
+}
+.mini-card.back::before { content: "✦"; color: rgba(255, 231, 211, .94); font-size: .62em; text-shadow: 0 1px 2px rgba(58, 8, 13, .8); }
+.mini-card.back::after { content: ""; position: absolute; inset: 3px; border: 1px solid rgba(255, 224, 204, .66); border-radius: 2px; pointer-events: none; }
 .mini-card.folded-back { opacity: .44; }
 .position-chip { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: #e6d1a2; color: #302b1f; font-size: 7px; font-weight: 800; box-shadow: 0 1px 3px rgba(0,0,0,.2); flex: 0 0 auto; }
 .seat-tags { display: inline-flex; gap: 3px; align-items: center; }
