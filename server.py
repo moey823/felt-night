@@ -2006,9 +2006,14 @@ class Handler(BaseHTTPRequestHandler):
         avatar_full_urls = self.app.store.avatar_full_urls(
             seat.get("id") for seat in seats
         )
+        bot_avatars = {
+            seat["player_id"]: seat.get("bot_avatar", {})
+            for seat in state.get("seats", []) if seat.get("is_bot")
+        }
         for seat in seats:
-            seat["avatar_url"] = avatar_urls.get(seat.get("id"), "")
-            seat["avatar_full_url"] = avatar_full_urls.get(seat.get("id"), "")
+            avatar = bot_avatars.get(seat.get("id"), {})
+            seat["avatar_url"] = avatar.get("url", avatar_urls.get(seat.get("id"), ""))
+            seat["avatar_full_url"] = avatar.get("full_url", avatar_full_urls.get(seat.get("id"), ""))
         return view
 
     def _require_origin(self):
@@ -2795,8 +2800,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.app.store.has_player_avatar(player["id"]):
                     raise AppError(409, "profile_photo_required",
                                    "Add a profile photo before starting a game.")
-                state = self.app.store.mutate_table(
-                    table_id, lambda value: engine.start(value, player["id"], now), now)
+                def start_with_bot_avatars(value):
+                    started = engine.start(value, player["id"], now)
+                    bots = [seat for seat in started.get("seats", []) if seat.get("is_bot")]
+                    if bots:
+                        choices = self.app.store.avatar_preset_catalog()
+                        for seat in bots:
+                            preset = secrets.choice(choices)
+                            seat["bot_avatar"] = {
+                                "preset_id": preset["id"], "url": preset["url"],
+                                "full_url": preset["full_url"],
+                            }
+                    return started
+
+                state = self.app.store.mutate_table(table_id, start_with_bot_avatars, now)
             elif operation == "leave":
                 state = self.app.store.mutate_table(
                     table_id, lambda value: engine.leave(value, player["id"], now), now)

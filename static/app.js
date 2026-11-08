@@ -3701,8 +3701,9 @@
     byId("board-cards").innerHTML = slots.join("");
 
     var pot = number(view.pot, view.hand && view.hand.pot);
-    byId("pot-amount").textContent = tableChips(pot);
-    byId("pot-label").textContent = "Pot";
+    byId("pot-amount").textContent = tableChipValue(pot, view);
+    byId("pot-label").textContent = tableUsesBigBlinds(view) ? "Pot · BB" : "Pot";
+    byId("pot-display").setAttribute("aria-label", "Pot: " + tableChips(pot, view));
     var potDisplay = byId("pot-display");
     potDisplay.hidden = !(inProgress || view.status === "completed");
     potDisplay.classList.toggle("is-empty", pot <= 0);
@@ -4551,7 +4552,8 @@
           '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">¾ pot</button>' +
           '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">Pot</button>' +
         '</div>' +
-        '<input id="raise-amount" type="range" min="0" max="0" step="1" value="0" aria-describedby="raise-range">' +
+        '<div id="raise-preview" class="raise-preview"><span id="raise-preview-label">Raise to</span><strong id="raise-preview-amount">—</strong></div>' +
+        '<input id="raise-amount" type="range" min="0" max="0" step="1" value="0" aria-describedby="raise-preview raise-range">' +
         '<span class="raise-range" id="raise-range"></span>' +
       '</div>';
     controls.dataset.initialized = "true";
@@ -4598,6 +4600,11 @@
       max > currentBet && min <= max;
     var valid = rangeAvailable && Number.isInteger(target) && target >= min && target <= max;
     var button = byId("action-controls").querySelector('[data-action-slot="raise"]');
+    byId("raise-preview-label").textContent = actionName + " to" + (tableUsesBigBlinds(view) ? " · BB" : "");
+    byId("raise-preview-amount").textContent = valid ? tableChipValue(target, view) : "—";
+    byId("raise-preview").style.setProperty("--amount-length", String(byId("raise-preview-amount").textContent.length));
+    byId("raise-preview").setAttribute("aria-label", valid ? actionName + " to " + actionChips(target) + " total" : "No legal bet or raise is available");
+    byId("raise-preview").classList.toggle("is-unavailable", !valid);
     var actionAllowed = viewerCanAct(view) && rangeAvailable;
     input.setAttribute("aria-valuetext", !rangeAvailable
       ? "No legal bet or raise is available"
@@ -4680,6 +4687,9 @@
     }
     panel.setAttribute("aria-busy", String(Boolean(state.actionPending || state.actionSubmittedKey === currentKey)));
     if (!playing || !controlsVisible) {
+      byId("raise-preview-amount").textContent = "—";
+      byId("raise-preview").setAttribute("aria-label", "No legal bet or raise is available");
+      byId("raise-preview").classList.add("is-unavailable");
       setPrimaryActionContent(controls.querySelector('[data-action-slot="fold"]'), "Fold", null, view, "Fold unavailable");
       setPrimaryActionContent(controls.querySelector('[data-action-slot="call"]'), "Check", null, view, "Check unavailable");
       setPrimaryActionContent(controls.querySelector('[data-action-slot="raise"]'), "Bet", null, view, "Bet unavailable");

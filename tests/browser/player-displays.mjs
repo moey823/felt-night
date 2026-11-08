@@ -236,7 +236,19 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     if (actual.scrollY !== 0) errors.push('page scrollY ' + actual.scrollY);
     for (const key of Object.keys(actual.parts)) {
       if (['seats','primaryActions','cardSizes','avatars','chatTopline','chatPreview','chatQuickForm'].includes(key)) continue;
-      compareRect(baseline.parts[key],actual.parts[key],'parts.' + key);
+      if (key === 'board' || key === 'pot') {
+        // The pot deliberately grows. Keep its center and the board center stable;
+        // visible-surface containment below checks its new size against seats.
+        const a=baseline.parts[key],b=actual.parts[key];
+        if (Math.abs(a.left+a.width/2-b.left-b.width/2)>1 || Math.abs(a.top+a.height/2-b.top-b.height/2)>6)
+          errors.push(key+' center moved beyond pot sizing allowance');
+        continue;
+      }
+      if (key === 'boardCards') {
+        const expected={...baseline.parts[key]};
+        expected.top -= (actual.parts.board.height-baseline.parts.board.height)/2;
+        compareRect(expected,actual.parts[key],'parts.'+key);
+      } else compareRect(baseline.parts[key],actual.parts[key],'parts.' + key);
     }
     const beforeSeats = baseline.parts.seats || [], afterSeats = actual.parts.seats || [];
     if (beforeSeats.length !== afterSeats.length) errors.push('seat count ' + beforeSeats.length + ' -> ' + afterSeats.length);
@@ -268,6 +280,11 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
       const contains=(a,b)=>b.left>=a.left-1&&b.right<=a.right+1&&b.top>=a.top-1&&b.bottom<=a.bottom+1;
       const overlaps=(a,b)=>a.left<b.right-.5&&a.right>b.left+.5&&a.top<b.bottom-.5&&a.bottom>b.top+.5;
       const boardNode=document.querySelector('#felt .board-center'),board=boardNode&&visible(boardNode)?rect(boardNode):null;
+      const boardSurfaces=[...document.querySelectorAll('#board-cards .playing-card,#pot-display,#street-label')].filter(visible).map(node=>{
+        if(node.id!=='street-label')return rect(node);
+        const range=document.createRange();range.selectNodeContents(node);return range.getBoundingClientRect();
+      });
+      const overlapsBoard=box=>boardSurfaces.some(surface=>overlaps(surface,box));
       const seats=[...document.querySelectorAll('#seat-grid .seat-card[data-player-id]')];
       for(let i=0;i<seats.length;i++)for(let j=i+1;j<seats.length;j++)
         if(overlaps(rect(seats[i]),rect(seats[j])))errors.push('seat boxes overlap: '+seats[i].dataset.seatNo+' / '+seats[j].dataset.seatNo);
@@ -283,7 +300,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
             errors.push('seat '+seatNo+' child escaped '+overflow+': '+label+' seat='+JSON.stringify(outer)+
               ' child='+JSON.stringify(childBox)+' footer='+(footer?JSON.stringify(rect(footer)):'null'));
           }
-          if(board&&overlaps(board,childBox))errors.push('seat '+seatNo+' child overlaps board: '+label+' '+JSON.stringify({board,child:childBox}));
+          if(overlapsBoard(childBox))errors.push('seat '+seatNo+' child overlaps board: '+label+' '+JSON.stringify({board,child:childBox,surfaces:boardSurfaces.filter(surface=>overlaps(surface,childBox))}));
           for(const other of seats)if(other!==seat&&overlaps(rect(other),childBox))errors.push('seat '+seatNo+' child overlaps another seat: '+label);
           if(child.matches('.mini-card:not(.back)'))for(const text of child.querySelectorAll('.mini-rank,.mini-suit')){
             if(visible(text)&&!contains(childBox,rect(text)))errors.push('seat '+seatNo+' card text escaped its face: '+text.className);
@@ -311,7 +328,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
         if(cardRow&&visible(cardRow)){
           const rowBox=rect(cardRow);
           if(!contains(outer,rowBox))errors.push('seat '+seatNo+' card row escaped seat: '+JSON.stringify({seat:outer,row:rowBox}));
-          if(board&&overlaps(board,rowBox))errors.push('seat '+seatNo+' card row overlaps board: '+JSON.stringify({row:rowBox,board}));
+          if(overlapsBoard(rowBox))errors.push('seat '+seatNo+' card row overlaps board: '+JSON.stringify({row:rowBox,board}));
           for(const other of seats)if(other!==seat&&overlaps(rect(other),rowBox))
             errors.push('seat '+seatNo+' card row overlaps another seat: '+JSON.stringify({row:rowBox,other:rect(other)}));
           for(const selector of ['.seat-top','.seat-player-info','.seat-footer']){
@@ -324,7 +341,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
         if(avatar&&stack&&visible(avatar)&&visible(stack)&&overlaps(rect(avatar),rect(stack)))errors.push('seat '+seatNo+' avatar overlaps stack');
         if(avatar&&name&&visible(avatar)&&visible(name)&&overlaps(rect(avatar),rect(name)))errors.push('seat '+seatNo+' avatar overlaps name');
         const critical=[name,stack,seat.querySelector('.seat-status,.seat-detail-text')].filter(node=>node&&visible(node));
-        for(const text of critical)if(board&&overlaps(board,rect(text)))
+        for(const text of critical)if(overlapsBoard(rect(text)))
           errors.push('seat '+seatNo+' text obscures board: '+text.className);
         const markers=[...seat.querySelectorAll('.seat-action[data-action-seat],.seat-turn-indicator[data-turn-seat],.seat-turn-clock[data-turn-clock-seat],.seat-wager')].filter(visible);
         for(const marker of markers)for(const text of critical)if(marker!==text&&overlaps(rect(marker),rect(text)))

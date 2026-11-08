@@ -1,7 +1,7 @@
 // Focused headless checks for account bet presets, mobile actions/chat, pause controls and announcements.
 import {seedAvatar} from './avatar-fixture.mjs';
 
-export default async function adjustments([one, two], sleep, roomPassword) {
+export default async function adjustments([one, two], sleep, roomPassword, {bettingDisplayOnly = false} = {}) {
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
   const assert = (condition, message) => { if (!condition) throw Error(message); };
@@ -168,11 +168,26 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   const created = await request('/tables', host, presetConfig);
   const presetPath = '/tables/' + created.id;
   await request(presetPath + '/seat', guest, {seat_no: 1});
+  const extraPlayers = [];
+  if (bettingDisplayOnly) {
+    for (let seatNo = 2; seatNo < 9; seatNo++) {
+      const username = ('Sizing' + stamp + seatNo).slice(0, 24);
+      const password = 'Sizing_' + stamp + '_' + seatNo;
+      const user = {...await request('/register', null, {username, password, room_password:roomPassword}), username, password};
+      await seedAvatar(request, user);
+      await request(presetPath + '/seat', user, {seat_no:seatNo});
+      extraPlayers.push(user);
+    }
+  }
   const started = await request(presetPath + '/start', host, {});
   await Promise.all([openTable(one, presetConfig.name), openTable(two, presetConfig.name)]);
-  const actorUser = [host, guest].find(user => user.player.id === started.actor_id);
+  const actorUser = [host, guest, ...extraPlayers].find(user => user.player.id === started.actor_id);
   assert(actorUser, 'Heads-up game began with an unexpected actor.');
-  const actorPage = actorUser === host ? one : two;
+  if (bettingDisplayOnly && extraPlayers.includes(actorUser)) {
+    await switchUser(one, host, actorUser);
+    await openTable(one, presetConfig.name);
+  }
+  const actorPage = actorUser === host || extraPlayers.includes(actorUser) ? one : two;
   const otherPage = actorPage === one ? two : one;
   await actorPage.resize(320, 568);
   await otherPage.resize(390, 844);
@@ -205,6 +220,101 @@ export default async function adjustments([one, two], sleep, roomPassword) {
   assert(fivePresets.scrollY <= 1 && !fivePresets.verticalOverflow,
     'Gameplay page scrolled or overflowed vertically at 320px: ' + JSON.stringify(fivePresets));
   await actorPage.screenshot('presets-320x568');
+
+  // Sizing is a preview: selecting a preset or moving the slider must show
+  // the exact street total without committing a poker action.
+  async function assertRaisePreview(expected) {
+    const preview = await evaluate(actorPage, () => {
+      const node = document.querySelector('#raise-preview');
+      const amount = document.querySelector('#raise-preview-amount');
+      const button = document.querySelector('[data-action-slot="raise"]');
+      const rect = node.getBoundingClientRect();
+      const slider = document.querySelector('#raise-amount').getBoundingClientRect();
+      const pot = document.querySelector('#pot-amount');
+      return {
+        text:amount.textContent, label:document.querySelector('#raise-preview-label').textContent,
+        button:button.querySelector('.action-button-amount').textContent,
+        font:parseFloat(getComputedStyle(amount).fontSize),
+        potFont:parseFloat(getComputedStyle(pot).fontSize),
+        visible:rect.width > 0 && rect.height >= 28 && getComputedStyle(node).visibility === 'visible',
+        fits:amount.scrollWidth <= amount.clientWidth + 1 && rect.left >= 0 && rect.right <= innerWidth,
+        separate:rect.right <= slider.left + 1,
+        accessible:document.querySelector('#raise-amount').getAttribute('aria-describedby').includes('raise-preview'),
+        value:Number(document.querySelector('#raise-amount').value)
+      };
+    });
+    assert(preview.visible && preview.fits && preview.separate && preview.accessible &&
+      preview.font >= (String(expected).length >= 4 ? 16 : 18) && preview.potFont >= 18 && preview.value === expected &&
+      preview.text.replaceAll(',', '') === String(expected) && preview.button.replaceAll(',', '') === String(expected) &&
+      preview.label === 'Raise to', 'Raise-to preview is missing, stale, clipped, or too small: ' + JSON.stringify(preview));
+  }
+  const beforeSizing = await request(presetPath, actorUser);
+  await click(actorPage, '[data-raise-preset]');
+  await assertRaisePreview(20);
+  await input(actorPage, '#raise-amount', 50);
+  await assertRaisePreview(50);
+  await sleep(1100);
+  await assertRaisePreview(50);
+  const afterSizing = await request(presetPath, actorUser);
+  assert(beforeSizing.turn_version === afterSizing.turn_version && beforeSizing.actor_id === afterSizing.actor_id &&
+    beforeSizing.pot === afterSizing.pot, 'Choosing a raise-to amount unexpectedly submitted an action.');
+  await actorPage.screenshot('raise-preview-320x568');
+
+  if (bettingDisplayOnly) {
+    for (const [width,height] of [[1366,768],[390,844],[360,740],[320,568],[768,1024],[667,375],[844,390]]) {
+      await actorPage.resize(width,height);
+      await sleep(250);
+      await assertRaisePreview(50);
+      const bounds = await evaluate(actorPage, () => {
+        const pot=document.querySelector('#pot-display'), value=document.querySelector('#pot-amount');
+        const r=pot.getBoundingClientRect();
+        const overlap=node=>{const n=node.getBoundingClientRect();return r.left<n.right-1&&r.right>n.left+1&&r.top<n.bottom-1&&r.bottom>n.top+1;};
+        return {visible:getComputedStyle(pot).visibility==='visible', fits:value.scrollWidth<=value.clientWidth+1,
+          inside:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight,
+          collisions:[...document.querySelectorAll('#seat-grid .seat-card[data-player-id],#board-cards .playing-card')].filter(overlap).length,
+          overflow:document.documentElement.scrollWidth>innerWidth+1||document.documentElement.scrollHeight>innerHeight+1};
+      });
+      assert(bounds.visible && bounds.fits && bounds.inside && !bounds.collisions && !bounds.overflow,
+        'Larger pot does not fit at '+width+'x'+height+': '+JSON.stringify(bounds));
+      await actorPage.screenshot('betting-display-'+width+'x'+height);
+    }
+    await input(actorPage, '#raise-amount', 1000);
+    await assertRaisePreview(1000);
+    await click(actorPage, '[data-chip-display-toggle]');
+    const bb = await evaluate(actorPage, () => ({label:document.querySelector('#raise-preview-label').textContent,
+      amount:document.querySelector('#raise-preview-amount').textContent, value:document.querySelector('#raise-amount').value}));
+    assert(bb.label==='Raise to · BB' && bb.amount==='100.0' && bb.value==='1000', 'Big-blind mode changed or mislabeled the selected total: '+JSON.stringify(bb));
+    await click(actorPage, '[data-chip-display-toggle]');
+    await evaluate(actorPage, tableId => {
+      const original=window.fetch.bind(window);
+      window.fetch=async function(input, init) {
+        const response=await original(input, init);
+        if (new URL(String(input),location.origin).pathname!=='/poker/api/tables/'+tableId ||
+            (init?.method || 'GET').toUpperCase()!=='GET' || !response.ok) return response;
+        const payload=await response.clone().json(), view=payload.table || payload;
+        view.board=['A','K','Q','J','T'].map(rank=>({rank,suit:'hearts'}));
+        view.street='river';view.pot=12345;
+        return new Response(JSON.stringify(payload),{status:response.status,headers:{'Content-Type':'application/json'}});
+      };
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, String(created.id));
+    await wait(actorPage, () => document.querySelectorAll('#board-cards .playing-card').length===5 &&
+      document.querySelector('#pot-amount').textContent==='12,345');
+    for (const [width,height] of [[1366,768],[390,844],[360,740],[320,568],[768,1024],[667,375],[844,390]]) {
+      await actorPage.resize(width,height);await sleep(250);
+      const geometry=await evaluate(actorPage, () => {
+        const pot=document.querySelector('#pot-display'),r=pot.getBoundingClientRect();
+        const collides=node=>{const n=node.getBoundingClientRect(),s=getComputedStyle(node);return s.visibility!=='hidden'&&s.display!=='none'&&r.left<n.right-1&&r.right>n.left+1&&r.top<n.bottom-1&&r.bottom>n.top+1;};
+        return {collisions:[...document.querySelectorAll('#seat-grid .seat-card[data-player-id],#board-cards .playing-card,#street-label')].filter(collides).map(n=>n.id||n.className),
+          fits:pot.scrollWidth<=pot.clientWidth+1, inside:r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight};
+      });
+      assert(geometry.fits && geometry.inside && !geometry.collisions.length,
+        'River pot collides or clips at '+width+'x'+height+': '+JSON.stringify(geometry));
+      await actorPage.screenshot('betting-river-'+width+'x'+height);
+    }
+    console.log('Betting displays passed: nine players at seven viewports, prominent pot and raise-to total, presets and slider without submission, polling preservation, all-in total, and big-blind units.');
+    return;
+  }
 
   // Desktop mouse-wheel input is exercised separately from the 320px mobile preset layout.
   await actorPage.resize(1280, 900);

@@ -2434,6 +2434,53 @@ class ServerAuthTests(unittest.TestCase):
         self.assertFalse(resumed["table"]["paused"])
         self.assertIsNone(resumed["table"]["paused_at"])
 
+    def test_game_start_assigns_persistent_bot_avatars_from_the_shared_collection(self):
+        cookie, proof, csrf, host = self.login("Avatar Bot Host")
+        auth = dict(cookie=cookie, proof=proof, csrf=csrf)
+        content_type, image = server._decode_avatar_data_uri(_test_png_data_uri())
+        custom = self.app.store.add_custom_avatar_preset(
+            "Shared bot portrait", content_type, image, content_type, image, time.time(),
+        )
+        choices = self.app.store.avatar_preset_catalog()
+        builtin = next(row for row in choices if not row.get("custom"))
+        status, _, created = self.create_table(cookie, proof, csrf, name="Bot portraits")
+        self.assertEqual(status, 201, created)
+        path = "/poker/api/tables/" + created["table"]["id"]
+        for seat_no in (1, 2):
+            status, _, lobby = self.request("POST", path + "/bots", {"seat_no": seat_no}, **auth)
+            self.assertEqual(status, 200, lobby)
+        self.assertTrue(all(not seat["avatar_url"] for seat in lobby["table"]["seats"] if seat["is_bot"]))
+        with patch("server.secrets.choice", side_effect=[custom, builtin]) as choose:
+            status, _, started = self.request("POST", path + "/start", {}, **auth)
+        self.assertEqual(status, 200, started)
+        self.assertEqual(choose.call_count, 2)
+        for call in choose.call_args_list:
+            self.assertEqual(call.args[0], choices)
+        portraits = {seat["id"]: (seat["avatar_url"], seat["avatar_full_url"])
+                     for seat in started["table"]["seats"] if seat["is_bot"]}
+        self.assertEqual(set(portraits.values()), {
+            (custom["url"], custom["full_url"]), (builtin["url"], builtin["full_url"]),
+        })
+        human = next(seat for seat in started["table"]["seats"] if not seat["is_bot"])
+        self.assertEqual(human["avatar_url"], host["avatar_url"])
+        for urls in portraits.values():
+            for url in urls:
+                status, _, image_data = self.request("GET", url, cookie=cookie, proof=proof)
+                self.assertEqual(status, 200)
+                self.assertTrue(image_data)
+        self.app = server.App(types.SimpleNamespace(public_origin=self.origin, data_dir=str(self.data_dir)),
+                              room_password=self.password)
+        self.httpd.app = self.app
+        with patch("server.secrets.choice") as choose:
+            status, _, restored = self.request("GET", path, cookie=cookie, proof=proof)
+            self.assertEqual(status, 200, restored)
+            restored_portraits = {seat["id"]: (seat["avatar_url"], seat["avatar_full_url"])
+                                 for seat in restored["table"]["seats"] if seat["is_bot"]}
+            self.assertEqual(restored_portraits, portraits)
+            status, _, rejected = self.request("POST", path + "/start", {}, **auth)
+            self.assertEqual(status, 409, rejected)
+            choose.assert_not_called()
+
     def test_testing_bots_are_admin_only_and_capacity_locks_at_start(self):
         admin_cookie, admin_proof, admin_csrf, admin = self.enable_admin()
         admin_auth = dict(cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf)
