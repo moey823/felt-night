@@ -300,7 +300,6 @@
                   <div id="table-announcements" class="table-announcements" aria-label="Table updates" hidden>
                     <div id="rebuy-outcome" class="announcement-view" role="status" aria-live="polite" hidden></div>
                     <div id="rebuy-waiting" class="announcement-view" role="status" aria-live="polite" hidden></div>
-                    <div id="paused-banner" class="paused-view" role="status" aria-live="polite" hidden></div>
                     <div id="announcement-banner" class="announcement-view" role="status" aria-live="polite" hidden></div>
                     <div id="showdown-summary" class="showdown-summary" role="status" aria-live="polite" hidden></div>
                     <div id="action-feedback" class="action-feedback" role="alert" aria-live="assertive" hidden></div>
@@ -324,6 +323,13 @@
                   <div id="action-controls" class="action-controls"></div>
                   <p id="action-finished-status" class="action-finished-status" role="status" hidden></p>
                 </section>
+                <div id="paused-banner" class="host-pause-cover" role="status" aria-live="polite" hidden>
+                  <span class="pause-symbol" aria-hidden="true">Ⅱ</span>
+                  <h2>Game paused</h2>
+                  <p>Wait for the host to resume.</p>
+                  <span id="pause-duration" class="pause-duration"></span>
+                  <button id="pause-cover-resume" class="button button-primary" type="button" hidden>Resume game</button>
+                </div>
                 <div class="table-bottomline">
                   <span id="table-player-count"></span>
                   <span id="button-caption"></span>

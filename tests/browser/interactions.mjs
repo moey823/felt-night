@@ -18,6 +18,17 @@ export default async function interactions([one,two], sleep, roomPassword) {
       return true;
     },selector);
   }
+  async function assertPauseCover(page) {
+    await wait(page,()=>!document.querySelector('#paused-banner')?.hidden&&
+      document.querySelector('#paused-banner')?.textContent.includes('Wait for the host'));
+    const cover=await evaluate(page,()=>{
+      const surface=document.querySelector('#table-surface'),banner=document.querySelector('#paused-banner');
+      const a=surface.getBoundingClientRect(),b=banner.getBoundingClientRect();
+      return {surface:{x:a.x,y:a.y,w:a.width,h:a.height},banner:{x:b.x,y:b.y,w:b.width,h:b.height},covered:Math.abs(a.left-b.left)<3&&Math.abs(a.top-b.top)<3&&Math.abs(a.right-b.right)<3&&Math.abs(a.bottom-b.bottom)<3,
+        hidden:[...surface.children].filter(child=>child!==banner).every(child=>getComputedStyle(child).opacity==='0'&&child.inert&&child.getAttribute('aria-hidden')==='true')};
+    });
+    assert(cover.covered&&cover.hidden,'Pause did not hide and disable the entire play area: '+JSON.stringify(cover));
+  }
   async function input(page,selector,value) {
     await evaluate(page,(q,v)=>{const n=document.querySelector(q);n.value=v;n.dispatchEvent(new Event('input',{bubbles:true}));},selector,value);
   }
@@ -137,6 +148,16 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await request(path+'/chat',users[1],{text:'Good luck!'});
   const unchanged=(await request(path,users[0])).table;
   assert(unchanged.turn_version===chatVersion,'Chat changed poker turn version');
+  await click(one,'#pause-button');
+  for(const page of [one,two]) await assertPauseCover(page);
+  assert((await request(path,users[2])).table.paused,'A spectator did not receive the host pause.');
+  assert(await evaluate(two,()=>document.querySelector('#pause-cover-resume').hidden),'Non-host received a resume control.');
+  await one.screenshot('host-pause-desktop');
+  await two.screenshot('host-pause-phone');
+  await click(one,'#pause-cover-resume');
+  for(const page of [one,two]) await wait(page,()=>document.querySelector('#paused-banner')?.hidden&&
+    !document.querySelector('#felt').inert&&getComputedStyle(document.querySelector('#felt')).opacity!=='0');
+
   const actorUser=users.find(u=>u.player.id===started.actor_id);
   assert(actorUser,'Fixture started with bot actor unexpectedly');
   const actorPage=actorUser===users[0]?one:two;
@@ -206,7 +227,12 @@ export default async function interactions([one,two], sleep, roomPassword) {
         document.querySelector('#street-label')?.dataset.holdLabel?.includes('Hands visible'));
       const frozen=await evaluate(one,()=>document.querySelector('#blind-level-countdown').textContent);
       await one.screenshot('rebuy-showdown-before-offer');
+      await click(one,'#pause-button');
+      for(const page of [one,two]) await assertPauseCover(page);
+      await one.screenshot('host-pause-showdown');
       await sleep(1100);
+      await click(one,'#pause-cover-resume');
+      for(const page of [one,two]) await wait(page,()=>document.querySelector('#paused-banner')?.hidden);
       assert(await evaluate(one,value=>document.querySelector('#blind-level-countdown')?.textContent===value&&
         !document.querySelector('#rebuy-offer-dialog')?.open&&document.querySelector('#rebuy-waiting')?.hidden,frozen),
         'The blind clock ran or the rebuy UI obscured the showdown.');
@@ -253,12 +279,28 @@ export default async function interactions([one,two], sleep, roomPassword) {
     return {dx:Math.abs(event.x+event.width/2-felt.x-felt.width/2),dy:Math.abs(event.y+event.height/2-felt.y-felt.height/2),font:parseFloat(getComputedStyle(document.querySelector('#rebuy-waiting')).fontSize)};
   });
   assert(eventGeometry.dx<2&&eventGeometry.dy<2&&eventGeometry.font>=18,'Rebuy wait was not prominent and centered: '+JSON.stringify(eventGeometry));
+  const bustStyle=await evaluate(otherPage,()=>{
+    const out=document.querySelector('.seat-card.is-eliminated'),folded=document.querySelector('.seat-card.is-folded:not(.is-eliminated)');
+    return {out:Boolean(out),label:out?.querySelector('.seat-status')?.textContent,
+      grey:out&&getComputedStyle(out.querySelector('.seat-avatar')).filter,
+      border:out&&getComputedStyle(out).borderTopStyle,
+      foldedGrey:folded&&getComputedStyle(folded.querySelector('.seat-avatar')).filter};
+  });
+  assert(bustStyle.out&&bustStyle.label.includes('OUT')&&bustStyle.grey==='grayscale(1)'&&bustStyle.border==='dashed'&&bustStyle.foldedGrey!=='grayscale(1)',
+    'Busted seat was not distinct from a folded player: '+JSON.stringify(bustStyle));
   const waitingClock=await evaluate(otherPage,()=>document.querySelector('#blind-level-countdown').textContent);
   await sleep(1100);
   assert(await evaluate(otherPage,value=>document.querySelector('#blind-level-countdown').textContent===value,waitingClock),
     'The blind-level clock ran during the rebuy decision.');
   await otherPage.resize(390,844);await sleep(200);await otherPage.screenshot('rebuy-waiting-phone');
   await otherPage.resize(1366,768);await sleep(200);await otherPage.screenshot('rebuy-waiting-desktop');
+  await request(rebuyPath+'/pause',users[0],{paused:true});
+  for(const page of [one,two]) {
+    await assertPauseCover(page);
+    assert(await evaluate(page,()=>!document.querySelector('#rebuy-offer-dialog').open),'Rebuy dialog covered the host pause screen.');
+  }
+  await click(one,'#pause-cover-resume');
+  await wait(acceptPage,()=>document.querySelector('#rebuy-offer-dialog')?.open);
   const offerId=String(offerView.viewer.rebuy_offer.id);
   await evaluate(acceptPage,()=>{
     window.rebuyPostsQA=[];

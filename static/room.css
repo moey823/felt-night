@@ -4989,3 +4989,72 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #street-label[d
   font-weight: 800;
   letter-spacing: .02em;
 }
+
+
+/* Busted players remain recognizable without looking like a temporary fold.
+   Dim the player information, keeping exposed showdown cards at full contrast. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated {
+  opacity: 1 !important;
+  background: #202427 !important;
+  border: 1px dashed #747d82 !important;
+  box-shadow: none !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated .seat-avatar {
+  filter: grayscale(1) !important;
+  opacity: .35 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated .seat-name,
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated .seat-stack {
+  color: #a1a6a9 !important;
+  opacity: .65 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-eliminated:not(.seat-empty) .seat-local-markers > .seat-status {
+  display: inline-block !important;
+  width: fit-content !important;
+  max-width: 100% !important;
+  padding: 2px 4px !important;
+  border: 1px solid #9da5aa !important;
+  border-radius: 4px !important;
+  background: #3a4146 !important;
+  color: #f4f5f6 !important;
+  font-size: 10px !important;
+  font-weight: 900 !important;
+  line-height: 12px !important;
+  letter-spacing: .06em !important;
+}
+
+/* Host pause replaces the entire play surface, while the table menu stays usable. */
+body #app-panel #table-view #table-surface[data-host-paused="true"] > :not(#paused-banner) {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+body #app-panel #table-view.is-host-paused > #shot-clock-alert { display: none !important; }
+body #app-panel #table-view #table-surface > #paused-banner:not([hidden]) {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 200 !important;
+  transform: none !important;
+  max-width: none !important;
+  max-height: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 14px !important;
+  padding: 24px !important;
+  margin: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  box-sizing: border-box !important;
+  border-radius: inherit !important;
+  background: #101c18 !important;
+  color: #fff5d7 !important;
+  text-align: center !important;
+  pointer-events: auto !important;
+}
+#table-surface > #paused-banner[hidden] { display: none !important; }
+#paused-banner .pause-symbol { color: #ead28b; font-size: 52px; font-weight: 900; line-height: 1; }
+#paused-banner h2 { margin: 0; font-size: clamp(28px, 5vw, 44px); line-height: 1.15; }
+#paused-banner p { margin: 0; font-size: clamp(17px, 3vw, 22px); }
+#paused-banner .pause-duration { color: #a8b9b0; font-size: 14px; }
+#paused-banner #pause-cover-resume:not([hidden]) { margin-top: 8px; min-height: 44px; }

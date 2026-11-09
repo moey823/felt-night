@@ -2711,7 +2711,7 @@
     if (stack > 0) return true;
     var folded = Boolean(seat.folded || seat.is_folded);
     var allIn = Boolean(seat.all_in || seat.is_all_in);
-    return Boolean(view && view.status === "playing" && allIn && !folded);
+    return Boolean(view && view.status === "playing" && String(view.street || "").toLowerCase() !== "showdown" && allIn && !folded);
   }
 
   function tournamentPlayerCount(view) {
@@ -3456,7 +3456,7 @@
         : "";
       var markerHtml = "";
       var actionMarkup = "";
-      var statusText = label === "Sitting out" ? "Sit out" : label;
+      var statusText = label === "Sitting out" ? "Sit out" : (eliminated ? "OUT" : label);
       var statusAccessible = label + (bot ? (label ? ", " : "") + "Test bot" : "");
       if (bot) statusText += (statusText ? " · " : "") + "BOT";
       if (statusText) markerHtml = '<span class="seat-status" aria-label="' + esc(statusAccessible || statusText) + '" title="' + esc(statusAccessible || statusText) + '">' + esc(statusText) + '</span>';
@@ -5167,13 +5167,26 @@
     var paused = Boolean(view && view.paused && playing);
     banner.hidden = !paused;
     banner.dataset.paused = String(paused);
+    var surface = byId("table-surface");
+    surface.dataset.hostPaused = String(paused);
+    byId("table-view").classList.toggle("is-host-paused", paused);
+    Array.prototype.forEach.call(surface.children, function (child) {
+      if (child === banner) return;
+      child.inert = paused;
+      if (paused) child.setAttribute("aria-hidden", "true");
+      else child.removeAttribute("aria-hidden");
+    });
+    var resume = byId("pause-cover-resume");
+    resume.hidden = !(host && paused);
+    resume.disabled = state.pausePending;
+    resume.setAttribute("aria-busy", String(state.pausePending));
     if (paused) {
       var started = epochMilliseconds(view.paused_at);
       var now = epochMilliseconds(view.server_now) || Date.now();
       var elapsed = started ? Math.max(0, Math.floor((now - started) / 1000)) : 0;
-      banner.textContent = "Game paused by host" + (started ? " · Paused for " + formatClock(elapsed) : "") + ".";
+      byId("pause-duration").textContent = started ? "Paused for " + formatClock(elapsed) : "";
     } else {
-      banner.textContent = "";
+      byId("pause-duration").textContent = "";
     }
     syncTableAnnouncementRegion();
   }
@@ -5422,7 +5435,7 @@
   function syncRebuyOffer(view) {
     var offer = view && view.viewer && view.viewer.rebuy_offer;
     var offerId = String(offer && offer.id || "");
-    if (!offerId || !state.activeTableId || !state.player || state.adminOpen) {
+    if (!offerId || !state.activeTableId || !state.player || state.adminOpen || view.paused) {
       clearRebuyOffer();
       return;
     }
@@ -6832,6 +6845,10 @@
     } finally {
       button.disabled = false;
     }
+  });
+
+  byId("pause-cover-resume").addEventListener("click", function () {
+    byId("pause-button").click();
   });
 
   byId("pause-button").addEventListener("click", async function () {
