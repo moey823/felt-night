@@ -3474,8 +3474,9 @@
       }
       var shownRank = showdown && showdownRow && cards.length
         ? handRankName(showdownRow, view.hand_ranks || {}) : "";
-      if (shownRank && !statusText) {
-        markerHtml = '<span class="seat-hand-strength" data-hand-strength="' + esc(id) +
+      var rankMarkup = "";
+      if (shownRank) {
+        rankMarkup = '<span class="seat-hand-strength" data-hand-strength="' + esc(id) +
           '" aria-label="' + esc(seatName + ": " + shownRank) + '"><span>' + esc(shownRank) + '</span></span>';
       }
       var markerLane = '<div class="seat-local-markers">' + markerHtml + '</div>';
@@ -3488,7 +3489,7 @@
       html += '<div ' + (isMe ? 'id="hero-seat" ' : '') + 'class="' + classes + '" aria-label="Seat ' + esc(seatNo * 1 + 1) + ', ' + esc(seatName) + (eliminated ? ', out' : '') + '" data-seat-no="' + esc(seatNo) + '" data-player-id="' + esc(id) + '" data-relative-seat="' + relativeIndex + '" data-is-bot="' + (bot ? 'true' : 'false') + '">' +
         cardHtml +
         '<div class="seat-top' + (acting ? ' has-turn' : '') + '"><span class="seat-name-wrap"><span class="seat-name">' + esc(seatName) + '</span></span>' + turnMarkup + '</div>' + dealerChip +
-        playerInfo + playerFooter + blindMarkup + wagerMarkup +
+        playerInfo + playerFooter + blindMarkup + wagerMarkup + rankMarkup +
       '</div>';
     }
 
@@ -3637,20 +3638,23 @@
   }
 
   // Keep each street's chips on the felt, near their owner and clear of
-  // every seat, the board, and other stacks. Positions feed the existing
+  // every seat, the board, and other badges. Exposed showdown ranks use
+  // the same fitting so they stay outside their owner even on phones.
+  // Wager positions feed the existing
   // bet-to-seat and sweep-to-pot animations.
   function placeSeatContributions(grid, felt) {
     var bounds = felt.getBoundingClientRect();
     var seats = Array.from(grid.querySelectorAll(".seat-card"));
     var obstacles = seats.concat(Array.from(felt.querySelectorAll(
-      ".board-center, #blind-strip, .dealer-marker"
+      "#board-cards .playing-card, #pot-display, #street-label, #blind-strip, .dealer-marker"
     ))).filter(function (node) {
       var style = window.getComputedStyle(node), box = node.getBoundingClientRect();
       return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
     }).map(function (node) { return node.getBoundingClientRect(); });
-    var gap = window.innerWidth <= 340 ? 1 : 2;
+    var defaultGap = window.innerWidth <= 340 ? 1 : 2;
     var center = { x:(bounds.left + bounds.right) / 2, y:(bounds.top + bounds.bottom) / 2 };
-    grid.querySelectorAll(".seat-contribution").forEach(function (node) {
+    grid.querySelectorAll(".seat-contribution, .seat-hand-strength").forEach(function (node) {
+      var gap = node.matches(".seat-hand-strength") && window.innerHeight <= 450 ? 1 : defaultGap;
       var owner = node.closest(".seat-card"), box = owner.getBoundingClientRect();
       var width = node.offsetWidth, height = node.offsetHeight;
       var ox = (box.left + box.right) / 2, oy = (box.top + box.bottom) / 2;

@@ -775,12 +775,37 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
       return errors;
     });
   }
+  // Keep result screenshots visible when the viewer was eliminated in this hand.
+  await ev(actionPage,()=>document.querySelector('#rebuy-offer-close')?.click());
   const showdownErrors=[];
   for(const [w,h] of viewports){
     await actionPage.resize(w,h);await sleep(200);
     const result=await checkSeatChildren(actionPage);
     showdownErrors.push(...result.errors.map(error=>w+'x'+h+': '+error));
     showdownErrors.push(...(await checkCardGlyphs(actionPage)).map(error=>w+'x'+h+': '+error));
+    const rankErrors=await ev(actionPage,(ids)=>{
+      const errors=[],felt=document.querySelector('#felt').getBoundingClientRect();
+      const intersects=(a,b)=>a.left<b.right-.5&&a.right>b.left+.5&&a.top<b.bottom-.5&&a.bottom>b.top+.5;
+      const badges=[...document.querySelectorAll('#seat-grid .seat-hand-strength')];
+      const obstacles=[...document.querySelectorAll('#seat-grid .seat-card,#board-cards .playing-card,#pot-display,#street-label,#felt .dealer-marker')]
+        .filter(node=>node.getBoundingClientRect().width>0).map(node=>node.getBoundingClientRect());
+      for(const id of ids){
+        const badge=badges.find(node=>node.dataset.handStrength===id);
+        if(!badge){errors.push('Missing exposed rank for '+id);continue;}
+        const box=badge.getBoundingClientRect(),style=getComputedStyle(badge);
+        if(box.width<=0||box.height<=0||style.visibility==='hidden'||Number(style.opacity)===0)errors.push('Hidden rank '+id);
+        if(parseFloat(style.fontSize)<12)errors.push('Rank too small '+id);
+        if(box.left<felt.left||box.right>felt.right||box.top<felt.top||box.bottom>felt.bottom)errors.push('Rank outside felt '+id);
+        if(obstacles.some(other=>intersects(box,other)))errors.push('Rank overlaps seat, board or dealer '+id);
+        if(badges.some(other=>other!==badge&&intersects(box,other.getBoundingClientRect())))errors.push('Ranks overlap '+id);
+        if(badge.scrollWidth>badge.clientWidth+1||badge.scrollHeight>badge.clientHeight+1)errors.push('Clipped rank '+id);
+        const seat=badge.closest('.seat-card');
+        if(badge.parentElement!==seat)errors.push('Rank remains inside status lane '+id);
+        if(seat.classList.contains('is-hand-winner')&&style.backgroundColor!=='rgb(255, 228, 155)')errors.push('Winner rank lacks gold highlight '+id);
+      }
+      return errors;
+    },showdownIds);
+    showdownErrors.push(...rankErrors.map(error=>w+'x'+h+': '+error));
     await actionPage.screenshot('player-displays-showdown-'+w+'x'+h);
   }
   assert(!showdownErrors.length,'Showdown cards or markers escaped their seats: '+showdownErrors.slice(0,20).join('; '));

@@ -4816,3 +4816,46 @@ body.gameplay-active #app-panel #table-view #table-surface > #action-panel .rais
 @media (max-width: 820px), (max-height: 450px) {
   body.gameplay-active #app-panel #table-view #table-surface #felt.is-crowded .board-center:has(#board-cards:not(:empty)) #pot-display { top: -46px !important; }
 }
+
+/* Exposed showdown ranks sit on the felt, outside the player container.
+   JS fits each badge near its owner, clear of seats, board and other badges. */
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card > .seat-hand-strength {
+  position: absolute !important;
+  inset: auto;
+  z-index: 18;
+  display: block;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: 150px;
+  height: auto;
+  padding: 6px 9px;
+  border: 1px solid #e9ca78;
+  border-radius: 8px;
+  background: #122b28;
+  color: #fff4c6;
+  box-shadow: 0 3px 10px #0009;
+  font: 800 14px/1.2 ui-sans-serif, system-ui, sans-serif;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+}
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card.is-hand-winner > .seat-hand-strength {
+  background: #ffe49b;
+  color: #241a05;
+  border-color: #fff1c7;
+}
+@media (max-width: 600px), (max-height: 450px) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card > .seat-hand-strength {
+    max-width: 112px;
+    padding: 4px 6px;
+    font-size: 12px;
+    border-radius: 6px;
+  }
+}
+
+@media (max-height: 450px) and (orientation: landscape) {
+  body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card > .seat-hand-strength {
+    padding-block: 0;
+    line-height: 1;
+  }
+}
