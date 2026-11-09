@@ -9,6 +9,8 @@ import threading
 import time
 import types
 import unittest
+import uuid
+from unittest.mock import patch
 
 import server
 
@@ -184,3 +186,134 @@ class AccountAdminRoleTests(unittest.TestCase):
             self.assertEqual(player["id"], player_id)
             self.assertFalse(player["is_admin"])
             self.assertEqual(store.list_account_roles()["admin_count"], 0)
+
+    def seed_game(self, owner_id, status="ended", bot=True, history_only=False, evidence="participants", history_status=None):
+        table_id = uuid.uuid4().hex
+        state = {"id": table_id, "name": "Disposable game", "status": status,
+                 "host_id": owner_id, "seats": [{"player_id": owner_id, "name": "Owner", "is_bot": False}]}
+        if bot and evidence == "state":
+            state["seats"].append({"player_id": "bot:test", "name": "Bot", "is_bot": True})
+        conn = self.app.store.connect()
+        try:
+            if not history_only:
+                conn.execute("INSERT INTO tables(id,owner_id,state,created,updated) VALUES(?,?,?,?,?)",
+                             (table_id, owner_id, json.dumps(state), 1, 1))
+            conn.execute("INSERT INTO tournament_history(table_id,owner_id,name,status,created) VALUES(?,?,?,?,?)",
+                         (table_id, owner_id, state["name"], history_status or status, 1))
+            if bot and evidence == "participants":
+                conn.execute("INSERT INTO tournament_participants(table_id,player_id,name,is_bot,first_hand,last_hand) VALUES(?,?,?,?,?,?)",
+                             (table_id, "bot:test", "Bot", 1, 1, 1))
+            if bot and evidence == "hands":
+                hand_id = table_id + ":1"
+                conn.execute("INSERT INTO hand_history(hand_id,table_id,number,started,street) VALUES(?,?,?,?,?)",
+                             (hand_id, table_id, 1, 1, "showdown"))
+                conn.execute("INSERT INTO hand_history_players(hand_id,player_id,name,is_bot) VALUES(?,?,?,?)",
+                             (hand_id, "bot:test", "Bot", 1))
+        finally:
+            conn.close()
+        return table_id
+
+    def test_account_delete_requires_confirmation_and_protects_admins_and_active_games(self):
+        admin, auth = self.register("admin")
+        target, target_auth = self.register("target")
+        path = "/poker/api/admin/accounts/"+target["id"]+"/delete"
+        for body in ({}, {"confirm_delete": 1}, {"confirm_delete": False}):
+            self.assertEqual(self.request(self.public, "POST", path, body, auth)[0], 400)
+        self.assertEqual(self.request(self.public, "POST", path, {"confirm_delete": True}, target_auth)[0], 403)
+        self.assertEqual(self.request(self.public, "POST", path, {"confirm_delete": True}, (auth[0],auth[1],"bad"))[0], 403)
+        protected = "/poker/api/admin/accounts/"+admin["id"]+"/delete"
+        self.assertEqual(self.request(self.public, "POST", protected, {"confirm_delete": True}, auth)[0], 409)
+        game = self.seed_game(target["id"], status="playing", bot=False)
+        code, _, error = self.request(self.public, "POST", path, {"confirm_delete": True}, auth)
+        self.assertEqual((code, error["error"]["code"]), (409, "account_in_game"))
+        conn = self.app.store.connect()
+        try:
+            state = json.loads(conn.execute("SELECT state FROM tables WHERE id=?",(game,)).fetchone()[0])
+            state["status"] = "ended"
+            conn.execute("UPDATE tables SET state=? WHERE id=?", (json.dumps(state),game))
+            conn.execute("UPDATE tournament_history SET status='ended' WHERE table_id=?", (game,))
+        finally:
+            conn.close()
+        self.assertEqual(self.request(self.public,"POST","/poker/api/profile/avatar",{"preset_id":"fish"},target_auth)[0],200)
+        self.assertEqual(self.request(self.public, "POST", path, {"confirm_delete": True}, auth)[0], 200)
+        self.assertFalse(self.request(self.public,"GET","/poker/api/me",auth=target_auth)[2]["authenticated"])
+        self.assertIsNone(self.app.store.login_account("target","test-account-password",time.time()))
+        conn = self.app.store.connect()
+        try:
+            self.assertIsNone(conn.execute("SELECT 1 FROM player_avatars WHERE player_id=?",(target["id"],)).fetchone())
+            self.assertIsNotNone(conn.execute("SELECT 1 FROM tournament_history WHERE table_id=?",(game,)).fetchone())
+            self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(),[])
+        finally:
+            conn.close()
+
+    def test_account_delete_cannot_race_a_login_into_a_new_session(self):
+        admin, _ = self.register("admin")
+        target, _ = self.register("target")
+        validated, proceed = threading.Event(), threading.Event()
+        original = self.app.store._password_verifier
+        def verify(password, salt):
+            result = original(password, salt)
+            validated.set()
+            self.assertTrue(proceed.wait(3))
+            return result
+        with patch.object(self.app.store,"_password_verifier",side_effect=verify):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                login = pool.submit(self.app.store.login_account,"target","test-account-password",time.time())
+                self.assertTrue(validated.wait(3))
+                try:
+                    self.app.store.delete_account(admin["id"],target["id"])
+                finally:
+                    proceed.set()
+                self.assertIsNone(login.result(timeout=3))
+        conn = self.app.store.connect()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM sessions WHERE player_id=?",(target["id"],)).fetchone()[0],0)
+        finally:
+            conn.close()
+
+    def test_bot_purge_targets_terminal_bot_games_including_archives_and_preserves_others(self):
+        admin, auth = self.register("admin")
+        player, player_auth = self.register("player")
+        removed = [self.seed_game(admin["id"],status=status) for status in ("completed","ended","cancelled","expired")]
+        removed += [self.seed_game(admin["id"],history_only=True,evidence="hands"),self.seed_game(admin["id"],evidence="state")]
+        kept = [self.seed_game(admin["id"],bot=False),self.seed_game(admin["id"],status="playing"),
+                self.seed_game(admin["id"],status="lobby"),self.seed_game(admin["id"],status="playing",history_status="completed")]
+        preview_path = "/poker/api/admin/history/bot-games"
+        purge_path = "/poker/api/admin/history/purge-bots"
+        self.assertEqual(self.request(self.public,"GET",preview_path,auth=player_auth)[0],403)
+        code, _, preview = self.request(self.public,"GET",preview_path,auth=auth)
+        self.assertEqual(code,200)
+        self.assertEqual(preview["count"],len(removed))
+        body = {"selection_token":preview["selection_token"],"confirm_delete":True}
+        self.assertEqual(self.request(self.public,"POST",purge_path,{},auth)[0],400)
+        self.assertEqual(self.request(self.public,"POST",purge_path,body,player_auth)[0],403)
+        self.assertEqual(self.request(self.public,"POST",purge_path,body,(auth[0],auth[1],"bad"))[0],403)
+        code, _, result = self.request(self.public,"POST",purge_path,body,auth)
+        self.assertEqual(code,200,result)
+        self.assertEqual(result["deleted_count"],len(removed))
+        conn = self.app.store.connect()
+        try:
+            for table_id in removed:
+                self.assertIsNone(conn.execute("SELECT 1 FROM tournament_history WHERE table_id=?",(table_id,)).fetchone())
+            for table_id in kept:
+                self.assertIsNotNone(conn.execute("SELECT 1 FROM tournament_history WHERE table_id=?",(table_id,)).fetchone())
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0],2)
+            self.assertEqual(conn.execute("PRAGMA foreign_key_check").fetchall(),[])
+        finally:
+            conn.close()
+
+    def test_bot_purge_rejects_changed_selection_and_demoted_actor(self):
+        admin, auth = self.register("admin")
+        second, _ = self.register("second")
+        self.seed_game(admin["id"])
+        preview = self.app.store.preview_bot_game_purge()
+        self.seed_game(admin["id"])
+        body = {"confirm_delete":True,"selection_token":preview["selection_token"]}
+        code, _, error = self.request(self.public,"POST","/poker/api/admin/history/purge-bots",body,auth)
+        self.assertEqual((code,error["error"]["code"]),(409,"selection_changed"))
+        self.assertEqual(self.app.store.preview_bot_game_purge()["count"],2)
+        self.app.store.set_account_admin(admin["id"],second["id"],True)
+        self.app.store.set_account_admin(admin["id"],admin["id"],False)
+        with self.assertRaises(server.AppError) as caught:
+            self.app.store.purge_bot_games(admin["id"],self.app.store.preview_bot_game_purge()["selection_token"])
+        self.assertEqual(caught.exception.code,"admin_required")

@@ -632,7 +632,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
   await clickAt(secondPage,"#table-logout-button");
   await wait(secondPage,()=>Boolean(document.querySelector("#login-name")?.offsetWidth));
   await openAdminFixture(secondPage);
-  await clickAt(secondPage,"#admin-history-details > summary");
+  await clickAt(secondPage,"#admin-tab-games");
   await wait(secondPage,id=>Boolean(document.querySelector('[data-admin-history-id="'+id+'"]')),table.id);
   const historyEntry=await ev(secondPage,id=>{
     const node=document.querySelector('[data-admin-history-id="'+id+'"]');

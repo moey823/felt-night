@@ -1154,6 +1154,89 @@ class Store:
         finally:
             conn.close()
 
+    def delete_account(self, actor_id, player_id):
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            actor = conn.execute("SELECT is_admin FROM accounts WHERE player_id=?", (actor_id,)).fetchone()
+            if actor is None or not actor["is_admin"]:
+                raise AppError(403, "admin_required", "Room admin access is required.")
+            target = conn.execute("SELECT username,is_admin FROM accounts WHERE player_id=?", (player_id,)).fetchone()
+            if target is None:
+                raise AppError(404, "account_not_found", "Account not found.")
+            if actor_id == player_id or target["is_admin"]:
+                raise AppError(409, "admin_account_protected", "Admin accounts cannot be deleted. Remove their admin role first.")
+            for row in conn.execute("SELECT owner_id,state FROM tables WHERE json_extract(state,'$.status') IN ('lobby','playing')"):
+                state = json.loads(row["state"])
+                if (row["owner_id"] == player_id or state.get("host_id") == player_id
+                        or any(seat.get("player_id") == player_id for seat in state.get("seats", []))):
+                    raise AppError(409, "account_in_game", "End or leave this account's active games before deleting it.")
+            conn.execute("DELETE FROM sessions WHERE player_id=?", (player_id,))
+            conn.execute("DELETE FROM player_avatars WHERE player_id=?", (player_id,))
+            conn.execute("DELETE FROM accounts WHERE player_id=?", (player_id,))
+            # Keep the inert identity required by saved game/chat foreign keys.
+            conn.execute("UPDATE players SET name='Deleted player' WHERE id=?", (player_id,))
+            conn.commit()
+            return {"deleted": True, "player_id": player_id}
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _bot_game_selection(conn):
+        statuses = tuple(sorted(tournament_history.TERMINAL_STATUSES))
+        marks = ",".join("?" for _ in statuses)
+        rows = conn.execute("""
+            SELECT h.table_id,t.state FROM tournament_history h LEFT JOIN tables t ON t.id=h.table_id
+            WHERE h.status IN (""" + marks + """) AND (
+                EXISTS(SELECT 1 FROM tournament_participants p WHERE p.table_id=h.table_id AND p.is_bot=1)
+                OR EXISTS(SELECT 1 FROM hand_history hh JOIN hand_history_players hp ON hp.hand_id=hh.hand_id
+                          WHERE hh.table_id=h.table_id AND hp.is_bot=1)
+                OR EXISTS(SELECT 1 FROM json_each(t.state,'$.seats') seat WHERE json_extract(seat.value,'$.is_bot')=1)
+            ) ORDER BY h.table_id""", statuses).fetchall()
+        ids = [row["table_id"] for row in rows if row["state"] is None
+               or json.loads(row["state"]).get("status") in tournament_history.TERMINAL_STATUSES]
+        token = hashlib.sha256("\n".join(ids).encode("ascii")).hexdigest()
+        return ids, token
+
+    def preview_bot_game_purge(self):
+        conn = self.connect()
+        try:
+            ids, token = self._bot_game_selection(conn)
+            return {"count": len(ids), "selection_token": token}
+        finally:
+            conn.close()
+
+    def purge_bot_games(self, actor_id, selection_token):
+        if not isinstance(selection_token, str) or not re.fullmatch(r"[a-f0-9]{64}", selection_token):
+            raise AppError(400, "invalid_selection", "Review the bot games before purging them.")
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            actor = conn.execute("SELECT is_admin FROM accounts WHERE player_id=?", (actor_id,)).fetchone()
+            if actor is None or not actor["is_admin"]:
+                raise AppError(403, "admin_required", "Room admin access is required.")
+            ids, current_token = self._bot_game_selection(conn)
+            if not hmac.compare_digest(selection_token, current_token):
+                raise AppError(409, "selection_changed", "The bot games changed. Review the purge again.")
+            for table_id in ids:
+                conn.execute("DELETE FROM chat_messages WHERE table_id=?", (table_id,))
+                conn.execute("DELETE FROM table_reactions WHERE table_id=?", (table_id,))
+                conn.execute("DELETE FROM end_confirmations WHERE table_id=?", (table_id,))
+                tournament_history.delete_tournament_history(conn, table_id)
+                conn.execute("DELETE FROM tables WHERE id=?", (table_id,))
+            conn.commit()
+            return {"deleted": True, "deleted_count": len(ids)}
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def login_account(self, username, password, now):
         if not isinstance(password, str) or len(password) > 256:
             password = ""
@@ -1177,8 +1260,13 @@ class Store:
             if row is None or not hmac.compare_digest(candidate, expected):
                 return None
             conn.execute("BEGIN IMMEDIATE")
-            player_id = row["player_id"]
-            player = self._account_player(player_id, row["username"], row["display_name"], row["is_admin"])
+            current = conn.execute("SELECT player_id,username,display_name,password_verifier,is_admin FROM accounts WHERE player_id=?",
+                                   (row["player_id"],)).fetchone()
+            if current is None or not hmac.compare_digest(current["password_verifier"], expected):
+                conn.rollback()
+                return None
+            player_id = current["player_id"]
+            player = self._account_player(player_id, current["username"], current["display_name"], current["is_admin"])
             token = self._issue_session(conn, player_id, now)
             conn.commit()
             return player, token
@@ -2178,6 +2266,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._require_player()
                 self._json(200, {"config": self.app.store.get_global_config()})
                 return
+            if path == "/poker/api/admin/history/bot-games":
+                self._require_admin()
+                self._json(200, self.app.store.preview_bot_game_purge())
+                return
             if path == "/poker/api/admin/accounts":
                 self._require_admin()
                 self._json(200, self.app.store.list_account_roles())
@@ -2458,6 +2550,22 @@ class Handler(BaseHTTPRequestHandler):
                     "avatar": avatar,
                     "avatars": self.app.store.avatar_preset_catalog(),
                 })
+                return
+
+            account_delete = re.fullmatch(r"/poker/api/admin/accounts/([a-f0-9]{32})/delete", path)
+            if account_delete:
+                if not player.get("is_admin"):
+                    raise AppError(403, "admin_required", "Room admin access is required.")
+                if set(body) != {"confirm_delete"} or body.get("confirm_delete") is not True:
+                    raise AppError(400, "confirmation_required", "Confirm permanent deletion of this account.")
+                self._json(200, self.app.store.delete_account(player["id"], account_delete.group(1)))
+                return
+            if path == "/poker/api/admin/history/purge-bots":
+                if not player.get("is_admin"):
+                    raise AppError(403, "admin_required", "Room admin access is required.")
+                if body.get("confirm_delete") is not True or set(body) != {"confirm_delete", "selection_token"}:
+                    raise AppError(400, "confirmation_required", "Confirm permanent deletion of past games with bots.")
+                self._json(200, self.app.store.purge_bot_games(player["id"], body["selection_token"]))
                 return
 
             role_match = re.fullmatch(r"/poker/api/admin/accounts/([a-f0-9]{32})/role", path)

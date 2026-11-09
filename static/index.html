@@ -146,20 +146,19 @@
         <div class="admin-screen-heading">
           <div>
             <div class="eyebrow"><span class="eyebrow-line"></span> Room administration</div>
-            <h1 id="admin-title">Room defaults</h1>
-            <p>Pacing changes apply to upcoming transitions; active timers continue.</p>
+            <h1 id="admin-title">Admin</h1>
+            <p>Manage room settings, users, profile images, and past games.</p>
           </div>
           <div class="admin-screen-actions"><button id="admin-back-button" class="button button-outline button-small" type="button">Back to app</button>
           <button id="admin-logout-button" class="button button-quiet button-small" type="button">Log out</button></div>
         </div>
-        <section class="panel admin-accounts-panel" aria-labelledby="admin-accounts-title">
-          <div class="section-heading compact"><div><div class="panel-kicker">ACCOUNT ACCESS</div><h2 id="admin-accounts-title">Admins</h2></div><button id="admin-accounts-refresh" class="button button-outline button-small" type="button">Refresh</button></div>
-          <p class="muted">Admins can change room settings and manage admin access. Keep at least one admin.</p>
-          <label for="admin-accounts-filter">Find an account</label><input id="admin-accounts-filter" type="search" placeholder="Username or name" autocomplete="off">
-          <p id="admin-accounts-status" class="muted" role="status" aria-live="polite"></p>
-          <div id="admin-accounts-list" class="admin-accounts-list"></div>
-        </section>
-        <form id="admin-config-form" class="panel admin-settings-form">
+        <div id="admin-tabs" class="admin-tabs" role="tablist" aria-label="Admin sections">
+          <button id="admin-tab-settings" type="button" role="tab" data-admin-tab="settings" aria-controls="admin-config-form" aria-selected="true" tabindex="0">Table settings</button>
+          <button id="admin-tab-users" type="button" role="tab" data-admin-tab="users" aria-controls="admin-users-panel" aria-selected="false" tabindex="-1">Users</button>
+          <button id="admin-tab-images" type="button" role="tab" data-admin-tab="images" aria-controls="admin-avatar-presets" aria-selected="false" tabindex="-1">Profile images</button>
+          <button id="admin-tab-games" type="button" role="tab" data-admin-tab="games" aria-controls="admin-games-panel" aria-selected="false" tabindex="-1">Past games</button>
+        </div>
+        <form role="tabpanel" aria-labelledby="admin-tab-settings" id="admin-config-form" class="panel admin-settings-form">
           <div class="panel-kicker">GLOBAL TABLE SETTINGS</div>
           <h2>Default pacing and bet presets</h2>
           <div class="admin-config-grid">
@@ -174,7 +173,14 @@
           <p id="admin-config-error" class="player-prefs-error" role="alert" hidden></p>
           <div class="settings-footer"><p id="admin-config-status" class="muted" role="status" aria-live="polite">These settings apply to all players.</p><button id="admin-config-save" class="button button-primary button-small" type="submit">Save room settings</button></div>
         </form>
-        <section id="admin-avatar-presets" class="panel admin-avatar-presets" aria-labelledby="admin-avatar-presets-title">
+        <section id="admin-users-panel" role="tabpanel" aria-labelledby="admin-tab-users" class="panel admin-accounts-panel" hidden>
+          <div class="section-heading compact"><div><div class="panel-kicker">ACCOUNT ACCESS</div><h2 id="admin-accounts-title">Users</h2></div><button id="admin-accounts-refresh" class="button button-outline button-small" type="button">Refresh</button></div>
+          <p class="muted">Search accounts, manage admin access, or delete other non-admin accounts. Keep at least one admin.</p>
+          <label for="admin-accounts-filter">Find an account</label><input id="admin-accounts-filter" type="search" placeholder="Username or name" autocomplete="off">
+          <p id="admin-accounts-status" class="muted" role="status" aria-live="polite"></p>
+          <div id="admin-accounts-list" class="admin-accounts-list"></div>
+        </section>
+        <section role="tabpanel" aria-labelledby="admin-tab-images" id="admin-avatar-presets" hidden class="panel admin-avatar-presets">
           <div class="section-heading compact">
             <div><div class="panel-kicker">SHARED PROFILE ART</div><h2 id="admin-avatar-presets-title">Add a cartoon portrait</h2></div>
           </div>
@@ -189,15 +195,18 @@
           </form>
           <div id="admin-avatar-catalog-list" class="admin-avatar-catalog-list" aria-live="polite"></div>
         </section>
-        <details id="admin-tables-details" class="panel admin-tables-panel">
-          <summary><span><span class="panel-kicker">SECONDARY TOOLS</span><strong>Inspect and test tables</strong></span><button id="admin-tables-refresh" class="button button-outline button-small" type="button">Refresh</button></summary>
-          <div id="admin-tables-list" class="admin-tables-list"><p class="muted">Open this section to load tables.</p></div>
-        </details>
-        <details id="admin-history-details" class="panel admin-history-panel">
-          <summary><span><span class="panel-kicker">PAST GAMES</span><strong>Inspect and remove archived games</strong></span><span class="admin-history-chevron" aria-hidden="true">⌄</span></summary>
-          <div id="admin-history-list" class="admin-history-list"><p class="muted">Open this section to load completed games.</p></div>
-        </details>
+        <section id="admin-games-panel" class="panel admin-history-panel" role="tabpanel" aria-labelledby="admin-tab-games" hidden>
+          <div class="section-heading compact"><h2>Past games</h2><button id="admin-purge-bots" type="button" class="button button-danger button-small">Purge games with bots</button></div>
+          <p id="admin-games-status" class="muted" role="status" aria-live="polite"></p>
+          <div id="admin-history-list" class="admin-history-list"></div>
+        </section>
       </section>
+
+      <dialog id="admin-confirm-dialog" class="admin-confirm-dialog" aria-labelledby="admin-confirm-title" aria-describedby="admin-confirm-description">
+        <h2 id="admin-confirm-title"></h2><p id="admin-confirm-description"></p>
+        <p id="admin-confirm-error" role="alert" hidden></p>
+        <div class="admin-confirm-actions"><button id="admin-confirm-cancel" type="button" class="button button-outline">Cancel</button><button id="admin-confirm-submit" type="button" class="button button-danger">Delete</button></div>
+      </dialog>
 
       <dialog id="admin-history-dialog" class="admin-history-dialog" aria-labelledby="admin-history-title">
         <div class="admin-history-shell">

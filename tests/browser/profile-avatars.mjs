@@ -703,6 +703,7 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
 
   // A room admin can add a shared portrait; a normal player sees it on their next gallery open.
   await openAdminFixture(hostPage);
+  await click(hostPage, "#admin-tab-images");
   const adminVisibility = await evaluate(hostPage, () => ({
     adminPanelVisible:!document.querySelector('#admin-panel').hidden,
     adminFormVisible:Boolean(document.querySelector('#admin-avatar-preset-form').offsetWidth),

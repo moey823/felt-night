@@ -69,6 +69,8 @@ export default async function adminBulk([playerPage, adminPage], sleep, roomPass
   });
   assert(registration.status === 201, "Could not create the disposable test account: " + JSON.stringify(registration.body));
   const host = registration.body;
+  const portrait = await api(playerPage, "/profile/avatar", host, {preset_id:"fish"});
+  assert(portrait.status === 200, "Could not seed the test profile image.");
   const tableIds = [];
   for (let index = 0; index < 21; index++) {
     const created = await api(playerPage, "/tables", host, {
@@ -109,7 +111,7 @@ export default async function adminBulk([playerPage, adminPage], sleep, roomPass
   await wait(playerPage, () => !document.querySelector("#history-dialog")?.open);
 
   await signInAdmin();
-  await click(adminPage, "#admin-history-details > summary");
+  await click(adminPage, "#admin-tab-games");
   await wait(adminPage, () => document.querySelectorAll("#admin-history-list [data-admin-history-id]").length === 20);
   const firstId = await evaluate(adminPage, () =>
     document.querySelector("#admin-history-list [data-admin-history-select]")?.getAttribute("data-admin-history-select"));

@@ -225,21 +225,8 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   assert(JSON.stringify(publicConfig.config.bet_presets.preflop_bb) === JSON.stringify([2.5, 3, 4.5]),
     'Players do not receive the shared admin bet presets.');
 
-  const detailsOpen = await evaluate(guestPage, () => {
-    const details = document.querySelector('#admin-tables-details');
-    details.open = true;
-    details.dispatchEvent(new Event('toggle'));
-    return details.open;
-  });
-  assert(detailsOpen, 'Admin table tools did not open.');
-  await wait(guestPage, id => Boolean(document.querySelector('[data-admin-inspect="' + id + '"]')), tableId);
-  await guestPage.screenshot('flow-admin-tables');
-  await click(guestPage, '[data-admin-inspect="' + tableId + '"]');
-  await wait(guestPage, id => Boolean(document.querySelector('[data-admin-table-id="' + id + '"] [data-admin-add-bot="8"]')), tableId);
-  await click(guestPage, '[data-admin-table-id="' + tableId + '"] [data-admin-add-bot="8"]');
-  await wait(guestPage, id => Boolean(document.querySelector('[data-admin-table-id="' + id + '"] [data-admin-remove-bot="8"]')), tableId);
-  await click(guestPage, '[data-admin-table-id="' + tableId + '"] [data-admin-remove-bot="8"]');
-  await wait(guestPage, id => Boolean(document.querySelector('[data-admin-table-id="' + id + '"] [data-admin-add-bot="8"]')), tableId);
+  assert(await evaluate(guestPage,()=>!document.querySelector('#admin-tables-details')&&
+    document.querySelectorAll('#admin-tabs [role="tab"]').length===4), 'Obsolete table inspection tools remain.');
 
   // Return to the player account, seat two entrants, normalize 3-place payouts, then confirm end twice.
   await signOut(guestPage);

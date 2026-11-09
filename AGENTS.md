@@ -7,6 +7,8 @@ Read README.md and deploy/README.md before changing server startup or ingress.
 - Admin is a persistent role on an ordinary password-authenticated account. Admins can play, edit their own profiles, and open the Admin screen from the app.
 - The first successful account registration in a fresh database becomes admin atomically. Existing deployments with accounts must receive an explicit owner-authorized role migration; never grant an arbitrary new registrant admin because the admin count is zero.
 - Role changes require an authenticated admin and CSRF. Recheck the acting admin and the last-admin constraint in the same serialized transaction. Never permit removal of the last admin, including concurrent self-demotions.
+- Account deletion requires admin authorization and explicit confirmation. Protect all admin accounts and accounts involved in active games; revoke deleted accounts' sessions and remove their credentials/profile images while retaining saved game records.
+- Bot-game purge requires a count-confirmed selection of terminal games with recorded bot participation. Preserve active games and games without bots; recheck the selection within the deletion transaction.
 - Read roles from the database for every authenticated request so demotion applies to existing sessions immediately. Do not trust caller-supplied role or proxy headers.
 - Retire the old passwordless synthetic admin identity and its sessions. FELT_NIGHT_ADMIN_USERNAME no longer grants privileges or reserves a username.
 - Deploy one loopback listener for both players and role-based administration. The legacy separate admin listener and its ingress are retired; do not reintroduce --admin-port / --admin-origin in the deployed service. Preserve the room invite and external data directory.
