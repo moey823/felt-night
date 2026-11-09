@@ -4728,6 +4728,8 @@
     var controls = byId("action-controls");
     if (!panel || !controls) return;
     ensureActionControls();
+    controls.classList.remove("is-big-blind-option");
+    controls.querySelector(".action-buttons").setAttribute("aria-label", "Poker actions");
     var playerPrefs = globalBetPreferences();
     var presetGroup = controls.querySelector(".raise-presets");
     var reservedPresetSlots = Math.max(1,
@@ -4818,6 +4820,12 @@
     var street = String(view.street || "").toLowerCase();
     var preflop = street ? street === "preflop" : cardArray(view.board).length === 0;
     var bigBlind = Math.max(1, number(blindParts(view).big, number(view.config && view.config.big_blind, 1)));
+    var viewerId = String(viewer.player_id || state.player && state.player.id || "");
+    var bigBlindOption = canAct && preflop && toCall === 0 && viewerId &&
+      viewerId === String(view.big_blind_id || "") &&
+      currentBet <= number(view.hand_blinds && view.hand_blinds.big, bigBlind);
+    controls.classList.toggle("is-big-blind-option", Boolean(bigBlindOption));
+    if (bigBlindOption) controls.querySelector(".action-buttons").setAttribute("aria-label", "Big blind option: check or raise");
     var potAfterCall = Math.max(0, number(view.pot, 0) + callAmount);
     var presetSpecs = preflop
       ? playerPrefs.preflop_bb.map(function (bb) {

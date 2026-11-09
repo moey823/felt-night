@@ -4876,3 +4876,15 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
   .admin-screen-heading { flex-wrap: wrap; }
   .admin-accounts-panel { padding: 16px; }
 }
+
+/* An unraised big blind has only Check or Raise. Keep sizing tracks unchanged. */
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons {
+  display: grid !important;
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 2px;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="fold"] { display: none !important; }
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="call"] { grid-column: 1 !important; }
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="raise"] { grid-column: 2 !important; }

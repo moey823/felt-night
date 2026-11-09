@@ -2051,6 +2051,35 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(expired["status"], "expired")
         self.assertEqual(expired["cancellation_reason"], "idle")
 
+    def test_unraised_big_blind_cannot_fold_and_can_check_or_raise(self):
+        for count in (2, 3, 9):
+            with self.subTest(players=count):
+                state = engine.create_lobby("big-blind-option", "p1", "Ada", config(max_seats=count), now=100)
+                for index in range(2, count + 1):
+                    engine.join(state, "p%d" % index, "Player %d" % index, now=101)
+                engine.start(state, "p1", now=102)
+                hand = state["hand"]
+                bb = hand["big_blind_id"]
+                while hand["to_act"] != bb:
+                    engine.apply_action(state, hand["to_act"], "call", None,
+                                        state["hand_no"], state["turn_version"], now=103)
+                self.assertEqual(hand["street"], "preflop")
+                self.assertEqual(engine._to_call(hand, bb), 0)
+                before = copy.deepcopy(state)
+                with self.assertRaises(engine.GameError) as error:
+                    engine.apply_action(state, bb, "fold", None,
+                                        state["hand_no"], state["turn_version"], now=104)
+                self.assertEqual(error.exception.code, "cannot_fold")
+                self.assertEqual(state, before)
+                raised = copy.deepcopy(state)
+                engine.apply_action(raised, bb, "raise", hand["big_blind"] * 2,
+                                    raised["hand_no"], raised["turn_version"], now=104)
+                self.assertEqual(raised["hand"]["street"], "preflop")
+                self.assertEqual(raised["hand"]["current_bet"], hand["big_blind"] * 2)
+                engine.apply_action(state, bb, "check", None,
+                                    state["hand_no"], state["turn_version"], now=104)
+                self.assertEqual(state["hand"]["street"], "flop")
+
     def test_fold_is_illegal_when_check_is_free_for_players_bots_and_timeouts(self):
         state = heads_up()
         hand = state["hand"]
