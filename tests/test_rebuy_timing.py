@@ -6,14 +6,16 @@ import engine
 
 
 class RebuyTimingTests(unittest.TestCase):
-    def busted_table(self, busted=("p3",), showdown_seconds=5):
+    def busted_table(self, busted=("p3",), showdown_seconds=5, players=4):
         state = engine.create_lobby("rebuy-timing", "p1", "Ada", {
-            "max_seats": 4, "starting_stack": 1000, "small_blind": 5, "big_blind": 10,
+            "max_seats": players, "starting_stack": 1000, "small_blind": 5, "big_blind": 10,
             "level_minutes": 1, "showdown_seconds": showdown_seconds,
             "elimination_announcement_seconds": 0, "blind_announcement_seconds": 0,
         }, now=100)
         for pid, name in (("p2", "Bea"), ("p3", "Cy"), ("p4", "Dee")):
             engine.join(state, pid, name, now=101)
+        if players == 5:
+            engine.join(state, "p5", "Eli", now=101)
         engine.start(state, "p1", now=102)
         hand = state["hand"]
         hand["board"] = ["As", "Kh", "9c", "7s", "3d"]
@@ -66,7 +68,7 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertEqual(self.view(state, "p1", 151)["blinds"]["seconds_to_next"], 51)
 
     def test_multiple_busts_wait_for_last_decision_and_survive_reload(self):
-        state = json.loads(json.dumps(self.busted_table(("p3", "p4"))))
+        state = json.loads(json.dumps(self.busted_table(("p3", "p4"), players=5)))
         engine.accept_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=120)
         engine.advance(state, now=130)
         self.assertEqual(state["hand_no"], 1)
@@ -126,9 +128,9 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertIsNone(self.view(state, "p3", 154.99)["viewer"]["rebuy_offer"])
         self.assertIsNotNone(self.view(state, "p3", 155)["viewer"]["rebuy_offer"])
 
-    def test_bot_elimination_does_not_add_rebuy_hold(self):
+    def test_bot_elimination_at_heads_up_does_not_add_rebuy_hold(self):
         state = self.busted_table()
-        # Resolving the only human offer releases the hold; bots never get one.
+        # At heads-up no player, including a bot, gets a rebuy offer.
         engine.decline_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=115)
         engine._seat_by_id(state, "p4")["is_bot"] = True
         engine._seat_by_id(state, "p4")["stack"] = 0

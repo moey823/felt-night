@@ -5,6 +5,7 @@ persistence and must serialize each table's mutations (for example with a DB
 transaction). Chip values are integer play-money units only.
 """
 from __future__ import annotations
+from payouts import whole_dollar_awards
 
 import hashlib
 import itertools
@@ -511,6 +512,8 @@ def pause_table(
             for offer in _pending_rebuy_offers(state):
                 offer["offered_at"] += duration
                 offer["expires_at"] += duration
+                if offer.get("bot_decision_at") is not None:
+                    offer["bot_decision_at"] += duration
         state["paused"] = False
         state["paused_at"] = None
         state["turn_version"] += 1
@@ -1897,7 +1900,8 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
         return state
     # Older saved offers may already be open; adopt the hold at the hand boundary.
     hold_changed = _sync_rebuy_hold(state, timestamp)
-    changed = _expire_rebuy_offers(state, timestamp) or hold_changed or migrated
+    rebuy_changed = _advance_rebuy_decisions(state, timestamp)
+    changed = _expire_rebuy_offers(state, timestamp) or rebuy_changed or hold_changed or migrated
     if _finish_if_no_rebuy_can_change_result(state, timestamp):
         _bump(state)
         return state
@@ -2517,10 +2521,43 @@ def _renumber_elimination_order(state: Dict[str, Any]) -> None:
         removed += len(group)
 
 
+def _rebuys_open(state: Dict[str, Any]) -> bool:
+    return (state.get("rebuy_enabled") is True and state.get("status") == "playing"
+            and sum(seat.get("stack", 0) > 0 for seat in state.get("seats", [])) > 2)
+
+
+def _advance_rebuy_decisions(state: Dict[str, Any], now: float) -> bool:
+    pending = list((state.get("rebuy_offers") or {}).items())
+    changed = False
+    for player_id, offer in pending:
+        if not isinstance(offer, dict):
+            continue
+        if not _rebuys_open(state):
+            _resolve_rebuy_offer(state, player_id, offer, "declined", now)
+            changed = True
+            continue
+        seat = _seat_by_id(state, player_id)
+        due = offer.get("bot_decision_at")
+        if seat is not None and seat.get("is_bot") and type(due) in (int, float) and now >= due:
+            if random.SystemRandom().choice((True, False)):
+                try:
+                    accept_rebuy(state, player_id, offer["id"], now=now, _bot_decision=True)
+                except GameError as error:
+                    if error.code not in ("rebuy_limit", "rebuy_unavailable"):
+                        raise
+                    _resolve_rebuy_offer(state, player_id, offer, "declined", now)
+                    _log(state, "%s could not re-enter the tournament." % seat["name"], now)
+            else:
+                _resolve_rebuy_offer(state, player_id, offer, "declined", now)
+                _log(state, "%s declined a rebuy offer." % seat["name"], now)
+            changed = True
+    return changed
+
+
 def _create_rebuy_offers(state: Dict[str, Any],
                          eliminated: Sequence[Dict[str, Any]],
                          hand: Dict[str, Any], now: float) -> None:
-    if state.get("rebuy_enabled") is not True or state.get("status") != "playing":
+    if not _rebuys_open(state):
         return
     prize = state.get("prize") if isinstance(state.get("prize"), dict) else {}
     buy_in = prize.get("buy_in", state.get("config", {}).get("buy_in", DEFAULT_BUY_IN))
@@ -2531,7 +2568,7 @@ def _create_rebuy_offers(state: Dict[str, Any],
     for item in eliminated:
         player_id = str(item.get("player_id") or "")
         seat = _seat_by_id(state, player_id)
-        if not player_id or seat is None or seat.get("is_bot", False):
+        if not player_id or seat is None:
             continue
         offer = {
             "id": uuid.uuid4().hex, "hand_id": _hand_id(state, hand),
@@ -2540,6 +2577,8 @@ def _create_rebuy_offers(state: Dict[str, Any],
             "buy_in_cents": buy_in * 100, "starting_stack": starting_stack,
             "status": "pending",
         }
+        if seat.get("is_bot"):
+            offer["bot_decision_at"] = offer["offered_at"] + 5
         offers[player_id] = offer
         _add_rebuy_history(state, {
             "offer_id": offer["id"], "player_id": player_id, "action": "offered",
@@ -2550,7 +2589,7 @@ def _create_rebuy_offers(state: Dict[str, Any],
 
 
 def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
-                 now: Optional[float] = None) -> Dict[str, Any]:
+                 now: Optional[float] = None, _bot_decision: bool = False) -> Dict[str, Any]:
     """Accept one exact offer, adding the locked stack outside the current hand."""
     timestamp = _now(now)
     if not isinstance(offer_id, str) or not offer_id:
@@ -2562,8 +2601,8 @@ def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
             return state
         if receipt.get("status") in ("declined", "expired"):
             raise GameError("rebuy_expired", "This rebuy offer is no longer available.", 409)
-    if state.get("status") != "playing" or state.get("rebuy_enabled") is not True:
-        raise GameError("rebuy_unavailable", "This tournament does not accept rebuys.", 409)
+    if not _rebuys_open(state):
+        raise GameError("rebuy_unavailable", "Rebuys close when two players remain.", 409)
     offers = state.get("rebuy_offers")
     offer = offers.get(actor_id) if isinstance(offers, dict) else None
     if not isinstance(offer, dict) or offer.get("id") != offer_id:
@@ -2572,12 +2611,12 @@ def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
     effective_now = float(paused_at) if isinstance(paused_at, (int, float)) else timestamp
     if effective_now < float(offer.get("offered_at", 0)):
         raise GameError("rebuy_not_ready", "The showdown must finish before the rebuy decision.", 409)
-    if float(offer.get("expires_at", 0)) <= effective_now:
+    if not _bot_decision and float(offer.get("expires_at", 0)) <= effective_now:
         _resolve_rebuy_offer(state, actor_id, offer, "expired", timestamp)
         _finish_if_no_rebuy_can_change_result(state, timestamp)
         raise GameError("rebuy_expired", "This rebuy offer has expired.", 409)
     seat = _seat_by_id(state, actor_id)
-    if seat is None or seat.get("is_bot", False) or seat.get("stack") != 0:
+    if seat is None or (seat.get("is_bot", False) and not _bot_decision) or seat.get("stack") != 0:
         raise GameError("rebuy_unavailable", "This player cannot re-enter this tournament.", 409)
     if not any(item.get("player_id") == actor_id for item in state.get("elimination_order", [])):
         raise GameError("rebuy_unavailable", "This player is not currently eliminated.", 409)
@@ -2832,11 +2871,18 @@ def _buyin_accounting(
     return rebuy_count, buy_in_count, total
 
 
+def _public_results(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = state.get("results", [])
+    if state.get("status") == "completed":
+        return whole_dollar_awards(rows, _prize_summary(state).get("prize_pool_cents"))
+    return [dict(row) for row in rows]
+
+
 def _standings_rows(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     if state.get("status") == "completed" and state.get("results"):
         rows = []
         elimination = {item["player_id"]: item for item in state.get("elimination_order", [])}
-        for result in state["results"]:
+        for result in _public_results(state):
             item = elimination.get(result["player_id"], {})
             seat = _seat_by_id(state, result["player_id"])
             rebuy_count, buy_in_count, total_buy_in_cents = _buyin_accounting(
@@ -3000,6 +3046,12 @@ def _set_results(state: Dict[str, Any], winner_id: Optional[str], now: float) ->
             # finisher's exact tied-place share was floored.
             winner_result["award_cents"] = pool_cents - eliminated_total
 
+    if schedule is not None:
+        results = whole_dollar_awards(results, schedule[0])
+        awards = {row["player_id"]: row.get("award_cents") for row in results}
+        for item in state.get("elimination_order", []):
+            if awards.get(item["player_id"]) is not None:
+                item["award_cents"] = awards[item["player_id"]]
     state["results"] = results
     state["status"] = "completed"
     state["completed_at"] = now
@@ -3359,7 +3411,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "rebuy_waiting": [
             {"player_id": pid, "name": seat["name"]}
             for pid, offer in state.get("rebuy_offers", {}).items()
-            if blind_paused and isinstance(offer, dict)
+            if blind_paused and _rebuys_open(state) and isinstance(offer, dict)
             and effective_now >= float(offer.get("offered_at", 0))
             and effective_now < float(offer.get("expires_at", 0))
             for seat in [_seat_by_id(state, pid)] if seat is not None
@@ -3413,7 +3465,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "rebuy_offer": (
                 dict(state.get("rebuy_offers", {}).get(viewer_id, {}),
                      expires_at=public_deadline(state["rebuy_offers"][viewer_id].get("expires_at")))
-                if viewer_id and isinstance(state.get("rebuy_offers"), dict)
+                if _rebuys_open(state) and viewer_id and isinstance(state.get("rebuy_offers"), dict)
                 and isinstance(state["rebuy_offers"].get(viewer_id), dict)
                 and effective_now >= float(state["rebuy_offers"][viewer_id].get("offered_at", 0))
                 and effective_now < float(state["rebuy_offers"][viewer_id].get("expires_at", 0))
@@ -3430,7 +3482,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "max_raise_to": max_to_value,
         },
         "action_log": list(state["action_log"]),
-        "results": list(state["results"]),
+        "results": _public_results(state),
         "showdown": showdown_rows,
         "hand_ranks": hand_ranks,
         "winners": winners,

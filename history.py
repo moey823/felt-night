@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from payouts import rounded_tournament
 from datetime import datetime, timezone
 
 
@@ -552,13 +553,12 @@ def _history_timestamp(value):
 def _credit_amount(cents):
     if type(cents) is not int or cents < 0:
         return None
-    whole, remainder = divmod(cents, 100)
-    return str(whole) if remainder == 0 else "%d.%02d" % (whole, remainder)
+    return str(cents // 100)
 
 
 def format_tournament_summary(tournament):
     """Format saved tournament facts as a plain-text Felt Night summary."""
-    tournament = tournament if isinstance(tournament, dict) else {}
+    tournament = rounded_tournament(tournament) if isinstance(tournament, dict) else {}
     config = tournament.get("config") if isinstance(tournament.get("config"), dict) else {}
     prize = tournament.get("prize") if isinstance(tournament.get("prize"), dict) else {}
     participants = tournament.get("participants") if isinstance(tournament.get("participants"), list) else []
@@ -841,6 +841,7 @@ def _summary(conn, row):
         "config": _loads(row["config_json"], {}),
         "prize": _loads(row["prize_json"], {}),
     }
+    summary = rounded_tournament(summary)
     summary["summary_text"] = format_tournament_summary(summary)
     return summary
 

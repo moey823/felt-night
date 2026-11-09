@@ -194,7 +194,7 @@ export default async function game([one, two], sleep, roomPassword) {
       acceptDisabled:document.querySelector('#rebuy-offer-accept')?.disabled,
     }));
     const seconds = Number(offer.label.match(/(\d+) seconds left/)?.[1] || 0);
-    if (!offer.summary.includes('$' + Number(expectedBuyIn).toFixed(2)) ||
+    if (!offer.summary.includes('$' + Number(expectedBuyIn).toFixed(0)) ||
         !offer.summary.includes(Number(expectedStack).toLocaleString('en-US')) ||
         seconds < 1 || seconds > 60 || offer.acceptDisabled) {
       throw Error('Final rebuy offer copy/countdown was incorrect: ' + JSON.stringify(offer));
@@ -394,7 +394,7 @@ export default async function game([one, two], sleep, roomPassword) {
     const info=await ev(p,()=>({history:window.historyQA.map(JSON.parse), standings:document.querySelector('#results-panel').innerText, overflow:document.documentElement.scrollWidth>innerWidth+1}));
     if(info.history.some(([n])=>n===1 || n===2)) throw Error('Partial flop displayed');
     for(const n of [0,3,4]) if(!info.history.some(([count,odds])=>count===n && odds.length===2 && new Set(odds.map(o=>o[0])).size===2 && odds.every(o=>o[1].includes('%')))) throw Error('Missing live all-in odds before settlement at board size '+n+' '+JSON.stringify(info.history));
-    if(/\\bchips\\b/i.test(info.standings) || !info.standings.includes('$26.00') || !info.standings.includes('$19.50') || !info.standings.includes('$6.50') || !info.standings.includes('Robin') || !info.standings.includes('Morgan') || info.overflow) throw Error(JSON.stringify(info));
+    if(/\\bchips\\b/i.test(info.standings) || !info.standings.includes('$26') || !info.standings.includes('$19.50') || !info.standings.includes('$6.50') || !info.standings.includes('Robin') || !info.standings.includes('Morgan') || info.overflow) throw Error(JSON.stringify(info));
     await assertNoRetiredControls(p);
     await click(p,'#dismiss-results-button'); await click(p,'#reopen-results-button'); await wait(p,visible,'#dismiss-results-button');
     await click(p,'#dismiss-results-button');

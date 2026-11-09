@@ -668,6 +668,10 @@ class ServerAuthTests(unittest.TestCase):
             cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
         )
         self.assertEqual(status, 200, joined)
+        for name in ("Extra Rebuy One", "Extra Rebuy Two"):
+            extra_cookie, extra_proof, extra_csrf, _ = self.login(name)
+            code, _, extra = self.request("POST", table_path+"/join", {}, cookie=extra_cookie, proof=extra_proof, csrf=extra_csrf)
+            self.assertEqual(code, 200, extra)
         status, _, started = self.request(
             "POST", table_path + "/start", {},
             cookie=host_cookie, proof=host_proof, csrf=host_csrf,
@@ -683,9 +687,9 @@ class ServerAuthTests(unittest.TestCase):
         offer = table["table"]["viewer"]["rebuy_offer"]
         self.assertIsNotNone(offer)
         self.assertGreaterEqual(offer["expires_at"], table["table"]["server_now"] + 59)
-        self.assertEqual(table["table"]["entrant_count"], 2)
-        self.assertEqual(table["table"]["buy_in_count"], 2)
-        self.assertEqual(table["table"]["prize_pool_cents"], 2000)
+        self.assertEqual(table["table"]["entrant_count"], 4)
+        self.assertEqual(table["table"]["buy_in_count"], 4)
+        self.assertEqual(table["table"]["prize_pool_cents"], 4000)
 
         offer_path = table_path + "/rebuy"
         status, _, unconfirmed = self.request(
@@ -712,10 +716,10 @@ class ServerAuthTests(unittest.TestCase):
             self.assertEqual(rebought["rebuy_count"], 1)
             self.assertEqual(rebought["buy_in_count"], 2)
             self.assertEqual(rebought["total_buy_in_cents"], 2000)
-            self.assertEqual(accepted["table"]["entrant_count"], 2)
-            self.assertEqual(accepted["table"]["buy_in_count"], 3)
+            self.assertEqual(accepted["table"]["entrant_count"], 4)
+            self.assertEqual(accepted["table"]["buy_in_count"], 5)
             self.assertEqual(accepted["table"]["rebuy_count"], 1)
-            self.assertEqual(accepted["table"]["prize_pool_cents"], 3000)
+            self.assertEqual(accepted["table"]["prize_pool_cents"], 5000)
         conn = self.app.store.connect()
         try:
             persisted = conn.execute("SELECT state FROM tables WHERE id=?", (table_id,)).fetchone()
@@ -727,7 +731,7 @@ class ServerAuthTests(unittest.TestCase):
             1,
         )
 
-    def test_declining_last_http_offer_completes_heads_up_tournament(self):
+    def test_heads_up_completion_does_not_offer_a_rebuy(self):
         host_cookie, host_proof, host_csrf, host = self.login("Decline Host")
         guest_cookie, guest_proof, guest_csrf, guest = self.login("Decline Guest")
         status, _, created = self.create_table(
@@ -753,15 +757,12 @@ class ServerAuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 200, pending)
         offer = pending["table"]["viewer"]["rebuy_offer"]
-        self.assertIsNotNone(offer)
-        status, _, declined = self.request(
-            "POST", table_path + "/rebuy/decline", {"offer_id": offer["id"]},
-            cookie=host_cookie, proof=host_proof, csrf=host_csrf,
-        )
-        self.assertEqual(status, 200, declined)
-        self.assertEqual(declined["table"]["status"], "completed")
-        self.assertIsNone(declined["table"]["viewer"]["rebuy_offer"])
-        self.assertEqual(declined["table"]["results"][0]["player_id"], guest["id"])
+        self.assertIsNone(offer)
+        self.assertEqual(pending["table"]["status"], "completed")
+        self.assertEqual(pending["table"]["results"][0]["player_id"], guest["id"])
+        status, _, declined = self.request("POST",table_path+"/rebuy/decline",{"offer_id":"not-offered"},
+                                           cookie=host_cookie,proof=host_proof,csrf=host_csrf)
+        self.assertEqual(status,409)
 
     def test_profile_credentials_require_current_password_and_keep_player_id(self):
         cookie, proof, csrf, player = self.login("Profile User", with_avatar=False)
@@ -2081,9 +2082,9 @@ class ServerAuthTests(unittest.TestCase):
             }]
             state["results"] = [
                 {"player_id": host["id"], "name": host["name"],
-                 "place": 1, "chips": 2000, "award_cents": 600},
+                 "place": 1, "chips": 2000, "award_cents": 1200},
                 {"player_id": guest["id"], "name": guest["name"],
-                 "place": 2, "chips": 0, "award_cents": 400},
+                 "place": 2, "chips": 0, "award_cents": 800},
             ]
             state["hand"] = dict(previous)
             state["hand"].update({

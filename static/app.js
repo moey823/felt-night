@@ -5821,8 +5821,8 @@
     return parts.map(Number);
   }
   function dollars(cents) {
-    return "$" + new Intl.NumberFormat("en-US", { minimumFractionDigits:2, maximumFractionDigits:2 })
-      .format(number(cents, 0) / 100);
+    return "$" + new Intl.NumberFormat("en-US", { maximumFractionDigits:0 })
+      .format(Math.floor(number(cents, 0) / 100));
   }
   function buyInAccountingCopy(row) {
     if (!row || row.buy_in_count == null) return "";

@@ -257,11 +257,9 @@ class EngineTests(unittest.TestCase):
         engine._seat_by_id(final, "p1")["stack"] = 0
         engine._seat_by_id(final, "p2")["stack"] = 200
         engine._finish_hand(final, {player_id: 0 for player_id in final_hand["contrib"]}, now=200)
-        self.assertEqual(final["status"], "playing")
-        offer = final["rebuy_offers"]["p1"]
-        self.assertEqual(offer["expires_at"], 261.5)
-        self.assertEqual(final["hand"]["next_hand_at"], 207.5)
-        engine.decline_rebuy(final, "p1", offer["id"], now=201.6)
+        self.assertEqual(final["status"], "completed")
+        self.assertEqual(final["rebuy_offers"], {})
+        self.assertEqual(final["hand"]["presentation_until"], 207.5)
         self.assertEqual(final["status"], "completed")
         self.assertIsNone(final["hand"]["next_hand_at"])
         with patch("engine.time.time", return_value=203):
@@ -349,11 +347,10 @@ class EngineTests(unittest.TestCase):
             state, {player_id: 0 for player_id in hand["contrib"]}, now=200,
         )
 
-        self.assertEqual(state["status"], "playing")
+        self.assertEqual(state["status"], "completed")
         self.assertEqual(hand["showdown_until"], 205)
-        self.assertEqual(hand["next_hand_at"], 211)
-        offer = state["rebuy_offers"]["p1"]
-        engine.decline_rebuy(state, "p1", offer["id"], now=205.1)
+        self.assertIsNone(hand["next_hand_at"])
+        self.assertEqual(state["rebuy_offers"], {})
         self.assertEqual(state["status"], "completed")
         self.assertIsNone(hand["next_hand_at"])
         self.assertEqual(state["elimination_announcement"]["starts_at"], 205)
@@ -1377,7 +1374,7 @@ class EngineTests(unittest.TestCase):
         engine._record_eliminations(two_player, short_hand, now=4)
         engine._set_results(two_player, "p1", now=5)
         short_awards = {item["player_id"]: item["award_cents"] for item in two_player["results"]}
-        self.assertEqual(short_awards, {"p1": 1420, "p2": 580})
+        self.assertEqual(short_awards, {"p1": 1400, "p2": 600})
         self.assertEqual(sum(short_awards.values()), two_player["prize"]["pool_cents"])
         self.assertEqual(engine.summary(two_player)["entrant_count"], 2)
         self.assertEqual(engine.summary(two_player)["prize_pool_cents"], 2000)
@@ -1545,12 +1542,13 @@ class EngineTests(unittest.TestCase):
 
         tied = engine.create_lobby(
             "rebuy-tie", "p1", "Ada",
-            config(max_seats=4, starting_stack=1000,
+            config(max_seats=5, starting_stack=1000,
                    blind_announcement_seconds=0, elimination_announcement_seconds=0),
             now=1,
         )
         for player_id, name in (("p2", "Bea"), ("p3", "Cy"), ("p4", "Dee")):
             engine.join(tied, player_id, name, now=2)
+        engine.join(tied, "p5", "Eli", now=2)
         engine.start(tied, "p1", now=3)
         hand = tied["hand"]
         hand["stack_before"] = {"p1": 400, "p2": 300, "p3": 100, "p4": 100}
@@ -1559,7 +1557,7 @@ class EngineTests(unittest.TestCase):
         engine._finish_hand(tied, {}, now=10)
         self.assertEqual(
             {(item["place"], item["tie_count"]) for item in tied["elimination_order"]},
-            {(3, 2)},
+            {(4, 2)},
         )
         offer = tied["rebuy_offers"]["p4"]
         engine.accept_rebuy(tied, "p4", offer["id"], now=12)
@@ -1567,16 +1565,18 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(remaining), 1)
         self.assertEqual((remaining[0]["player_id"], remaining[0]["place"],
                           remaining[0]["tied"], remaining[0]["tie_count"]),
-                         ("p3", 4, False, 1))
+                         ("p3", 5, False, 1))
 
-    def test_final_rebuy_offer_expires_at_sixty_seconds_and_can_be_paused(self):
+    def test_multiway_rebuy_offer_expires_at_sixty_seconds_and_can_be_paused(self):
         state = engine.create_lobby(
             "rebuy-deadline", "p1", "Ada",
-            config(max_seats=2, starting_stack=100,
+            config(max_seats=4, starting_stack=100,
                    blind_announcement_seconds=0, elimination_announcement_seconds=0),
             now=1,
         )
         engine.join(state, "p2", "Bea", now=2)
+        engine.join(state, "p3", "Cy", now=2)
+        engine.join(state, "p4", "Dee", now=2)
         engine.start(state, "p1", now=3)
         hand = state["hand"]
         hand["stack_before"] = {"p1": 100, "p2": 100}
@@ -1599,11 +1599,13 @@ class EngineTests(unittest.TestCase):
 
         timeout = engine.create_lobby(
             "rebuy-expire", "p1", "Ada",
-            config(max_seats=2, starting_stack=100,
+            config(max_seats=4, starting_stack=100,
                    blind_announcement_seconds=0, elimination_announcement_seconds=0),
             now=1,
         )
         engine.join(timeout, "p2", "Bea", now=2)
+        engine.join(timeout, "p3", "Cy", now=2)
+        engine.join(timeout, "p4", "Dee", now=2)
         engine.start(timeout, "p1", now=3)
         timeout_hand = timeout["hand"]
         timeout_hand["stack_before"] = {"p1": 100, "p2": 100}
@@ -1611,10 +1613,11 @@ class EngineTests(unittest.TestCase):
         engine._seat_by_id(timeout, "p2")["stack"] = 200
         engine._finish_hand(timeout, {}, now=100)
         engine.advance(timeout, now=161.5)
-        self.assertEqual(timeout["status"], "completed")
+        self.assertEqual(timeout["status"], "playing")
+        self.assertEqual(timeout["rebuy_offers"], {})
         self.assertEqual(timeout["rebuy_history"][-1]["action"], "expired")
 
-    def test_new_tables_allocate_cent_precision_but_legacy_awards_remain_whole_credits(self):
+    def test_new_tables_allocate_whole_dollars_and_conserve_the_pool(self):
         state = engine.create_lobby(
             "twenty-six-pool", "p1", "Ada",
             config(max_seats=2, buy_in=13, payout_percentages=[75, 25]),
@@ -1628,7 +1631,7 @@ class EngineTests(unittest.TestCase):
         engine._record_eliminations(state, state["hand"], now=4)
         engine._set_results(state, "p1", now=5)
         awards = {row["player_id"]: row["award_cents"] for row in state["results"]}
-        self.assertEqual(awards, {"p1": 1950, "p2": 650})
+        self.assertEqual(awards, {"p1": 2000, "p2": 600})
         self.assertEqual(sum(awards.values()), 2600)
 
         tied = engine.create_lobby(

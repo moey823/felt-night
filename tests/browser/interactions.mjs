@@ -159,13 +159,16 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await one.screenshot('table-interactions');
 
   await request('/admin/config',admin,{showdown_seconds:5});
+  const extraName=('RebuyExtra'+stamp).slice(0,24);
+  const extra={...await request('/register',null,{username:extraName,password:'test-extra-password',room_password:roomPassword}),username:extraName,password:'test-extra-password'};
+  await seedAvatar(request,extra);users.push(extra);
   const rebuyName='Rebuy acceptance '+stamp;
   const rebuyCreated=await request('/tables',users[0],{
     name:rebuyName,starting_stack:100,small_blind:10,big_blind:20,buy_in:5,
     level_minutes:79,turn_seconds:3600,payout_percentages:[75,25]
   });
   const rebuyTableId=rebuyCreated.table.id,rebuyPath='/tables/'+rebuyTableId;
-  await request(rebuyPath+'/seat',users[1],{seat_no:1});
+  for(let index=1;index<4;index++) await request(rebuyPath+'/seat',users[index],{seat_no:index});
   for(const [page,id] of [[one,rebuyTableId],[two,rebuyTableId]]) {
     await evaluate(page,tableId=>window.location.assign('/poker/table?table='+encodeURIComponent(tableId)),id);
     await wait(page,name=>document.querySelector('#view-table-name')?.textContent===name,rebuyName);
@@ -175,16 +178,17 @@ export default async function interactions([one,two], sleep, roomPassword) {
   for(let handAttempt=0;handAttempt<4&&!offerOwner;handAttempt++) {
     rebuyState=(await request(rebuyPath,users[0])).table;
     const thisHand=Number(rebuyState.hand_no);
+    while(rebuyState.actor_id&&!users.slice(0,2).some(user=>user.player.id===rebuyState.actor_id)) {
+      const actor=users.find(user=>user.player.id===rebuyState.actor_id);
+      rebuyState=(await request(rebuyPath+'/action',actor,{action:'fold',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version})).table;
+    }
     const firstActor=users.find(user=>user.player.id===rebuyState.actor_id);
-    if(!firstActor) throw Error('The rebuy test did not resolve an actor for hand '+thisHand+'.');
-    rebuyState=(await request(rebuyPath+'/action',firstActor,{
-      action:'all_in',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version
-    })).table;
-    const caller=users.find(user=>user.player.id===rebuyState.actor_id);
-    if(!caller||caller.player.id===firstActor.player.id) throw Error('The heads-up rebuy caller was not the opponent.');
-    rebuyState=(await request(rebuyPath+'/action',caller,{
-      action:'call',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version
-    })).table;
+    if(!firstActor)throw Error('No all-in actor.');
+    rebuyState=(await request(rebuyPath+'/action',firstActor,{action:'all_in',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version})).table;
+    while(rebuyState.actor_id){
+      const actor=users.find(user=>user.player.id===rebuyState.actor_id);
+      rebuyState=(await request(rebuyPath+'/action',actor,{action:users.slice(0,2).includes(actor)?'call':'fold',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version})).table;
+    }
     for(let attempt=0;attempt<120;attempt++) {
       rebuyState=(await request(rebuyPath,users[0])).table;
       if(rebuyState.street==='showdown'||rebuyState.hand_no>thisHand)break;
@@ -219,7 +223,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
       }
     }
   }
-  if(!offerOwner) throw Error('A final heads-up elimination did not create the expected rebuy offer.');
+  if(!offerOwner) throw Error('A multiway elimination did not create the expected rebuy offer.');
   assert(checkedShowdown,'The real game did not verify the showdown-before-rebuy phase.');
   const acceptPage=offerOwner===users[0]?one:two,otherPage=acceptPage===one?two:one;
   await wait(acceptPage,()=>document.querySelector('#rebuy-offer-dialog')?.open===true);
@@ -230,7 +234,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     declineVisible:Boolean(document.querySelector('#rebuy-offer-decline')?.offsetWidth),
   }));
   const secondsLeft=Number(offerUi.countdown.match(/(\d+) seconds left/)?.[1]||0);
-  assert(offerUi.summary.includes('$5.00')&&offerUi.summary.includes('100 chips')&&
+  assert(offerUi.summary.includes('$5')&&offerUi.summary.includes('100 chips')&&
     secondsLeft>=1&&secondsLeft<=60&&
     offerUi.confirmText==='Confirm rebuy'&&offerUi.declineVisible,
     'Rebuy offer did not show the locked stack, buy-in, countdown, and explicit choices: '+JSON.stringify(offerUi));
@@ -282,12 +286,12 @@ export default async function interactions([one,two], sleep, roomPassword) {
     ? Number(acceptedSeat?.stack) : Number(acceptedSeat?.stack)+Number(acceptedSeat?.bet||0);
   assert(acceptedSeat&&restoredChips===100&&!(acceptedHandNo===offerHandNo&&acceptedSeat.in_hand)&&
     Number(acceptedSeat.rebuy_count)===1&&Number(acceptedSeat.total_buy_in_cents)===1000&&
-    Number(accepted.prize_pool_cents)===1500&&Number(accepted.viewer.rebuy_count)===1&&
+    Number(accepted.prize_pool_cents)===2500&&Number(accepted.viewer.rebuy_count)===1&&
     Number(accepted.viewer.buy_in_count)===2&&Number(accepted.viewer.total_buy_in_cents)===1000,
     'Accepted rebuy did not restore the original stack outside the offer hand and update dollar accounting: '+
       JSON.stringify({acceptedHandNo,offerHandNo,restoredChips,acceptedSeat,viewer:accepted.viewer,pool:accepted.prize_pool_cents}));
-  await wait(acceptPage,text=>document.querySelector('#view-table-subtitle')?.textContent.includes('$10.00'));
+  await wait(acceptPage,text=>document.querySelector('#view-table-subtitle')?.textContent.includes('$10'));
   await wait(otherPage,()=>document.querySelector('#rebuy-waiting')?.hidden&&
     !document.querySelector('#blind-level-countdown')?.getAttribute('aria-label')?.includes('paused at'));
-  console.log('Confirmed rebuy restored 100 chips, counted a second $5 buy-in, and updated the $15 prize pool with updated totals.');
+  console.log('Confirmed rebuy restored 100 chips, counted a second $5 buy-in, and updated the $25 prize pool with updated totals.');
 }

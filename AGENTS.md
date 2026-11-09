@@ -16,6 +16,11 @@ Read README.md and deploy/README.md before changing server startup or ingress.
 - After deployment verify primary health, account roles, deployed source, and ingress. Confirm the retired admin listener and route remain absent. A blank-password admin login must fail.
 - Run python3 -m unittest discover -s tests for server changes. Use disposable data for registration, login, role changes, gameplay, and startup tests. Do not create test players or games in the live room.
 
+## Payouts and rebuys
+
+- Display currency in whole dollars. Final awards must be whole-dollar amounts summing exactly to the prize pool, including every accepted rebuy. Allocate rounding remainders by largest fractional share, then finish order; never overpay the pool. Preserve original historical records when normalizing saved-game views.
+- Rebuys are available only while more than two players remain. Bots decide once, by fair coin flip, five seconds after the showdown hold; host pause freezes that decision timer. Reuse the normal rebuy accounting and table/blind hold.
+
 ## Delivery
 
 Deploy committed source while preserving credentials and stored room data. Check the actual launch service and OS sandbox permit only the configured primary loopback listener. Keep deployment configuration persistent across restarts.
