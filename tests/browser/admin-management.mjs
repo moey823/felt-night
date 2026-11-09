@@ -6,7 +6,7 @@ export default async function adminManagement([page,playerPage],sleep,roomPasswo
   async function wait(fn,...args){for(let i=0;i<200;i++){const value=await ev(fn,...args);if(value)return value;await sleep(100);}throw Error('Timed out '+fn+' '+await ev(()=>document.body.innerText.slice(-700)));}
   async function click(selector){await wait(query=>{const node=document.querySelector(query);if(!node?.offsetWidth||node.disabled)return false;node.click();return true;},selector);}
   const origin=await page.evaluate('location.origin');
-  async function raw(path,user,body){const response=await fetch(origin+'/poker/api'+path,{method:body===undefined?'GET':'POST',headers:{Origin:origin,...(user?{Cookie:user.cookie,'X-SitNgo-Session':user.session_proof,'X-SitNgo-CSRF':user.csrf}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,...await response.json(),cookie:response.headers.get('set-cookie')?.split(';')[0]};}
+  async function raw(path,user,body){const response=await fetch(origin+'/poker/api'+path,{method:body===undefined?'GET':'POST',headers:{Origin:origin,...(user?{Cookie:user.cookie,'X-SitNgo-Session':user.session_proof,'X-SitNgo-CSRF':user.csrf}:{}),...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});return {status:response.status,requestId:response.headers.get('X-Request-ID'),...await response.json(),cookie:response.headers.get('set-cookie')?.split(';')[0]};}
   async function request(path,user,body){const data=await raw(path,user,body);if(data.status>=400)throw Error(path+' '+JSON.stringify(data));return data.table||data;}
   const admin=await request('/login',null,{username:'admin',password:'test-admin-password'});
   const users=[];
@@ -15,7 +15,20 @@ export default async function adminManagement([page,playerPage],sleep,roomPasswo
   async function game(name,bot,ended){const view=await request('/tables',keeper,{name,starting_stack:1000,small_blind:5,big_blind:10,level_minutes:10});if(bot)await request('/tables/'+view.id+'/bots',keeper,{seat_no:1});if(ended){const prompt=await request('/tables/'+view.id+'/end',keeper,{confirm:true});await request('/tables/'+view.id+'/end',keeper,{confirmation_token:prompt.confirmation_token});}return view.id;}
   const purgeId=await game('Past game with bots',true,true),keepId=await game('Past game with people',false,true),liveId=await game('Live game with bots',true,false);
   await openAdminFixture(page);
-  assert(await ev(()=>[...document.querySelectorAll('#admin-tabs [role="tab"]')].map(node=>node.textContent).join('|')==='Table settings|Users|Profile images|Past games|Host defaults'&&!document.querySelector('#admin-tables-details')),'Admin tabs are incorrect or obsolete tools remain.');
+  assert(await ev(()=>[...document.querySelectorAll('#admin-tabs [role="tab"]')].map(node=>node.textContent).join('|')==='Table settings|Users|Profile images|Past games|Host defaults|Logs'&&!document.querySelector('#admin-tables-details')),'Admin tabs are incorrect or obsolete tools remain.');
+  const loggedError=await raw('/admin/history/'+'0'.repeat(32),admin);
+  assert(loggedError.status===404&&loggedError.requestId,'Expected a traceable missing-game error.');
+  await click('#admin-tab-logs');
+  await ev(ref=>{document.querySelector('#admin-logs-reference').value=ref.slice(0,8);document.querySelector('#admin-logs-form').requestSubmit();},loggedError.requestId);
+  await wait(ref=>document.querySelectorAll('#admin-logs-list details').length===1&&document.querySelector('#admin-logs-list').textContent.includes(ref),loggedError.requestId);
+  await ev(()=>document.querySelector('#admin-logs-list details').open=true);
+  for(const [w,h] of [[1366,768],[320,568]]){
+    await page.resize(w,h);await sleep(150);
+    assert(await ev(()=>document.documentElement.scrollWidth<=innerWidth+1&&document.querySelector('#admin-logs-list pre').offsetHeight>0),'Logs overflow or details missing at '+w);
+    await page.screenshot('admin-logs-'+w);
+  }
+  await ev(()=>{document.querySelector('#admin-logs-reference').value='0'.repeat(32);document.querySelector('#admin-logs-form').requestSubmit();});
+  await wait(()=>document.querySelector('#admin-logs-status').textContent==='No matching log entries in the retained logs.'&&document.querySelector('#admin-logs-list').children.length===0);
   await ev(()=>{document.querySelector('#admin-tab-settings').focus();document.querySelector('#admin-tab-settings').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));});
   await wait(()=>document.querySelector('#admin-tab-users').getAttribute('aria-selected')==='true');
   for(const [w,h] of [[1366,768],[390,844],[320,568]]){
@@ -50,5 +63,5 @@ export default async function adminManagement([page,playerPage],sleep,roomPasswo
   assert((await raw('/admin/history/'+purgeId,admin)).status===404&&(await raw('/admin/history/'+keepId,admin)).status===200&&(await raw('/tables/'+liveId,keeper)).table.status==='lobby','Purge removed the wrong games.');
   await click('#admin-purge-bots');await wait(()=>document.querySelector('#admin-games-status').textContent==='No past games with bots to purge.');
   await page.screenshot('admin-past-games-desktop');
-  console.log('Admin management passed: five tabs, keyboard/mobile layout, account search and confirmed deletion, admin protection, revoked access, count-confirmed bot purge and active/human game preservation.');
+  console.log('Admin management passed: six tabs, keyboard/mobile layout, account search and confirmed deletion, admin protection, revoked access, count-confirmed bot purge and active/human game preservation.');
 }

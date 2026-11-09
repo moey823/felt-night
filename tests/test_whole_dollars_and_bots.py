@@ -116,6 +116,8 @@ class WholeDollarAndBotTests(unittest.TestCase):
              for player_id,offer in state["rebuy_offers"].items()},
             {"p3": (115,120),"p4": (115,120)},
         )
+        # Seating is randomized; decisions follow the recorded offer order.
+        declined, accepted = list(state["rebuy_offers"])
         pool_before=state["prize"]["pool_cents"]
 
         with patch.object(engine.random.SystemRandom,"choice",side_effect=(False,True)) as coin:
@@ -134,20 +136,20 @@ class WholeDollarAndBotTests(unittest.TestCase):
         self.assertEqual(state["hand_no"],1)
         self.assertEqual(state["status"],"playing")
         self.assertEqual(state["rebuy_offers"],{})
-        self.assertEqual(engine._seat_by_id(state,"p3")["stack"],0)
-        self.assertEqual(engine._seat_by_id(state,"p4")["stack"],1000)
+        self.assertEqual(engine._seat_by_id(state,declined)["stack"],0)
+        self.assertEqual(engine._seat_by_id(state,accepted)["stack"],1000)
         self.assertEqual(state["prize"]["rebuys"],1)
         self.assertEqual(state["prize"]["pool_cents"],pool_before+1300)
         self.assertEqual(
             {row["player_id"]: row["action"] for row in state["rebuy_history"] if row["action"] != "offered"},
-            {"p3":"declined","p4":"accepted"},
+            {declined:"declined",accepted:"accepted"},
         )
         engine.advance(state,now=123.99)
         self.assertEqual(state["hand_no"],1)
         engine.advance(state,now=124)
         self.assertEqual(state["hand_no"],2)
-        self.assertNotIn("p3",state["hand"]["holes"])
-        self.assertIn("p4",state["hand"]["holes"])
+        self.assertNotIn(declined,state["hand"]["holes"])
+        self.assertIn(accepted,state["hand"]["holes"])
 
     def test_two_player_hand_has_no_offer_but_three_player_hand_can_rebuy_from_heads_up(self):
         for bot in (False,True):

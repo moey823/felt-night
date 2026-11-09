@@ -147,7 +147,7 @@
           <div>
             <div class="eyebrow"><span class="eyebrow-line"></span> Room administration</div>
             <h1 id="admin-title">Admin</h1>
-            <p>Manage room settings, users, profile images, and past games.</p>
+            <p>Manage room settings, users, profile images, past games, and logs.</p>
           </div>
           <div class="admin-screen-actions"><button id="admin-back-button" class="button button-outline button-small" type="button">Back to app</button>
           <button id="admin-logout-button" class="button button-quiet button-small" type="button">Log out</button></div>
@@ -158,6 +158,7 @@
           <button id="admin-tab-images" type="button" role="tab" data-admin-tab="images" aria-controls="admin-avatar-presets" aria-selected="false" tabindex="-1">Profile images</button>
           <button id="admin-tab-games" type="button" role="tab" data-admin-tab="games" aria-controls="admin-games-panel" aria-selected="false" tabindex="-1">Past games</button>
           <button id="admin-tab-host-defaults" type="button" role="tab" data-admin-tab="host-defaults" aria-controls="admin-host-defaults-form" aria-selected="false" tabindex="-1">Host defaults</button>
+          <button id="admin-tab-logs" type="button" role="tab" data-admin-tab="logs" aria-controls="admin-logs-panel" aria-selected="false" tabindex="-1">Logs</button>
         </div>
         <form role="tabpanel" aria-labelledby="admin-tab-settings" id="admin-config-form" class="panel admin-settings-form">
           <div class="panel-kicker">GLOBAL TABLE SETTINGS</div>
@@ -213,6 +214,17 @@
             <button id="admin-avatar-preset-save" type="submit" class="button button-primary button-small">Add shared portrait</button>
           </form>
           <div id="admin-avatar-catalog-list" class="admin-avatar-catalog-list" aria-live="polite"></div>
+        </section>
+        <section id="admin-logs-panel" class="panel admin-logs-panel" role="tabpanel" aria-labelledby="admin-tab-logs" hidden>
+          <h2>Logs</h2>
+          <form id="admin-logs-form" class="admin-logs-filters">
+            <label>Reference code<input id="admin-logs-reference" type="search" placeholder="e.g. cafebabe" maxlength="32" autocomplete="off" spellcheck="false"></label>
+            <label>Show<select id="admin-logs-scope"><option value="errors">Errors &amp; warnings</option><option value="all">All requests</option></select></label>
+            <button id="admin-logs-search" class="button button-primary" type="submit">Search / refresh</button>
+          </form>
+          <p class="muted">Newest first, including retained rotated logs. Search the short reference from an error message or its full request ID.</p>
+          <p id="admin-logs-status" role="status" aria-live="polite"></p>
+          <div id="admin-logs-list" class="admin-logs-list"></div>
         </section>
         <section id="admin-games-panel" class="panel admin-history-panel" role="tabpanel" aria-labelledby="admin-tab-games" hidden>
           <div class="section-heading compact"><h2>Past games</h2><button id="admin-purge-bots" type="button" class="button button-danger button-small">Purge games with bots</button></div>

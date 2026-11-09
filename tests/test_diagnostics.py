@@ -79,6 +79,57 @@ class DiagnosticTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail("diagnostic event for request %s was not written" % request_id)
 
+    def account_headers(self, name):
+        player, token = self.app.store.create_account(name, name, "test-password", time.time())
+        return player, {
+            "Cookie": "%s=%s" % (self.app.cookie_name, token),
+            "X-SitNgo-Session": self.app.store.session_proof(token),
+        }
+
+    def test_admin_logs_require_current_admin_role(self):
+        admin, headers = self.account_headers("logadmin")
+        other, other_headers = self.account_headers("logplayer")
+        self.assertEqual(self.request("GET", "/poker/api/admin/logs")[0], 401)
+        self.assertEqual(self.request("GET", "/poker/api/admin/logs", headers=other_headers)[0], 403)
+        self.assertEqual(self.request("GET", "/poker/api/admin/logs", headers=headers)[0], 200)
+        with contextlib.closing(self.app.store.connect()) as db:
+            db.execute("UPDATE accounts SET is_admin=CASE WHEN player_id=? THEN 1 ELSE 0 END", (other["id"],))
+            db.commit()
+        self.assertEqual(self.request("GET", "/poker/api/admin/logs", headers=headers)[0], 403)
+
+    def test_admin_logs_filter_short_and_full_references_and_validate_queries(self):
+        _, headers = self.account_headers("logadmin")
+        logger = self.app.diagnostics
+        ref = "cafebabe" + "a" * 24
+        logger.emit({"event": "http_request", "status": 500, "request_id": ref,
+                     "error_code": "internal_error", "exception": {"class": "RuntimeError", "frames": []}})
+        logger.emit({"event": "http_request", "status": 200, "request_id": "b" * 32})
+        for prefix in ("CAFEBABE", ref):
+            status, _, data = self.request("GET", "/poker/api/admin/logs?reference=" + prefix, headers=headers)
+            self.assertEqual(status, 200)
+            self.assertEqual([e["request_id"] for e in data["entries"]], [ref])
+        _, _, data = self.request("GET", "/poker/api/admin/logs?reference=bbbb&scope=all", headers=headers)
+        self.assertEqual(data["entries"][0]["status"], 200)
+        _, _, data = self.request("GET", "/poker/api/admin/logs?reference=bbbb", headers=headers)
+        self.assertEqual(data["entries"], [])
+        for query in ("reference=../secret", "reference=xyz", "reference=abcd&reference=eeee", "scope=invalid", "file=foo"):
+            self.assertEqual(self.request("GET", "/poker/api/admin/logs?" + query, headers=headers)[0], 400)
+
+    def test_log_reader_searches_rotated_files_and_skips_partial_lines(self):
+        logger = server.DiagnosticLogger(self.app.store.data_dir, max_bytes=1024, backups=3)
+        self.assertEqual(logger.recent()["entries"], [])
+        ref = "cafebabe" + "c" * 24
+        logger.emit({"event": "http_request", "status": 500, "request_id": ref})
+        for i in range(12):
+            logger.emit({"event": "http_request", "status": 200, "request_id": "%032x" % i})
+        self.assertTrue(Path(logger.path + ".1").exists())
+        with open(logger.path, "ab") as stream:
+            stream.write(b'broken line\n{"partial":')
+        result = logger.recent("cafebabe")
+        self.assertEqual([e["request_id"] for e in result["entries"]], [ref])
+        self.assertEqual(len(logger.recent(scope="all", limit=2)["entries"]), 2)
+        self.assertTrue(logger.recent(scope="all", limit=2)["has_more"])
+
     def test_route_labels_hide_identifiers_queries_and_unmatched_paths(self):
         table_id = "a" * 32
         self.assertEqual(

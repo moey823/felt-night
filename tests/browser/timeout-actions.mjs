@@ -68,6 +68,23 @@ export default async function timeoutActions([one,two], sleep, roomPassword) {
   const actorView=await request(foldTable.path,actor);
   assert(actorView.viewer?.can_act&&actorView.viewer?.to_call>0,'Expected the preflop actor to owe chips.');
   await wait(actorPage,()=>{const b=document.querySelector('#action-controls [data-action-slot="fold"]');return b&&!b.disabled;});
+  await wait(actorPage,()=>document.querySelector('#action-panel').classList.contains('is-my-turn'));
+  const otherPage=actorPage===one?two:one;
+  assert(!(await ev(otherPage,()=>document.querySelector('#action-panel').classList.contains('is-my-turn'))),'Other player controls highlighted.');
+  for(const [width,height] of [[1440,900],[320,568]]){
+    await actorPage.resize(width,height);await sleep(150);
+    assert(await ev(actorPage,()=>{
+      const action=getComputedStyle(document.querySelector('#action-panel'));
+      const seat=getComputedStyle(document.querySelector('#hero-seat.is-acting'));
+      return action.outlineColor===seat.outlineColor&&action.outlineWidth===seat.outlineWidth&&
+        action.boxShadow===seat.boxShadow&&document.documentElement.scrollWidth<=innerWidth+1;
+    }),'Action cluster does not match the active seat highlight at '+width);
+    await actorPage.screenshot('action-highlight-'+width);
+  }
+  await request(foldTable.path+'/pause',host,{paused:true});
+  await wait(actorPage,()=>!document.querySelector('#action-panel').classList.contains('is-my-turn'));
+  await request(foldTable.path+'/pause',host,{paused:false});
+  await wait(actorPage,()=>document.querySelector('#action-panel').classList.contains('is-my-turn'));
   await ev(actorPage,()=>{
     const original=window.fetch.bind(window);window.__timeoutGate={used:false,pending:false,response:null};
     window.fetch=async function(input,init){
@@ -82,6 +99,7 @@ export default async function timeoutActions([one,two], sleep, roomPassword) {
   });
   await wait(actorPage,()=>window.__timeoutGate?.pending);
   await wait(actorPage,()=>document.querySelector('#last-action-summary .last-action-detail')?.textContent.trim()==='Fold \u00b7 TIMEOUT');
+  assert(!(await ev(actorPage,()=>document.querySelector('#action-panel').classList.contains('is-my-turn'))),'Highlight remained after timeout.');
   const timedFold=await request(foldTable.path,actor);
   const foldEvent=(timedFold.events||[]).slice().reverse().find(e=>e.type==='action'&&e.timed_out);
   const seatBadge=await ev(actorPage,id=>{

@@ -4896,7 +4896,7 @@ body.gameplay-active #app-panel #table-view #table-surface > #action-panel #acti
 body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="call"] { grid-column: 1 !important; }
 body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="raise"] { grid-column: 2 !important; }
 
-.admin-tabs { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 6px; }
+.admin-tabs { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); gap: 6px; }
 .admin-tabs > button { min-height: 44px; border: 1px solid #b9d69d44; border-radius: 9px; padding: 10px; background: #11241e; color: var(--muted); font-weight: 750; }
 .admin-tabs > button[aria-selected="true"] { background: var(--green); color: #172410; border-color: var(--green); }
 #admin-panel [role="tabpanel"][hidden] { display: none !important; }
@@ -5065,3 +5065,23 @@ body #app-panel #table-view #table-surface > #paused-banner:not([hidden]) {
 #paused-banner p { margin: 0; font-size: clamp(17px, 3vw, 22px); }
 #paused-banner .pause-duration { color: #a8b9b0; font-size: 14px; }
 #paused-banner #pause-cover-resume:not([hidden]) { margin-top: 8px; min-height: 44px; }
+
+/* Mirror the active seat ring on the local player's action cluster. */
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel.is-my-turn:not([hidden]) {
+  border-color: #e1ff80 !important;
+  outline: 3px solid #e1ff80 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px rgba(192, 238, 94, .22), 0 0 22px rgba(203, 255, 109, .7) !important;
+}
+.admin-logs-panel { min-width: 0; padding: 16px; }
+.admin-logs-filters { display:flex; flex-wrap:wrap; gap:12px; align-items:end; }
+.admin-logs-filters label { display:grid; gap:6px; flex:1 1 180px; min-width:0; }
+.admin-logs-filters input, .admin-logs-filters select { width:100%; min-height:44px; box-sizing:border-box; }
+.admin-logs-list { display:grid; gap:10px; }
+.admin-log-entry { border:1px solid #b9d69d44; border-radius:8px; min-width:0; }
+.admin-log-entry summary { cursor:pointer; padding:12px; display:grid; gap:5px; overflow-wrap:anywhere; }
+.admin-log-entry time { color:var(--muted); font-size:12px; }
+.admin-log-entry pre { margin:0; padding:12px; border-top:1px solid #b9d69d44; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
+
+.admin-log-entry summary::after { content:"Show details ▾"; color:var(--green); font-size:12px; }
+.admin-log-entry[open] summary::after { content:"Hide details ▴"; }

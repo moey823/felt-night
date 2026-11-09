@@ -487,7 +487,7 @@ _DIAGNOSTIC_FIXED_ROUTES = frozenset({
     "/poker/api/register", "/poker/api/login", "/poker/api/claim",
     "/poker/api/logout", "/poker/api/profile", "/poker/api/profile/avatar",
     "/poker/api/admin/avatar-presets", "/poker/api/admin/accounts",
-    "/poker/api/admin/config", "/poker/api/admin/history",
+    "/poker/api/admin/config", "/poker/api/admin/logs", "/poker/api/admin/history",
     "/poker/api/admin/history/bot-games", "/poker/api/admin/history/purge-bots",
     "/poker/api/admin/history/delete", "/poker/api/history", "/poker/api/tables",
 })
@@ -582,6 +582,60 @@ class DiagnosticLogger:
         self._last_emit = {}
         self._suppressed = {}
         self._warned = False
+
+    def recent(self, reference="", scope="errors", limit=200):
+        """Read a bounded snapshot, newest first, without holding up log writers."""
+        streams = []
+        try:
+            with self._lock:
+                for index in range(self.backups + 1):
+                    path = self.path + (".%d" % index if index else "")
+                    try:
+                        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                                             | getattr(os, "O_NONBLOCK", 0))
+                    except FileNotFoundError:
+                        continue
+                    try:
+                        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                            raise OSError("diagnostics is not a regular file")
+                        streams.append(os.fdopen(descriptor, "rb"))
+                    except Exception:
+                        os.close(descriptor)
+                        raise
+            entries = []
+            fields = {"timestamp", "event", "request_id", "method", "route", "status",
+                      "error_code", "duration_ms", "exception", "disconnect", "disconnect_class",
+                      "action", "component", "table_id", "suppressed_count"}
+            for stream in streams:
+                # The writer bounds each file; also cap reads if an external file was replaced.
+                size = min(os.fstat(stream.fileno()).st_size, self.max_bytes + 65536)
+                stream.seek(max(0, os.fstat(stream.fileno()).st_size - size))
+                lines = stream.read(size).splitlines()
+                for line in reversed(lines):
+                    if len(line) > 65536:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    request_id = event.get("request_id")
+                    if reference and (not isinstance(request_id, str)
+                                      or not request_id.lower().startswith(reference)):
+                        continue
+                    status = event.get("status")
+                    failure = (type(status) is int and status >= 400) or bool(
+                        event.get("exception") or event.get("disconnect") or event.get("error_code"))
+                    if scope == "errors" and not failure:
+                        continue
+                    entries.append({key: value for key, value in event.items() if key in fields})
+                    if len(entries) > limit:
+                        return {"entries": entries[:limit], "has_more": True, "limit": limit}
+            return {"entries": entries, "has_more": False, "limit": limit}
+        finally:
+            for stream in streams:
+                stream.close()
 
     def _timestamp(self):
         now = time.time()
@@ -2295,6 +2349,8 @@ class Handler(BaseHTTPRequestHandler):
         self.request_hand_number = None
         self.reaction_after = None
         self.avatar_version = None
+        self.log_reference = ""
+        self.log_scope = "errors"
         avatar_route = re.fullmatch(
             r"/poker/api/players/([a-f0-9]{32})/avatar(?:/(full))?", parsed.path,
         )
@@ -2303,6 +2359,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         if parsed.query:
             page_route = self.command == "GET" and parsed.path in PAGE_ROUTES
+            logs_route = parsed.path == "/poker/api/admin/logs"
             history_route = (
                 parsed.path == "/poker/api/history"
                 or re.fullmatch(r"/poker/api/history/[a-f0-9]{32}", parsed.path)
@@ -2316,7 +2373,7 @@ class Handler(BaseHTTPRequestHandler):
                 r"/poker/api/tables/[a-f0-9]{32}/last-hand", parsed.path,
             )
             if self.command != "GET" or not (
-                page_route or history_route or reaction_route or last_hand_route
+                page_route or history_route or reaction_route or last_hand_route or logs_route
                 or avatar_route or preset_image_route
             ):
                 raise AppError(400, "invalid_url", "Query strings are not supported here.")
@@ -2325,7 +2382,17 @@ class Handler(BaseHTTPRequestHandler):
                     query = parse_qs(parsed.query, strict_parsing=True, keep_blank_values=True)
                 except ValueError as exc:
                     raise AppError(400, "invalid_url", "Invalid request cursor.") from exc
-                if reaction_route:
+                if logs_route:
+                    if not set(query) <= {"reference", "scope"} or any(len(v) != 1 for v in query.values()):
+                        raise AppError(400, "invalid_url", "Use one reference code and log filter.")
+                    reference = query.get("reference", [""])[0].strip().lower()
+                    scope = query.get("scope", ["errors"])[0]
+                    if reference and not re.fullmatch(r"[a-f0-9]{4,32}", reference):
+                        raise AppError(400, "invalid_reference", "Enter 4–32 letters or numbers from the reference code (0–9, a–f).")
+                    if scope not in {"errors", "all"}:
+                        raise AppError(400, "invalid_filter", "Choose errors or all requests.")
+                    self.log_reference, self.log_scope = reference, scope
+                elif reaction_route:
                     if set(query) != {"after"} or len(query["after"]) != 1:
                         raise AppError(400, "invalid_url", "Use one numeric reaction cursor.")
                     raw_after = query["after"][0]
@@ -2674,6 +2741,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/poker/api/admin/history/bot-games":
                 self._require_admin()
                 self._json(200, self.app.store.preview_bot_game_purge())
+                return
+            if path == "/poker/api/admin/logs":
+                self._require_admin()
+                self._json(200, self.app.diagnostics.recent(self.log_reference, self.log_scope))
                 return
             if path == "/poker/api/admin/accounts":
                 self._require_admin()

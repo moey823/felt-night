@@ -26,7 +26,7 @@ Read README.md and deploy/README.md before changing server startup or ingress.
 
 ## Diagnostics
 
-- Preserve bounded, owner-only diagnostics in the external data directory. Log normalized requests and error context without credentials, tokens, raw bodies/queries, names, private cards, or raw exception messages. Diagnostic failures must never block requests or game progression.
+- Preserve bounded, owner-only diagnostics in the external data directory. Log normalized requests and error context without credentials, tokens, raw bodies/queries, names, private cards, or raw exception messages. Diagnostic failures must never block requests or game progression. Log viewing requires a current admin role; search only the fixed retained diagnostic files, never caller-supplied paths.
 
 ## Delivery
 

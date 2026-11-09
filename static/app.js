@@ -1908,6 +1908,11 @@
     state.adminAccounts = [];
     state.adminCount = 0;
     state.adminTab = "settings";
+    adminLogsGeneration += 1;
+    byId("admin-logs-list").replaceChildren();
+    byId("admin-logs-reference").value = "";
+    byId("admin-logs-status").textContent = "";
+    byId("admin-logs-search").disabled = false;
     byId("admin-accounts-list").replaceChildren();
     byId("admin-accounts-filter").value = "";
     renderAdminAccess();
@@ -4038,6 +4043,7 @@
     if (name === "users") loadAdminAccounts();
     if (name === "images") loadAvatarPresets(true).then(function () { renderAdminAvatarCatalog(); });
     if (name === "games") loadAdminHistory(0, false);
+    if (name === "logs") loadAdminLogs();
   }
   byId("admin-tabs").addEventListener("click", function (event) {
     var tab = event.target.closest("[data-admin-tab]");
@@ -4054,6 +4060,53 @@
     selectAdminTab(tabs[index].dataset.adminTab);
     tabs[index].focus();
   });
+
+  var adminLogsGeneration = 0;
+  async function loadAdminLogs() {
+    var generation = ++adminLogsGeneration;
+    var account = state.player && state.player.id;
+    var reference = byId("admin-logs-reference").value.trim().toLowerCase();
+    var scope = byId("admin-logs-scope").value;
+    var status = byId("admin-logs-status"), list = byId("admin-logs-list");
+    list.replaceChildren();
+    if (reference && !/^[a-f0-9]{4,32}$/.test(reference)) {
+      status.textContent = "Enter 4–32 characters from the reference code (0–9, a–f).";
+      return;
+    }
+    status.textContent = "Loading logs…";
+    byId("admin-logs-search").disabled = true;
+    try {
+      var data = await request("/admin/logs?scope=" + encodeURIComponent(scope) +
+        (reference ? "&reference=" + encodeURIComponent(reference) : ""));
+      if (generation !== adminLogsGeneration || !state.adminOpen || !state.isAdmin ||
+          !state.player || state.player.id !== account) return;
+      var entries = Array.isArray(data.entries) ? data.entries : [];
+      list.innerHTML = entries.map(function (entry) {
+        var title = entry.error_code || entry.disconnect || entry.event || "Request";
+        var time = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "Time unavailable";
+        var route = [entry.method, entry.route].filter(Boolean).join(" ");
+        return '<details class="admin-log-entry"><summary><time>' + esc(time) + '</time><strong>' +
+          esc(title) + (entry.status ? ' · ' + esc(entry.status) : '') + '</strong><code>' +
+          esc(entry.request_id || "Background event") + '</code><span>' + esc(route) +
+          '</span></summary><pre>' + esc(JSON.stringify(entry, null, 2)) + '</pre></details>';
+      }).join("");
+      status.textContent = entries.length
+        ? (data.has_more ? "Showing the latest " : "Showing ") + entries.length +
+          (entries.length === 1 ? " matching entry." : " matching entries.") + (data.has_more ? " Search a reference to narrow the results." : "")
+        : "No matching log entries in the retained logs.";
+    } catch (err) {
+      if (generation === adminLogsGeneration && state.adminOpen && state.player && state.player.id === account) {
+        status.textContent = err.message || "Logs could not be loaded. Try again.";
+      }
+    } finally {
+      if (generation === adminLogsGeneration) byId("admin-logs-search").disabled = false;
+    }
+  }
+  byId("admin-logs-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    loadAdminLogs();
+  });
+  byId("admin-logs-scope").addEventListener("change", function () { loadAdminLogs(); });
 
   function closeAdminConfirm() {
     var dialog = byId("admin-confirm-dialog");
@@ -4889,6 +4942,7 @@
     panel.dataset.reactionsOnly = String(reactionVisible && !controlsVisible);
     var finishedStatus = byId("action-finished-status");
     var canAct = viewerCanAct(view);
+    panel.classList.toggle("is-my-turn", Boolean(canAct && playing && controlsVisible && !view.paused));
     var currentKey = actionTokenKey(view);
     if (state.actionSubmittedKey && state.actionSubmittedKey !== currentKey) state.actionSubmittedKey = "";
     if (state.actionPending && state.actionPending.tableId !== String(state.activeTableId)) state.actionPending = null;
