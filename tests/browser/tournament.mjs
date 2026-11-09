@@ -195,7 +195,7 @@ export default async function game([one, two], sleep, roomPassword) {
     }));
     const seconds = Number(offer.label.match(/(\d+) seconds left/)?.[1] || 0);
     if (!offer.summary.includes('$' + Number(expectedBuyIn).toFixed(2)) ||
-        !offer.summary.includes(Number(expectedStack).toLocaleString('en-US')) || !offer.summary.includes('no external payment') ||
+        !offer.summary.includes(Number(expectedStack).toLocaleString('en-US')) ||
         seconds < 1 || seconds > 60 || offer.acceptDisabled) {
       throw Error('Final rebuy offer copy/countdown was incorrect: ' + JSON.stringify(offer));
     }

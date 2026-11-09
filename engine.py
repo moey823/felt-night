@@ -506,7 +506,10 @@ def pause_table(
                     for deadline in ("starts_at", "until"):
                         if announcement.get(deadline) is not None:
                             announcement[deadline] += duration
+            if state.get("rebuy_hold_started_at") is not None:
+                state["rebuy_hold_started_at"] += duration
             for offer in _pending_rebuy_offers(state):
+                offer["offered_at"] += duration
                 offer["expires_at"] += duration
         state["paused"] = False
         state["paused_at"] = None
@@ -695,8 +698,12 @@ def update_runtime_settings(
             presentation_end = _deadline_number(hand.get("presentation_until"))
             if presentation_end is not None:
                 level_started = max(level_started, presentation_end)
+        if state.get("rebuy_hold_started_at") is not None:
+            level_started = effective_at
         blinds["started_at"] = level_started
         blinds["next_level_at"] = level_started + updated["level_minutes"] * 60
+        if state.get("rebuy_hold_started_at") is not None:
+            state["rebuy_hold_started_at"] = effective_at
 
     state["last_activity_at"] = timestamp
     _log(state, "The host updated tournament pacing settings.", timestamp)
@@ -872,6 +879,7 @@ def end_tournament(
         state["blind_announcement"] = None
         state["elimination_announcement"] = None
         state["rebuy_offers"] = {}
+        state.pop("rebuy_hold_started_at", None)
         state["turn_version"] += 1
         hand = state.get("hand")
         if isinstance(hand, dict):
@@ -983,14 +991,9 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         if isinstance(announcement, dict) and announcement.get("until", 0) <= now:
             state[key] = None
     alive = [seat for seat in _seats_in_order(state) if seat["stack"] > 0]
+    if _pending_rebuy_offers(state):
+        return
     if len(alive) <= 1:
-        if _pending_rebuy_offers(state):
-            hand = state.get("hand")
-            if isinstance(hand, dict) and hand.get("street") == "showdown":
-                expiries = [float(item["expires_at"]) for item in _pending_rebuy_offers(state)
-                            if type(item.get("expires_at")) in (int, float)]
-                hand["next_hand_at"] = min(expiries) if expiries else None
-            return
         _complete_tournament(state, now)
         return
 
@@ -1739,7 +1742,7 @@ def _apply_due_blinds(
     not_before: Optional[float] = None,
 ) -> bool:
     """Advance one level at a hand boundary; its clock waits for the deal."""
-    if state.get("status") != "playing":
+    if state.get("status") != "playing" or _pending_rebuy_offers(state):
         return False
     blinds = state["blinds"]
     deadline = blinds.get("next_level_at")
@@ -1892,7 +1895,9 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
         if migrated:
             _bump(state)
         return state
-    changed = _expire_rebuy_offers(state, timestamp) or migrated
+    # Older saved offers may already be open; adopt the hold at the hand boundary.
+    hold_changed = _sync_rebuy_hold(state, timestamp)
+    changed = _expire_rebuy_offers(state, timestamp) or hold_changed or migrated
     if _finish_if_no_rebuy_can_change_result(state, timestamp):
         _bump(state)
         return state
@@ -1914,6 +1919,10 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
 
     hand = state["hand"]
     if hand is not None and hand.get("street") == "showdown":
+        if _pending_rebuy_offers(state):
+            if changed:
+                _bump(state)
+            return state
         remaining = sum(1 for seat in state["seats"] if seat["stack"] > 0)
         announcement_active = any(
             isinstance(state.get(key), dict)
@@ -2400,6 +2409,29 @@ def _pending_rebuy_offers(state: Dict[str, Any]) -> List[Dict[str, Any]]:
             if isinstance(offer, dict) and offer.get("status", "pending") == "pending"]
 
 
+def _sync_rebuy_hold(state: Dict[str, Any], now: float) -> bool:
+    """Freeze only the blind clock; showdown and rebuy deadlines keep advancing."""
+    hand = state.get("hand")
+    waiting = (state.get("status") == "playing" and isinstance(hand, dict)
+               and hand.get("street") == "showdown" and bool(_pending_rebuy_offers(state)))
+    started = _deadline_number(state.get("rebuy_hold_started_at"))
+    if waiting:
+        if started is None:
+            state["rebuy_hold_started_at"] = now
+            return True
+        return False
+    if started is None:
+        return False
+    paused_at = state.get("paused_at") if state.get("paused") else None
+    effective_now = paused_at if type(paused_at) in (int, float) else now
+    duration = max(0.0, effective_now - started)
+    for key in ("started_at", "next_level_at"):
+        if state["blinds"].get(key) is not None:
+            state["blinds"][key] += duration
+    state.pop("rebuy_hold_started_at", None)
+    return True
+
+
 def _add_rebuy_history(state: Dict[str, Any], item: Dict[str, Any]) -> None:
     events = state.setdefault("rebuy_history", [])
     if isinstance(events, list):
@@ -2411,6 +2443,7 @@ def _resolve_rebuy_offer(state: Dict[str, Any], player_id: str,
     offers = state.setdefault("rebuy_offers", {})
     if offers.get(player_id, {}).get("id") == offer.get("id"):
         del offers[player_id]
+    _sync_rebuy_hold(state, now)
     receipts = state.setdefault("rebuy_receipts", {})
     receipts[str(offer.get("id"))] = {
         "player_id": player_id, "status": status, "resolved_at": now,
@@ -2502,8 +2535,8 @@ def _create_rebuy_offers(state: Dict[str, Any],
             continue
         offer = {
             "id": uuid.uuid4().hex, "hand_id": _hand_id(state, hand),
-            "offered_at": float(now),
-            "expires_at": float(now) + REBUY_DECISION_SECONDS,
+            "offered_at": max(float(now), float(hand.get("hand_complete_at") or now)),
+            "expires_at": max(float(now), float(hand.get("hand_complete_at") or now)) + REBUY_DECISION_SECONDS,
             "buy_in_cents": buy_in * 100, "starting_stack": starting_stack,
             "status": "pending",
         }
@@ -2537,6 +2570,8 @@ def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
         raise GameError("invalid_rebuy_offer", "This rebuy offer is no longer available.", 409)
     paused_at = state.get("paused_at") if state.get("paused", False) else None
     effective_now = float(paused_at) if isinstance(paused_at, (int, float)) else timestamp
+    if effective_now < float(offer.get("offered_at", 0)):
+        raise GameError("rebuy_not_ready", "The showdown must finish before the rebuy decision.", 409)
     if float(offer.get("expires_at", 0)) <= effective_now:
         _resolve_rebuy_offer(state, actor_id, offer, "expired", timestamp)
         _finish_if_no_rebuy_can_change_result(state, timestamp)
@@ -2573,7 +2608,7 @@ def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
     hand = state.get("hand")
     if isinstance(hand, dict) and hand.get("street") == "showdown":
         if sum(1 for item in state.get("seats", []) if item.get("stack", 0) > 0) > 1:
-            hand["next_hand_at"] = max(_presentation_end(state, hand) or timestamp, timestamp)
+            hand["next_hand_at"] = max(_presentation_end(state, hand) or effective_now, effective_now)
     state["last_activity_at"] = timestamp
     _bump(state)
     return state
@@ -2593,6 +2628,8 @@ def decline_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
         raise GameError("invalid_rebuy_offer", "This rebuy offer is no longer available.", 409)
     paused_at = state.get("paused_at") if state.get("paused", False) else None
     effective_now = float(paused_at) if isinstance(paused_at, (int, float)) else timestamp
+    if effective_now < float(offer.get("offered_at", 0)):
+        raise GameError("rebuy_not_ready", "The showdown must finish before the rebuy decision.", 409)
     if float(offer.get("expires_at", 0)) <= effective_now:
         _resolve_rebuy_offer(state, actor_id, offer, "expired", timestamp)
         _finish_if_no_rebuy_can_change_result(state, timestamp)
@@ -2988,7 +3025,6 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
     hand["current_bet"] = 0
     hand["runout_at"] = None
     eliminated = _record_eliminations(state, hand, now)
-    _create_rebuy_offers(state, eliminated, hand, now)
     remaining = [seat for seat in _seats_in_order(state) if seat["stack"] > 0]
     hand["street"] = "showdown"
     hand["to_act"] = None
@@ -3008,6 +3044,9 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
         hand["hand_complete_at"] = now + state["config"].get("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS)
     hand["next_hand_at"] = hand["hand_complete_at"]
     hand["presentation_until"] = hand["hand_complete_at"]
+
+    _create_rebuy_offers(state, eliminated, hand, now)
+    _sync_rebuy_hold(state, now)
 
     if eliminated:
         duration = state["config"].get(
@@ -3204,7 +3243,13 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
 
     next_level = blinds.get("next_level_at")
     next_level_view = public_deadline(next_level)
-    seconds_to_next = max(0, int(math.ceil(next_level_view - timestamp))) if next_level_view is not None else None
+    rebuy_hold = _deadline_number(state.get("rebuy_hold_started_at"))
+    blind_paused = state.get("status") == "playing" and rebuy_hold is not None
+    effective_now = paused_at if type(paused_at) in (int, float) else timestamp
+    if blind_paused and next_level_view is not None:
+        next_level_view += max(0.0, effective_now - rebuy_hold)
+    blind_now = rebuy_hold if blind_paused else effective_now
+    seconds_to_next = max(0, int(math.ceil(next_level - blind_now))) if next_level is not None else None
 
     def public_announcement(key):
         announcement = state.get(key)
@@ -3311,7 +3356,16 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "buy_in_count": _prize_summary(state).get("buy_in_count", _prize_summary(state)["entrant_count"]),
         "rebuy_count": _prize_summary(state).get("rebuy_count", 0),
         "prize_pool_cents": _prize_summary(state)["prize_pool_cents"],
+        "rebuy_waiting": [
+            {"player_id": pid, "name": seat["name"]}
+            for pid, offer in state.get("rebuy_offers", {}).items()
+            if blind_paused and isinstance(offer, dict)
+            and effective_now >= float(offer.get("offered_at", 0))
+            and effective_now < float(offer.get("expires_at", 0))
+            for seat in [_seat_by_id(state, pid)] if seat is not None
+        ],
         "blinds": {
+            "paused": paused or blind_paused,
             "level": blinds["level"],
             "small": blinds["small"],
             "big": blinds["big"],
@@ -3361,6 +3415,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
                      expires_at=public_deadline(state["rebuy_offers"][viewer_id].get("expires_at")))
                 if viewer_id and isinstance(state.get("rebuy_offers"), dict)
                 and isinstance(state["rebuy_offers"].get(viewer_id), dict)
+                and effective_now >= float(state["rebuy_offers"][viewer_id].get("offered_at", 0))
+                and effective_now < float(state["rebuy_offers"][viewer_id].get("expires_at", 0))
                 else None
             ),
             "rebuy_count": viewer_buyin[0],

@@ -227,6 +227,7 @@ class EngineTests(unittest.TestCase):
         )
         engine.join(state, "p2", "Bea", now=2)
         engine.join(state, "p3", "Cy", now=3)
+        state["rebuy_enabled"] = False
         engine.start(state, "p1", now=4)
         hand = state["hand"]
         hand["stack_before"] = {"p1": 100, "p2": 200, "p3": 300}
@@ -258,9 +259,9 @@ class EngineTests(unittest.TestCase):
         engine._finish_hand(final, {player_id: 0 for player_id in final_hand["contrib"]}, now=200)
         self.assertEqual(final["status"], "playing")
         offer = final["rebuy_offers"]["p1"]
-        self.assertEqual(offer["expires_at"], 260)
+        self.assertEqual(offer["expires_at"], 261.5)
         self.assertEqual(final["hand"]["next_hand_at"], 207.5)
-        engine.decline_rebuy(final, "p1", offer["id"], now=200.1)
+        engine.decline_rebuy(final, "p1", offer["id"], now=201.6)
         self.assertEqual(final["status"], "completed")
         self.assertIsNone(final["hand"]["next_hand_at"])
         with patch("engine.time.time", return_value=203):
@@ -282,6 +283,7 @@ class EngineTests(unittest.TestCase):
         )
         engine.join(state, "p2", "Bea", now=2)
         engine.join(state, "p3", "Cy", now=3)
+        state["rebuy_enabled"] = False
         engine.start(state, "p1", now=4)
         hand = state["hand"]
         hand["showdown"] = [{
@@ -351,7 +353,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(hand["showdown_until"], 205)
         self.assertEqual(hand["next_hand_at"], 211)
         offer = state["rebuy_offers"]["p1"]
-        engine.decline_rebuy(state, "p1", offer["id"], now=200.1)
+        engine.decline_rebuy(state, "p1", offer["id"], now=205.1)
         self.assertEqual(state["status"], "completed")
         self.assertIsNone(hand["next_hand_at"])
         self.assertEqual(state["elimination_announcement"]["starts_at"], 205)
@@ -1033,6 +1035,7 @@ class EngineTests(unittest.TestCase):
             engine.random.SystemRandom, "choice",
             side_effect=lambda seats: next(seat for seat in seats if seat["player_id"] == "p1"),
         ):
+            state["rebuy_enabled"] = False
             engine.start(state, "p1", now=103)
         hand = state["hand"]
         deadline = state["blinds"]["next_level_at"]
@@ -1451,7 +1454,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(one_hand["street"], "preflop")
         self.assertEqual(one_live["results"], [])
 
-    def test_rebuy_restores_locked_stack_outside_current_hand_and_is_idempotent(self):
+    def test_rebuy_restores_locked_stack_after_completed_hand_and_is_idempotent(self):
         state = engine.create_lobby(
             "rebuy-current-hand", "p1", "Ada",
             config(max_seats=4, buy_in=13, starting_stack=1000,
@@ -1469,12 +1472,13 @@ class EngineTests(unittest.TestCase):
             engine._seat_by_id(state, player_id)["stack"] = stack
         engine._finish_hand(state, {}, now=10)
         offer = state["rebuy_offers"]["p4"]
-        self.assertEqual(offer["expires_at"], 70)
+        self.assertEqual(offer["expires_at"], 71.5)
         self.assertEqual(state["status"], "playing")
         engine.advance(state, now=12)
         current_hand = state["hand"]
-        self.assertNotEqual(current_hand["number"], eliminated_hand["number"])
-        self.assertNotIn("p4", current_hand["holes"])
+        self.assertEqual(current_hand["number"], eliminated_hand["number"])
+        self.assertIn("p4", current_hand["holes"])
+        holes_before = copy.deepcopy(current_hand["holes"])
         contribution_before = dict(current_hand["contrib"])
         total_before = sum(seat["stack"] for seat in state["seats"])
 
@@ -1485,8 +1489,9 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(seat["buy_in_count"], 2)
         self.assertEqual(seat["total_buy_in_cents"], 2600)
         self.assertEqual(sum(item["stack"] for item in state["seats"]) - total_before, 1000)
-        self.assertNotIn("p4", current_hand["holes"])
+        self.assertIn("p4", current_hand["holes"])
         self.assertEqual(current_hand["contrib"], contribution_before)
+        self.assertEqual(current_hand["holes"], holes_before)
         self.assertEqual(state["prize"]["entrants"], 4)
         self.assertEqual(state["prize"]["buy_ins"], 5)
         self.assertEqual(state["prize"]["rebuys"], 1)
@@ -1523,13 +1528,14 @@ class EngineTests(unittest.TestCase):
         old_offer = state["rebuy_offers"]["p4"]
         self.assertEqual(next(row for row in state["elimination_order"] if row["player_id"] == "p4")["place"], 4)
 
+        engine.accept_rebuy(state, "p4", old_offer["id"], now=12)
         engine.advance(state, now=12)
         second = state["hand"]
         second["stack_before"] = {"p1": 400, "p2": 300, "p3": 200}
         for player_id, stack in (("p1", 400), ("p2", 300), ("p3", 0)):
             engine._seat_by_id(state, player_id)["stack"] = stack
         engine._finish_hand(state, {}, now=13)
-        self.assertEqual(next(row for row in state["elimination_order"] if row["player_id"] == "p3")["place"], 3)
+        self.assertEqual(next(row for row in state["elimination_order"] if row["player_id"] == "p3")["place"], 4)
         engine.accept_rebuy(state, "p4", old_offer["id"], now=14)
         self.assertEqual(
             {row["player_id"]: row["place"] for row in state["elimination_order"]},
@@ -1556,7 +1562,7 @@ class EngineTests(unittest.TestCase):
             {(3, 2)},
         )
         offer = tied["rebuy_offers"]["p4"]
-        engine.accept_rebuy(tied, "p4", offer["id"], now=11)
+        engine.accept_rebuy(tied, "p4", offer["id"], now=12)
         remaining = tied["elimination_order"]
         self.assertEqual(len(remaining), 1)
         self.assertEqual((remaining[0]["player_id"], remaining[0]["place"],
@@ -1578,7 +1584,7 @@ class EngineTests(unittest.TestCase):
         engine._seat_by_id(state, "p2")["stack"] = 200
         engine._finish_hand(state, {}, now=100)
         offer = state["rebuy_offers"]["p1"]
-        self.assertEqual(offer["expires_at"], 160)
+        self.assertEqual(offer["expires_at"], 161.5)
         self.assertEqual(state["status"], "playing")
         engine.advance(state, now=159.99)
         self.assertEqual(state["status"], "playing")
@@ -1586,7 +1592,7 @@ class EngineTests(unittest.TestCase):
         with patch("engine.time.time", return_value=200):
             view = engine.public_view(state, "p1")
         self.assertEqual(view["server_now"], 200)
-        self.assertEqual(view["viewer"]["rebuy_offer"]["expires_at"], 210)
+        self.assertEqual(view["viewer"]["rebuy_offer"]["expires_at"], 211.5)
         engine.accept_rebuy(state, "p1", offer["id"], now=200)
         self.assertEqual(engine._seat_by_id(state, "p1")["stack"], 100)
         self.assertEqual(state["status"], "playing")
@@ -1604,7 +1610,7 @@ class EngineTests(unittest.TestCase):
         engine._seat_by_id(timeout, "p1")["stack"] = 0
         engine._seat_by_id(timeout, "p2")["stack"] = 200
         engine._finish_hand(timeout, {}, now=100)
-        engine.advance(timeout, now=160)
+        engine.advance(timeout, now=161.5)
         self.assertEqual(timeout["status"], "completed")
         self.assertEqual(timeout["rebuy_history"][-1]["action"], "expired")
 
@@ -2616,6 +2622,7 @@ class EngineTests(unittest.TestCase):
         engine.add_bot(state, "host", 1, now=101, is_admin=True)
         engine.add_bot(state, "host", 2, now=102, is_admin=True)
         engine.stand(state, "host", now=103)
+        state["rebuy_enabled"] = False
         engine.start(state, "host", now=104)
         initial_chips = 200
         now = 104.0

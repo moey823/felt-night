@@ -817,6 +817,13 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
 
   const finishedHand = showdown.hand_no;
   const nextHand = await until(async () => {
+    for (const id of showdownIds) {
+      const player=playersById.get(id);
+      if (!player) continue;
+      const current=await getView(tablePath,player);
+      if (current.viewer?.rebuy_offer) await request(tablePath+'/rebuy/decline',player,
+        {offer_id:current.viewer.rebuy_offer.id});
+    }
     const next = await getView(tablePath,playersById.get(aId));
     return next.hand_no > finishedHand ? next.hand_no : false;
   },'next hand');

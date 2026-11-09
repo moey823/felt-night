@@ -394,6 +394,9 @@ class ServerAuthTests(unittest.TestCase):
             hand["contrib"] = {eliminated_id: 0, survivor_id: 0}
             for seat in state["seats"]:
                 seat["stack"] = 0 if seat["player_id"] == eliminated_id else 2 * starting_stack
+            # HTTP accounting tests begin after the result hold; sequencing is
+            # covered separately by engine and browser tests.
+            state["config"]["uncontested_seconds"] = 0
             server.engine._finish_hand(state, {}, now)
             return state
 

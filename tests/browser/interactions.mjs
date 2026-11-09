@@ -158,6 +158,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
   await two.pressEscape();
   await one.screenshot('table-interactions');
 
+  await request('/admin/config',admin,{showdown_seconds:5});
   const rebuyName='Rebuy acceptance '+stamp;
   const rebuyCreated=await request('/tables',users[0],{
     name:rebuyName,starting_stack:100,small_blind:10,big_blind:20,buy_in:5,
@@ -170,7 +171,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     await wait(page,name=>document.querySelector('#view-table-name')?.textContent===name,rebuyName);
   }
   let rebuyState=(await request(rebuyPath+'/start',users[0],{})).table;
-  let offerOwner=null,offerView=null;
+  let offerOwner=null,offerView=null,checkedShowdown=false;
   for(let handAttempt=0;handAttempt<4&&!offerOwner;handAttempt++) {
     rebuyState=(await request(rebuyPath,users[0])).table;
     const thisHand=Number(rebuyState.hand_no);
@@ -184,6 +185,26 @@ export default async function interactions([one,two], sleep, roomPassword) {
     rebuyState=(await request(rebuyPath+'/action',caller,{
       action:'call',expected_hand:rebuyState.hand_no,expected_turn_version:rebuyState.turn_version
     })).table;
+    for(let attempt=0;attempt<120;attempt++) {
+      rebuyState=(await request(rebuyPath,users[0])).table;
+      if(rebuyState.street==='showdown'||rebuyState.hand_no>thisHand)break;
+      await sleep(100);
+    }
+    if(rebuyState.blinds?.paused&&rebuyState.street==='showdown') {
+      checkedShowdown=true;
+      assert(!rebuyState.viewer?.rebuy_offer&&Number(rebuyState.showdown_until)>Number(rebuyState.server_now),
+        'Rebuy offer appeared before the showdown hold finished.');
+      for(const page of [one,two]) await wait(page,()=>
+        document.querySelector('#blind-level-countdown')?.getAttribute('aria-label')?.includes('paused at')&&
+        document.querySelectorAll('#seat-grid .seat-cards .mini-card:not(.back)').length>=4&&
+        !document.querySelector('#rebuy-offer-dialog')?.open);
+      const frozen=await evaluate(one,()=>document.querySelector('#blind-level-countdown').textContent);
+      await one.screenshot('rebuy-showdown-before-offer');
+      await sleep(1100);
+      assert(await evaluate(one,value=>document.querySelector('#blind-level-countdown')?.textContent===value&&
+        !document.querySelector('#rebuy-offer-dialog')?.open&&document.querySelector('#rebuy-waiting')?.hidden,frozen),
+        'The blind clock ran or the rebuy UI obscured the showdown.');
+    }
     for(let attempt=0;attempt<80&&!offerOwner;attempt++) {
       for(const user of users.slice(0,2)) {
         const current=(await request(rebuyPath,user)).table;
@@ -199,6 +220,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     }
   }
   if(!offerOwner) throw Error('A final heads-up elimination did not create the expected rebuy offer.');
+  assert(checkedShowdown,'The real game did not verify the showdown-before-rebuy phase.');
   const acceptPage=offerOwner===users[0]?one:two,otherPage=acceptPage===one?two:one;
   await wait(acceptPage,()=>document.querySelector('#rebuy-offer-dialog')?.open===true);
   const offerUi=await evaluate(acceptPage,()=>({
@@ -209,13 +231,22 @@ export default async function interactions([one,two], sleep, roomPassword) {
   }));
   const secondsLeft=Number(offerUi.countdown.match(/(\d+) seconds left/)?.[1]||0);
   assert(offerUi.summary.includes('$5.00')&&offerUi.summary.includes('100 chips')&&
-    offerUi.summary.includes('no external payment')&&secondsLeft>=1&&secondsLeft<=60&&
+    secondsLeft>=1&&secondsLeft<=60&&
     offerUi.confirmText==='Confirm rebuy'&&offerUi.declineVisible,
     'Rebuy offer did not show the locked stack, buy-in, countdown, and explicit choices: '+JSON.stringify(offerUi));
   await wait(otherPage,name=>document.querySelector('#view-table-name')?.textContent===name,rebuyName);
   assert(await evaluate(otherPage,()=>!document.querySelector('#rebuy-offer-dialog')?.open&&
     document.querySelector('#rebuy-offer-button')?.hidden),
     'Another table viewer could see the eliminated player’s private rebuy offer.');
+  const rebuyPlayerName=String(offerOwner.player.name||offerOwner.player.display_name||offerOwner.username);
+  await wait(otherPage,name=>document.querySelector('#rebuy-waiting')?.textContent==='Waiting for '+name+' to rebuy'&&
+    !document.querySelector('#rebuy-waiting').hidden,rebuyPlayerName);
+  const waitingClock=await evaluate(otherPage,()=>document.querySelector('#blind-level-countdown').textContent);
+  await sleep(1100);
+  assert(await evaluate(otherPage,value=>document.querySelector('#blind-level-countdown').textContent===value,waitingClock),
+    'The blind-level clock ran during the rebuy decision.');
+  await otherPage.resize(390,844);await sleep(200);await otherPage.screenshot('rebuy-waiting-phone');
+  await otherPage.resize(1366,768);await sleep(200);await otherPage.screenshot('rebuy-waiting-desktop');
   const offerId=String(offerView.viewer.rebuy_offer.id);
   await evaluate(acceptPage,()=>{
     window.rebuyPostsQA=[];
@@ -237,7 +268,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     'The rebuy offer posted before the player confirmed it.');
   await click(acceptPage,'#rebuy-offer-accept');
   await wait(acceptPage,()=>document.querySelector('#rebuy-offer-dialog')?.open===false&&
-    document.querySelector('#notice')?.textContent.includes('no external payment')&&window.rebuyResponsesQA?.length===1);
+    document.querySelector('#notice')?.textContent.includes('Rebuy confirmed.')&&window.rebuyResponsesQA?.length===1);
   const rebuyStateAfterPost=await evaluate(acceptPage,()=>({posts:window.rebuyPostsQA,responses:window.rebuyResponsesQA}));
   const rebuyPost=rebuyStateAfterPost.posts;
   assert(rebuyPost.length===1&&rebuyPost[0].offer_id===offerId&&rebuyPost[0].confirm===true&&
@@ -256,5 +287,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     'Accepted rebuy did not restore the original stack outside the offer hand and update dollar accounting: '+
       JSON.stringify({acceptedHandNo,offerHandNo,restoredChips,acceptedSeat,viewer:accepted.viewer,pool:accepted.prize_pool_cents}));
   await wait(acceptPage,text=>document.querySelector('#view-table-subtitle')?.textContent.includes('$10.00'));
-  console.log('Confirmed rebuy restored 100 chips, counted a second $5 buy-in, and updated the $15 prize pool without external payment.');
+  await wait(otherPage,()=>document.querySelector('#rebuy-waiting')?.hidden&&
+    !document.querySelector('#blind-level-countdown')?.getAttribute('aria-label')?.includes('paused at'));
+  console.log('Confirmed rebuy restored 100 chips, counted a second $5 buy-in, and updated the $15 prize pool with updated totals.');
 }

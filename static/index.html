@@ -113,7 +113,7 @@
         <div class="login-story">
           <div class="eyebrow"><span class="eyebrow-line"></span> A table for your people</div>
           <h1 id="login-title">Good cards.<br><em>Better company.</em></h1>
-          <p>A private place to run a no-limit Texas Hold’em sit-and-go. Buy-ins and payouts are tracked in dollars; chips are used for gameplay. No external payments.</p>
+          <p>A private place to run a no-limit Texas Hold’em sit-and-go. Buy-ins and payouts are tracked in dollars; chips are used for gameplay.</p>
           <div class="login-note">
             <span class="note-icon" aria-hidden="true">♧</span>
             <span>Freezeout format <i>·</i> Dollar buy-ins <i>·</i> Chip stacks</span>
@@ -235,10 +235,6 @@
               </div>
             </section>
 
-            <div class="sidebar-foot">
-              <span aria-hidden="true">♢</span>
-              <p><strong>Just for fun.</strong><br>Chips have no cash value.</p>
-            </div>
           </aside>
 
           <section class="workspace" aria-label="Poker table">
@@ -278,6 +274,7 @@
               </div>
               <div id="shot-clock-alert" class="shot-clock-alert" role="status" aria-live="assertive" aria-atomic="true" hidden><strong id="shot-clock-number" class="shot-clock-number"></strong><span id="shot-clock-copy" class="shot-clock-copy"></span></div>
               <div id="table-announcements" class="table-announcements" aria-label="Table updates" hidden>
+                <div id="rebuy-waiting" class="announcement-view" role="status" aria-live="polite" hidden></div>
                 <div id="paused-banner" class="paused-view" role="status" aria-live="polite" hidden></div>
                 <div id="announcement-banner" class="announcement-view" role="status" aria-live="polite" hidden></div>
                 <div id="showdown-summary" class="showdown-summary" role="status" aria-live="polite" hidden></div>
@@ -326,7 +323,6 @@
                 </div>
                 <p id="rebuy-offer-countdown" class="rebuy-offer-countdown" role="timer" aria-live="off"></p>
                 <p id="rebuy-offer-summary" class="muted"></p>
-                <p class="rebuy-ledger-note">This updates the game ledger only; no external payment is processed or settled.</p>
                 <p id="rebuy-offer-status" class="rebuy-offer-status" role="status" aria-live="polite"></p>
                 <div class="rebuy-offer-actions">
                   <button id="rebuy-offer-decline" class="button button-outline button-small" type="button">Decline</button>
@@ -460,7 +456,7 @@
                   </div>
                   <button id="dismiss-results-button" class="button button-quiet button-small" type="button" aria-label="Dismiss final standings">Close</button>
                 </div>
-                <p id="results-description" class="muted">Final places, buy-ins, rebuys, and dollar payouts. The game ledger does not process external payments.</p>
+                <p id="results-description" class="muted">Final places, buy-ins, rebuys, and dollar payouts.</p>
                 <div id="results-list" class="results-list" role="list" tabindex="0"></div>
               </section>
 
@@ -504,7 +500,7 @@
       </dialog>
 
     <footer class="site-footer">
-      <span>Private tables. Dollar buy-ins and payout tracking. No external payments.</span>
+      <span>Private tables. Dollar buy-ins and payout tracking.</span>
       <span>Texas Hold’em <i>·</i> No-limit <i>·</i> Freezeout</span>
     </footer>
   </div>

@@ -2560,8 +2560,8 @@
     }
     var deadline = epochMilliseconds(blinds.nextAt);
     var serverNow = epochMilliseconds(view.server_now) || Date.now();
-    var paused = Boolean(view.paused);
-    var seconds = deadline > 0
+    var paused = Boolean(view.paused || view.blinds && view.blinds.paused);
+    var seconds = paused && blinds.seconds >= 0 ? blinds.seconds : deadline > 0
       ? Math.max(0, (deadline - serverNow) / 1000)
       : number(blinds.seconds, -1);
     if (seconds < 0) {
@@ -3653,7 +3653,15 @@
     }).map(function (node) { return node.getBoundingClientRect(); });
     var defaultGap = window.innerWidth <= 340 ? 1 : 2;
     var center = { x:(bounds.left + bounds.right) / 2, y:(bounds.top + bounds.bottom) / 2 };
-    grid.querySelectorAll(".seat-contribution, .seat-hand-strength").forEach(function (node) {
+    // Reserve room for longer hand values before fitting the shorter badges.
+    // Wagers keep their existing order and animation targets.
+    var tableBadges = Array.from(grid.querySelectorAll(".seat-contribution, .seat-hand-strength"));
+    tableBadges.sort(function (a, b) {
+      var aRank = a.matches(".seat-hand-strength"), bRank = b.matches(".seat-hand-strength");
+      if (aRank !== bRank) return aRank ? 1 : -1;
+      return aRank ? b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight : 0;
+    });
+    tableBadges.forEach(function (node) {
       var gap = node.matches(".seat-hand-strength") && window.innerHeight <= 450 ? 1 : defaultGap;
       var owner = node.closest(".seat-card"), box = owner.getBoundingClientRect();
       var width = node.offsetWidth, height = node.offsetHeight;
@@ -3734,7 +3742,7 @@
       blindsLabel = tableChipValue(handSmall, view) + " / " + tableChipValue(handBig, view) + " " + blindUnit;
     }
     var terminal = ["completed", "ended", "cancelled", "expired"].indexOf(String(view.status || "")) >= 0;
-    var levelNote = terminal ? "Final level" : (view.paused ? "Paused" : (b.pending ? "Next hand" : (remaining >= 0 ? "Next level" : "Countdown unavailable")));
+    var levelNote = terminal ? "Final level" : ((view.paused || view.blinds && view.blinds.paused) ? "Paused" : (b.pending ? "Next hand" : (remaining >= 0 ? "Next level" : "Countdown unavailable")));
     var entries = [
       { label: "Level", value: String(b.level), note: levelNote },
       { label: "Blinds", value: blindsLabel, note: tableUsesBigBlinds(view) ? "Small / big · BB" : "Small / big" }
@@ -5101,7 +5109,19 @@
     syncTableAnnouncementRegion();
   }
 
+  function renderRebuyWaiting(view) {
+    var node = byId("rebuy-waiting");
+    if (!node) return;
+    var rows = view.status === "playing" && Array.isArray(view.rebuy_waiting) ? view.rebuy_waiting : [];
+    var viewerId = String(view.viewer && view.viewer.player_id || "");
+    var names = rows.filter(function (row) { return String(row.player_id) !== viewerId; })
+      .map(function (row) { return String(row.name || "Player"); });
+    node.textContent = names.length ? "Waiting for " + names.join(" and ") + " to rebuy" : "";
+    node.hidden = !names.length;
+  }
+
   function renderTableAnnouncements(view) {
+    renderRebuyWaiting(view);
     if (view.status === "ended") {
       clearEliminationAnnouncement();
       clearBlindAnnouncement(false);
@@ -5110,7 +5130,8 @@
       syncTableAnnouncementRegion();
       return;
     }
-    announceEliminations(view);
+    if (Array.isArray(view.rebuy_waiting) && view.rebuy_waiting.length) clearEliminationAnnouncement();
+    else announceEliminations(view);
     renderShowdownSummary(view);
     syncTableAnnouncementRegion();
   }
@@ -5261,8 +5282,7 @@
     var startingStack = number(view.config && view.config.starting_stack, 0);
     if (summary) {
       summary.textContent = "Re-enter with the original starting stack of " + chips(startingStack) +
-        " chips and original buy-in " + dollars(buyInCents) +
-        ". This updates the table ledger only; no external payment is taken or settled here.";
+        " chips and original buy-in " + dollars(buyInCents) + ".";
     }
     if (newOffer && dialog && typeof dialog.showModal === "function" && !dialog.open) {
       dialog.showModal();
@@ -5299,7 +5319,7 @@
       await refreshSelected();
       await refreshAll(true);
       showNotice(acceptOffer
-        ? "Rebuy confirmed. Table totals updated; no external payment was processed."
+        ? "Rebuy confirmed. Table totals updated."
         : "Rebuy declined. The table will continue.", "success", false);
     } catch (err) {
       if (state.activeTableId === tableId && rebuyOfferCurrentId === offerId) {
@@ -5339,6 +5359,7 @@
       clearEliminationAnnouncement();
       byId("pause-button").hidden = true;
       byId("runtime-settings-button").hidden = true;
+      byId("rebuy-waiting").hidden = true;
       byId("paused-banner").hidden = true;
       byId("announcement-banner").hidden = true;
       showActionFeedback("", "info", true);
@@ -5388,7 +5409,7 @@
       (seatBuyInCount ? " · " + seatBuyInCount + " buy-ins · " + totalRebuys + " rebuys · " +
         (totalBuyInCents == null ? "total amounts not recorded" : dollars(totalBuyInCents)) : "");
     byId("button-caption").textContent = status === "ended" ? "Ended by host" :
-      (status === "playing" || status === "completed" ? "" : "Game ledger only · no external payment");
+      "";
 
     syncRebuyOffer(view);
     renderBlindStrip(view);
