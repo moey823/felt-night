@@ -1957,11 +1957,16 @@
     else clearNotice();
   }
 
-  function apiError(message, status, code) {
+  function apiError(message, status, code, requestId) {
     this.name = "ApiError";
     this.message = message || "The request could not be completed.";
     this.status = status || 0;
     this.code = code || "";
+    this.requestId = String(requestId || "");
+    var reference = this.requestId.replace(/[^a-z0-9]/gi, "").slice(0, 8);
+    if (reference && (this.status >= 500 || /^(internal(?:_|$)|server_error|unexpected_error)$/i.test(this.code))) {
+      this.message += " Reference " + reference + ".";
+    }
   }
   apiError.prototype = Object.create(Error.prototype);
   apiError.prototype.constructor = apiError;
@@ -2001,15 +2006,17 @@
       data = {};
     }
 
+    var requestId = response.headers && typeof response.headers.get === "function"
+      ? response.headers.get("X-Request-ID") || "" : "";
     if (response.status === 401 && !["/login", "/register", "/claim"].includes(path)) {
       setLoggedOut("Your session has expired. Sign in again.");
-      throw new apiError("Your session has expired.", 401, "unauthorized");
+      throw new apiError("Your session has expired.", 401, "unauthorized", requestId);
     }
 
     if (!response.ok) {
       var detail = data && data.error ? data.error : {};
       var message = typeof detail.message === "string" ? detail.message : "The request could not be completed.";
-      throw new apiError(message, response.status, detail.code || "");
+      throw new apiError(message, response.status, detail.code || "", requestId);
     }
     return data || {};
   }
@@ -2725,6 +2732,14 @@
     return raw == null ? null : String(Math.floor(number(raw, -1)));
   }
 
+  function clearStreetActions() {
+    var actions = state.tableFx.actions;
+    Object.keys(actions).forEach(function (key) {
+      var action = actions[key];
+      if (!(action && action.rawEvent && action.rawEvent.timed_out)) delete actions[key];
+    });
+  }
+
   function eventActorId(event) {
     var actor = event && (event.actor_id || event.player_id || event.actor);
     if (actor && typeof actor === "object") actor = actor.player_id || actor.id || "";
@@ -2790,7 +2805,10 @@
     node.hidden = !event || view.status === "ended";
     if (node.hidden) { node.replaceChildren(); return; }
     var actor = String(event.actor_label || "Player");
-    var action = eventActionText(event)[0] + (event.timed_out ? " (timed out)" : "");
+    var eventAction = String(event.action || "").toLowerCase().replace(/[ -]+/g, "_");
+    var action = event.timed_out && (eventAction === "fold" || eventAction === "check")
+      ? (eventAction === "check" ? "Check" : "Fold") + " · TIMEOUT"
+      : eventActionText(event)[0];
     var markup = '<span class="last-action-actor">' + esc(actor) + '</span><strong class="last-action-detail">' + esc(action) + '</strong>';
     if (node.innerHTML !== markup) node.innerHTML = markup;
     node.title = "Last action: " + actor + " · " + action;
@@ -2849,7 +2867,7 @@
     if (event.type === "action") {
       var text = eventActionText(event);
       var actionStreet = String(event.street || "");
-      if (actionStreet && fx.street && actionStreet !== fx.street) fx.actions = {};
+      if (actionStreet && fx.street && actionStreet !== fx.street) clearStreetActions();
       if (actionStreet) fx.street = actionStreet;
       var actionState = {
         label: text[0],
@@ -2857,14 +2875,15 @@
         kind: String(event.action || "").toLowerCase().replace(/[ -]+/g, "_"),
         seatNo: eventSeatNo(event),
         actorLabel: String(event.actor_label || ""),
-        rawEvent: { action: event.action, amount: event.amount, street_contribution: event.street_contribution }
+        rawEvent: { action: event.action, amount: event.amount, street_contribution: event.street_contribution,
+          timed_out: Boolean(event.timed_out) }
       };
       var id = eventActorId(event);
       if (id) fx.actions[id] = actionState;
       if (actionState.seatNo != null) fx.actions["seat:" + actionState.seatNo] = actionState;
       if (actionState.actorLabel) fx.actions["name:" + actionState.actorLabel.toLowerCase()] = actionState;
     } else if (event.type === "street") {
-      fx.actions = {};
+      clearStreetActions();
       fx.street = String(event.street || "");
     } else if (event.type === "reveal") {
       (Array.isArray(event.hands) ? event.hands : []).forEach(function (hand) {
@@ -2895,7 +2914,7 @@
       fx.lastSeq = Math.max(fx.lastSeq, number(event && event.seq, -1));
     });
     var snapshotStreet = String(view.street || "");
-    if (fx.street && snapshotStreet && fx.street !== snapshotStreet) fx.actions = {};
+    if (fx.street && snapshotStreet && fx.street !== snapshotStreet) clearStreetActions();
     fx.street = snapshotStreet;
     (Array.isArray(view.seats) ? view.seats : []).forEach(function (seat, index) {
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : index;
@@ -2941,7 +2960,7 @@
     }
 
     var visibleStreet = String(view.street || "");
-    if (visibleStreet && fx.street && visibleStreet !== fx.street) fx.actions = {};
+    if (visibleStreet && fx.street && visibleStreet !== fx.street) clearStreetActions();
     if (!events) {
       fx.street = visibleStreet || fx.street;
       return;
@@ -2974,8 +2993,11 @@
     var action = fx.actions[id] || fx.actions["seat:" + seatNo] || (name ? fx.actions["name:" + name] : null) || null;
     if (action && action.rawEvent) {
       var text = eventActionText(action.rawEvent);
-      action.label = text[0];
-      action.compactLabel = text[1];
+      var timedAction = String(action.rawEvent.action || "").toLowerCase().replace(/[ -]+/g, "_");
+      var timeoutLabel = action.rawEvent.timed_out && (timedAction === "fold" || timedAction === "check")
+        ? (timedAction === "check" ? "Check" : "Fold") + " \u00b7 TIMEOUT" : "";
+      action.label = timeoutLabel || text[0];
+      action.compactLabel = timeoutLabel || text[1];
     }
     return action;
   }
@@ -3356,7 +3378,9 @@
       var stack = number(seat.stack, 0);
       var rawSeatNo = seat.seat_no != null ? seat.seat_no : i;
       var seatNo = String(Math.floor(number(rawSeatNo, i)));
-      var actionState = currentHand && !showdown ? actionForSeat(seat, seatNo) : null;
+      var actionState = currentHand ? actionForSeat(seat, seatNo) : null;
+      if (showdown && !(actionState && actionState.rawEvent && actionState.rawEvent.timed_out &&
+          actionState.kind === "fold" && folded)) actionState = null;
       var cards = [];
       if (isMe) {
         cards = cardArray(viewer.hole_cards);
@@ -3464,9 +3488,14 @@
       if (actionState) {
         var badge = actionBadgeParts(actionState);
         var badgeText = badge.verb + (badge.amount ? " " + badge.amount : "");
+        var timedOut = Boolean(actionState.rawEvent && actionState.rawEvent.timed_out &&
+          /^(fold|check)$/.test(String(actionState.kind || "")));
         var actionDescription = String(actionState.label || actionState.compactLabel || badgeText);
-        actionMarkup = '<span class="seat-action kind-' + esc(actionState.kind || "action") + '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionDescription) + '" title="' + esc(actionDescription) + '">' +
+        actionMarkup = '<span class="seat-action kind-' + esc(actionState.kind || "action") + (timedOut ? ' is-timeout' : '') +
+          '" data-action-seat="' + esc(seatNo) + '" aria-label="' + esc((seat.name || "Player") + ": " + actionDescription) +
+          '" title="' + esc(actionDescription) + '">' +
           '<span class="seat-action-verb">' + esc(badge.verb) + '</span>' +
+          (timedOut ? '<span class="seat-action-timeout"> \u00b7 TIMEOUT</span>' : '') +
           (badge.amount ? '<span class="seat-action-value">' + esc(badge.amount) + '</span>' : '') + '</span>';
       }
       if (acting) {
@@ -6094,7 +6123,7 @@
   async function submitActionIntent(intent) {
     if (state.actionPending) return;
     if (!actionIntentIsCurrent(intent)) {
-      showNotice("That turn changed before the action was sent. Review the refreshed table.", "info", false);
+      showActionFeedback("", "info", true);
       try { await refreshSelected(); } catch (err) {}
       return;
     }
@@ -6114,9 +6143,8 @@
       }
       try { await refreshAll(true); } catch (refreshError) {}
     } catch (err) {
-      if (err.status === 409) {
+      if (err.status === 409 && (err.code === "stale_hand" || err.code === "stale_turn" || err.code === "hand_not_active")) {
         showActionFeedback("", "info", true);
-        showNotice("The hand or turn changed before that action arrived. Review the refreshed table.", "info", false);
       } else {
         showActionFeedback(err.message, "error", false);
       }
@@ -6133,7 +6161,7 @@
   function beginActionIntent(intent) {
     if (!intent || state.actionPending || state.actionSubmittedKey === intent.key) return;
     if (!actionIntentIsCurrent(intent)) {
-      showNotice("That turn changed before the action was sent. Review the refreshed table.", "info", false);
+      showActionFeedback("", "info", true);
       refreshSelected().catch(function () {});
       return;
     }

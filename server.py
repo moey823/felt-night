@@ -6,6 +6,7 @@ import argparse
 import base64
 import binascii
 import copy
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -19,6 +20,7 @@ import stat
 import sys
 sys.dont_write_bytecode = True
 import threading
+import traceback
 import time
 import uuid
 import zlib
@@ -453,6 +455,231 @@ def _json_dumps(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def _diagnostic_route(raw_target):
+    """Return only a fixed route label; never retain a raw target or query."""
+    if not isinstance(raw_target, str) or len(raw_target) > 2048:
+        return "unmatched"
+    try:
+        route = urlsplit(raw_target).path
+    except (TypeError, ValueError):
+        return "unmatched"
+    if route in PAGE_ROUTES or route in ROOT_PAGE_ROUTES:
+        return "page"
+    if route in _DIAGNOSTIC_FIXED_ROUTES:
+        return route
+    for pattern, label in _DIAGNOSTIC_ROUTE_PATTERNS:
+        match = re.fullmatch(pattern, route)
+        if match:
+            if "{operation}" in label:
+                return label.replace("{operation}", match.group(1))
+            return label
+    return "unmatched"
+
+
+_DIAGNOSTIC_FIXED_ROUTES = frozenset({
+    "/poker/healthz",
+    "/poker/seat-layout.js", "/poker/app.js", "/poker/style.css",
+    "/poker/room.css", "/poker/ace.svg", "/poker/manifest.webmanifest",
+    "/poker/avatar-presets.json", "/poker/service-worker.js", "/poker/icon.svg",
+    "/poker/icon-192.png", "/poker/icon-512.png", "/poker/apple-touch-icon.png",
+    "/poker/security.html",
+    "/poker/api/avatar-presets", "/poker/api/config", "/poker/api/me",
+    "/poker/api/register", "/poker/api/login", "/poker/api/claim",
+    "/poker/api/logout", "/poker/api/profile", "/poker/api/profile/avatar",
+    "/poker/api/admin/avatar-presets", "/poker/api/admin/accounts",
+    "/poker/api/admin/config", "/poker/api/admin/history",
+    "/poker/api/admin/history/bot-games", "/poker/api/admin/history/purge-bots",
+    "/poker/api/admin/history/delete", "/poker/api/history", "/poker/api/tables",
+})
+_DIAGNOSTIC_ROUTE_PATTERNS = (
+    (r"/poker/avatars/(?:full/)?[a-z0-9]+(?:-[a-z0-9]+)*\.(?:png|jpg)",
+     "/poker/avatars/{preset}"),
+    (r"/poker/api/avatar-presets/[a-f0-9]{32}/(?:thumbnail|full)",
+     "/poker/api/avatar-presets/{id}/{variant}"),
+    (r"/poker/api/players/[a-f0-9]{32}/avatar(?:/full)?",
+     "/poker/api/players/{id}/avatar"),
+    (r"/poker/api/history/[a-f0-9]{32}", "/poker/api/history/{id}"),
+    (r"/poker/api/admin/history/[a-f0-9]{32}/delete",
+     "/poker/api/admin/history/{id}/delete"),
+    (r"/poker/api/admin/history/[a-f0-9]{32}",
+     "/poker/api/admin/history/{id}"),
+    (r"/poker/api/admin/accounts/[a-f0-9]{32}/(role|delete)",
+     "/poker/api/admin/accounts/{id}/{operation}"),
+    (r"/poker/api/tables/[a-f0-9]{32}", "/poker/api/tables/{id}"),
+    (r"/poker/api/tables/[a-f0-9]{32}/rebuy/decline",
+     "/poker/api/tables/{id}/rebuy/decline"),
+    (r"/poker/api/tables/[a-f0-9]{32}/(chat|reactions|last-hand|rebuy|sit-out|bots|end|join|seat|stand|start|action|leave|cancel|settings|pause)",
+     "/poker/api/tables/{id}/{operation}"),
+    (r"/poker/api/tables/[a-f0-9]{32}/bots/[0-8]",
+     "/poker/api/tables/{id}/bots/{seat}"),
+)
+_DIAGNOSTIC_METHODS = frozenset({
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
+})
+_DIAGNOSTIC_ACTIONS = frozenset({
+    "fold", "check", "call", "bet", "raise", "all_in",
+})
+
+
+def _diagnostic_exception(exc):
+    """Keep exception class and frame locations, never messages or source text."""
+    error_type = type(exc)
+    module = getattr(error_type, "__module__", "")
+    name = getattr(error_type, "__qualname__", getattr(error_type, "__name__", ""))
+    if not isinstance(module, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,100}", module):
+        module = "unknown"
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.]{1,100}", name):
+        name = "UnknownError"
+    result = {"class": module + "." + name}
+    error_number = getattr(exc, "errno", None)
+    if type(error_number) is int:
+        result["errno"] = error_number
+        error_name = errno.errorcode.get(error_number)
+        if error_name and re.fullmatch(r"[A-Z0-9_]{1,64}", error_name):
+            result["errno_name"] = error_name
+    sqlite_code = getattr(exc, "sqlite_errorcode", None)
+    if type(sqlite_code) is int:
+        result["sqlite_errorcode"] = sqlite_code
+    sqlite_name = getattr(exc, "sqlite_errorname", None)
+    if isinstance(sqlite_name, str) and re.fullmatch(r"SQLITE_[A-Z0-9_]{1,64}", sqlite_name):
+        result["sqlite_errorname"] = sqlite_name
+    frames = []
+    tb = getattr(exc, "__traceback__", None)
+    if tb is not None:
+        for frame in traceback.extract_tb(tb)[-8:]:
+            filename = os.path.basename(frame.filename)
+            function = frame.name
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", filename):
+                filename = "unknown"
+            if not re.fullmatch(r"[A-Za-z0-9_<>,. -]{1,100}", function):
+                function = "unknown"
+            frames.append({
+                "file": filename, "line": int(frame.lineno), "function": function,
+            })
+    result["frames"] = frames
+    return result
+
+
+def _diagnostic_disconnect_kind(exc):
+    if isinstance(exc, TimeoutError):
+        return "client_timeout"
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+        return "client_disconnect"
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+            errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED}:
+        return "client_disconnect"
+    return None
+
+
+class DiagnosticLogger:
+    """Bounded, privacy-filtered JSONL diagnostics in the external data directory."""
+
+    def __init__(self, data_dir, max_bytes=5 * 1024 * 1024, backups=3):
+        self.path = os.path.join(os.path.abspath(os.fspath(data_dir)), "diagnostics.jsonl")
+        self.max_bytes = max(1024, int(max_bytes))
+        self.backups = max(0, int(backups))
+        self._lock = threading.Lock()
+        self._last_emit = {}
+        self._suppressed = {}
+        self._warned = False
+
+    def _timestamp(self):
+        now = time.time()
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + ".%03dZ" % int(
+            (now % 1) * 1000
+        )
+
+    def _rotate_locked(self, incoming_size):
+        try:
+            current_size = os.path.getsize(self.path)
+        except FileNotFoundError:
+            return
+        if current_size + incoming_size <= self.max_bytes:
+            return
+        if self.backups == 0:
+            descriptor = os.open(
+                self.path, os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            )
+            os.close(descriptor)
+            return
+        for index in range(self.backups, 0, -1):
+            source = self.path if index == 1 else self.path + ".%d" % (index - 1)
+            destination = self.path + ".%d" % index
+            if os.path.lexists(destination):
+                os.unlink(destination)
+            if os.path.lexists(source):
+                os.replace(source, destination)
+
+    def _warn_sink_failure(self):
+        try:
+            with self._lock:
+                if self._warned:
+                    return
+                self._warned = True
+            print("Felt Night diagnostics file is unavailable; request/game state is unaffected.",
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+    def emit(self, event, throttle_key=None, throttle_seconds=60.0):
+        try:
+            with self._lock:
+                event = dict(event)
+                if throttle_key is not None:
+                    now = time.monotonic()
+                    previous = self._last_emit.get(throttle_key)
+                    if previous is not None and now - previous < throttle_seconds:
+                        self._suppressed[throttle_key] = self._suppressed.get(throttle_key, 0) + 1
+                        return False
+                    suppressed = self._suppressed.pop(throttle_key, 0)
+                    self._last_emit[throttle_key] = now
+                    if suppressed:
+                        event["suppressed_count"] = suppressed
+                    if len(self._last_emit) > 256:
+                        expired = [
+                            key for key, last in self._last_emit.items()
+                            if now - last > max(300.0, throttle_seconds * 5)
+                        ]
+                        for key in expired:
+                            self._last_emit.pop(key, None)
+                            self._suppressed.pop(key, None)
+                event.setdefault("timestamp", self._timestamp())
+                encoded = (json.dumps(
+                    event, ensure_ascii=True, separators=(",", ":"), allow_nan=False,
+                ) + "\n").encode("utf-8")
+                self._rotate_locked(len(encoded))
+                flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(self.path, flags, 0o600)
+                try:
+                    os.fchmod(descriptor, 0o600)
+                    remaining = memoryview(encoded)
+                    while remaining:
+                        written = os.write(descriptor, remaining)
+                        if written <= 0:
+                            raise OSError("diagnostics write made no progress")
+                        remaining = remaining[written:]
+                finally:
+                    os.close(descriptor)
+            return True
+        except Exception:
+            self._warn_sink_failure()
+            return False
+
+    def exception_event(self, event_name, exc, throttle=True, **fields):
+        exception = _diagnostic_exception(exc)
+        event = {"event": event_name, **fields, "exception": exception}
+        frame_key = tuple(
+            (frame["file"], frame["line"], frame["function"])
+            for frame in exception["frames"]
+        )
+        throttle_key = None
+        if throttle:
+            throttle_key = (
+                event_name, exception["class"], frame_key, fields.get("table_id"),
+            )
+        return self.emit(event, throttle_key=throttle_key)
+
+
 class Store:
     def __init__(self, data_dir, room_password):
         self.data_dir = os.path.abspath(data_dir)
@@ -463,6 +690,7 @@ class Store:
             raise RuntimeError("data directory is not a directory")
         os.chmod(self.data_dir, 0o700)
         self.db_path = os.path.join(self.data_dir, "sitngo.sqlite3")
+        self.diagnostics = DiagnosticLogger(self.data_dir)
         self._reaction_prune_lock = threading.Lock()
         self._last_reaction_prune = 0.0
         self._initialize(room_password)
@@ -1877,8 +2105,14 @@ class Store:
         for row in rows:
             try:
                 self.mutate_table(row["id"], lambda state: state, now)
-            except Exception:
-                continue
+            except Exception as exc:
+                table_id = row["id"]
+                diagnostic_fields = {"component": "table_tick"}
+                if isinstance(table_id, str) and re.fullmatch(r"[a-f0-9]{32}", table_id):
+                    diagnostic_fields["table_id"] = table_id
+                self.diagnostics.exception_event(
+                    "background_tick_error", exc, **diagnostic_fields,
+                )
 
 
 class LimitedThreadingHTTPServer(ThreadingHTTPServer):
@@ -1893,11 +2127,49 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request(self, request, client_address):
         if not self._slots.acquire(blocking=False):
-            self.shutdown_request(request)
+            request_id = uuid.uuid4().hex
+            body = _json_dumps({
+                "error": {
+                    "code": "worker_capacity",
+                    "message": "The server is busy. Try again shortly.",
+                },
+            }).encode("utf-8")
+            response = (
+                "HTTP/1.0 503 Service Unavailable\r\n"
+                "Content-Type: application/json; charset=utf-8\r\n"
+                "Content-Length: %d\r\n"
+                "Cache-Control: no-store\r\n"
+                "Connection: close\r\n"
+                "X-Request-ID: %s\r\n\r\n" % (len(body), request_id)
+            ).encode("ascii") + body
+            event = {
+                "event": "worker_capacity",
+                "request_id": request_id,
+                "method": "unparsed",
+                "route": "unparsed",
+                "status": 503,
+                "error_code": "worker_capacity",
+                "duration_ms": 0,
+            }
+            try:
+                request.sendall(response)
+            except OSError as exc:
+                disconnect = _diagnostic_disconnect_kind(exc)
+                if disconnect:
+                    event["disconnect"] = disconnect
+                    event["disconnect_class"] = type(exc).__name__
+                else:
+                    event["exception"] = _diagnostic_exception(exc)
+            finally:
+                self.app.store.diagnostics.emit(event)
+                self.shutdown_request(request)
             return
         try:
             super().process_request(request, client_address)
-        except Exception:
+        except Exception as exc:
+            self.app.store.diagnostics.exception_event(
+                "http_worker_start_error", exc, component="http_server",
+            )
             self._slots.release()
             raise
 
@@ -1908,6 +2180,13 @@ class LimitedThreadingHTTPServer(ThreadingHTTPServer):
         finally:
             self._slots.release()
 
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            self.app.store.diagnostics.exception_event(
+                "http_worker_error", exc, component="http_server",
+            )
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "SitNGo"
@@ -1917,6 +2196,90 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def app(self):
         return self.server.app
+
+    def _begin_diagnostic_request(self):
+        self._diagnostic_id = uuid.uuid4().hex
+        self._diagnostic_started = time.monotonic()
+        self._diagnostic_status = None
+        self._diagnostic_error_code = None
+        self._diagnostic_exception = None
+        self._diagnostic_disconnect = None
+        self._diagnostic_action = None
+        self.raw_requestline = b""
+        self.requestline = ""
+        self.command = None
+        self.path = ""
+
+    def _record_disconnect(self, exc):
+        kind = _diagnostic_disconnect_kind(exc)
+        if kind is None:
+            return False
+        self._diagnostic_disconnect = {
+            "kind": kind,
+            "class": type(exc).__name__,
+        }
+        self.close_connection = True
+        return True
+
+    def _finish_diagnostic_request(self):
+        if not getattr(self, "raw_requestline", b""):
+            return
+        method = getattr(self, "command", None)
+        if method not in _DIAGNOSTIC_METHODS:
+            method = "OTHER"
+        event = {
+            "event": "http_request",
+            "request_id": self._diagnostic_id,
+            "method": method,
+            "route": _diagnostic_route(getattr(self, "path", "")),
+            "status": self._diagnostic_status,
+            "error_code": self._diagnostic_error_code,
+            "duration_ms": max(
+                0, int((time.monotonic() - self._diagnostic_started) * 1000),
+            ),
+        }
+        if self._diagnostic_exception is not None:
+            event["exception"] = self._diagnostic_exception
+        if self._diagnostic_disconnect is not None:
+            event["disconnect"] = self._diagnostic_disconnect["kind"]
+            event["disconnect_class"] = self._diagnostic_disconnect["class"]
+        if self._diagnostic_action is not None:
+            event["action"] = dict(self._diagnostic_action)
+        self.app.diagnostics.emit(event)
+
+    def handle_one_request(self):
+        self._begin_diagnostic_request()
+        try:
+            super().handle_one_request()
+        except OSError as exc:
+            if not self._record_disconnect(exc):
+                self._diagnostic_exception = _diagnostic_exception(exc)
+                self.close_connection = True
+        except Exception as exc:
+            if not self._record_disconnect(exc):
+                self._diagnostic_exception = _diagnostic_exception(exc)
+                self.close_connection = True
+        finally:
+            self._finish_diagnostic_request()
+
+    def send_response(self, code, message=None):
+        self._diagnostic_status = int(code)
+        super().send_response(code, message)
+        request_id = getattr(self, "_diagnostic_id", None)
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
+
+    def send_error(self, code, message=None, explain=None):
+        if int(code) >= 400 and self._diagnostic_error_code is None:
+            self._diagnostic_error_code = "http_protocol_error"
+        return super().send_error(code, message, explain)
+
+    def log_error(self, fmt, *args):
+        # BaseHTTPRequestHandler catches read timeouts internally before returning.
+        exc = sys.exc_info()[1]
+        if isinstance(exc, TimeoutError):
+            self._record_disconnect(exc)
+            self._diagnostic_exception = _diagnostic_exception(exc)
 
     def log_message(self, fmt, *args):
         # Do not log request paths, origins, cookies, player names, or bodies.
@@ -1999,25 +2362,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status, body=b"", content_type="application/json; charset=utf-8",
               headers=None):
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-        for key, value in (headers or {}).items():
-            self.send_header(key, value)
-        self.end_headers()
-        if body:
-            self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+        except OSError as exc:
+            if self._record_disconnect(exc):
+                return
+            raise
 
     def _json(self, status, payload, headers=None):
+        if status >= 400 and isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                code = error.get("code")
+                if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
+                    self._diagnostic_error_code = code
         self._send(status, _json_dumps(payload).encode("utf-8"), headers=headers)
 
     def _error(self, status, code, message):
+        if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code):
+            self._diagnostic_error_code = code
         self._json(status, {"error": {"code": code, "message": message}})
 
     def _cookie_token(self):
@@ -2393,9 +2769,15 @@ class Handler(BaseHTTPRequestHandler):
             self._error(exc.status, exc.code, exc.message)
         except engine.GameError as exc:
             self._error(exc.status, exc.code, exc.message)
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError) as exc:
+            if self._record_disconnect(exc):
+                return
+            self._diagnostic_exception = _diagnostic_exception(exc)
             self._error(503, "unavailable", "The requested resource is unavailable.")
-        except Exception:
+        except Exception as exc:
+            if self._record_disconnect(exc):
+                return
+            self._diagnostic_exception = _diagnostic_exception(exc)
             self._error(500, "internal_error", "The request could not be completed.")
 
     def do_POST(self):
@@ -2927,21 +3309,46 @@ class Handler(BaseHTTPRequestHandler):
                     amount = self._integer(amount, "amount", 1, 1_000_000_000)
                 expected_hand = self._integer(body.get("expected_hand"), "expected_hand", 0, 1_000_000_000)
                 expected_turn_version = self._integer(body.get("expected_turn_version"), "expected_turn_version", 0, 2**63 - 1)
-                state = self.app.store.mutate_table(
-                    table_id,
-                    lambda value: engine.apply_action(
+                normalized_action = action.lower()
+                self._diagnostic_action = {
+                    "table_id": table_id,
+                    "action": normalized_action if normalized_action in _DIAGNOSTIC_ACTIONS else "other",
+                    "expected_hand": expected_hand,
+                    "expected_turn_version": expected_turn_version,
+                }
+
+                def apply_action_with_diagnostics(value):
+                    current_hand = value.get("hand_no")
+                    current_turn = value.get("turn_version")
+                    if type(current_hand) is int and 0 <= current_hand <= 1_000_000_000:
+                        self._diagnostic_action["current_hand"] = current_hand
+                    if type(current_turn) is int and 0 <= current_turn <= 2**63 - 1:
+                        self._diagnostic_action["current_turn_version"] = current_turn
+                    paused = value.get("paused")
+                    if type(paused) is bool:
+                        self._diagnostic_action["paused"] = paused
+                    return engine.apply_action(
                         value, player["id"], action, amount, expected_hand,
-                        expected_turn_version, now),
-                    now,
+                        expected_turn_version, now,
+                    )
+
+                state = self.app.store.mutate_table(
+                    table_id, apply_action_with_diagnostics, now,
                 )
             self._json(200, {"table": self._public_table(state, player["id"])})
         except AppError as exc:
             self._error(exc.status, exc.code, exc.message)
         except engine.GameError as exc:
             self._error(exc.status, exc.code, exc.message)
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError) as exc:
+            if self._record_disconnect(exc):
+                return
+            self._diagnostic_exception = _diagnostic_exception(exc)
             self._error(503, "unavailable", "The requested resource is unavailable.")
-        except Exception:
+        except Exception as exc:
+            if self._record_disconnect(exc):
+                return
+            self._diagnostic_exception = _diagnostic_exception(exc)
             self._error(500, "internal_error", "The request could not be completed.")
 
     def do_OPTIONS(self):
@@ -2981,9 +3388,15 @@ class Handler(BaseHTTPRequestHandler):
             self._error(exc.status, exc.code, exc.message)
         except engine.GameError as exc:
             self._error(exc.status, exc.code, exc.message)
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError) as exc:
+            if self._record_disconnect(exc):
+                return
+            self._diagnostic_exception = _diagnostic_exception(exc)
             self._error(503, "unavailable", "The requested resource is unavailable.")
-        except Exception:
+        except Exception as exc:
+            if self._record_disconnect(exc):
+                return
+            self._diagnostic_exception = _diagnostic_exception(exc)
             self._error(500, "internal_error", "The request could not be completed.")
 
     def do_PATCH(self):
@@ -2998,6 +3411,7 @@ class App:
         )
         self.public_origin, self.public_netloc, self.secure_cookie = _parse_origin(args.public_origin)
         self.store = Store(args.data_dir, self.room_password)
+        self.diagnostics = self.store.diagnostics
         self.cookie_name = COOKIE_NAME
 
     def private_admin_app(self, origin):
@@ -3016,8 +3430,12 @@ def _background_ticks(store, stop_event):
             now = time.time()
             store.tick_all(now)
             store.prune_expired_table_reactions(now)
-        except Exception:
-            continue
+        except Exception as exc:
+            diagnostics = getattr(store, "diagnostics", None)
+            if diagnostics is not None:
+                diagnostics.exception_event(
+                    "background_worker_error", exc, component="ticker",
+                )
 
 
 def main(argv=None):

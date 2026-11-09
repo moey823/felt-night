@@ -6,16 +6,19 @@ import engine
 
 
 class RebuyTimingTests(unittest.TestCase):
-    def busted_table(self, busted=("p3",), showdown_seconds=5, players=4):
+    def busted_table(self, busted=("p3",), showdown_seconds=5, players=4,
+                     bots=(), elimination_seconds=0):
         state = engine.create_lobby("rebuy-timing", "p1", "Ada", {
             "max_seats": players, "starting_stack": 1000, "small_blind": 5, "big_blind": 10,
             "level_minutes": 1, "showdown_seconds": showdown_seconds,
-            "elimination_announcement_seconds": 0, "blind_announcement_seconds": 0,
+            "elimination_announcement_seconds": elimination_seconds, "blind_announcement_seconds": 0,
         }, now=100)
-        for pid, name in (("p2", "Bea"), ("p3", "Cy"), ("p4", "Dee")):
-            engine.join(state, pid, name, now=101)
-        if players == 5:
-            engine.join(state, "p5", "Eli", now=101)
+        names = {2: "Bea", 3: "Cy", 4: "Dee", 5: "Eli"}
+        for number in range(2, players + 1):
+            player_id = "p%d" % number
+            engine.join(state, player_id, names.get(number, "Player %d" % number), now=101)
+        for player_id in bots:
+            engine._seat_by_id(state, player_id)["is_bot"] = True
         engine.start(state, "p1", now=102)
         hand = state["hand"]
         hand["board"] = ["As", "Kh", "9c", "7s", "3d"]
@@ -71,6 +74,79 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertIn("p3", state["hand"]["holes"])
         self.assertFalse(self.view(state, "p1", 151)["blinds"]["paused"])
         self.assertEqual(self.view(state, "p1", 151)["blinds"]["seconds_to_next"], 51)
+
+    def test_three_player_hand_can_rebuy_from_two_remaining_and_clears_elimination_announcement(self):
+        state = self.busted_table(("p3",), players=3, elimination_seconds=10)
+        self.assertTrue(state["hand"]["rebuy_eligible"])
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]), 2)
+        self.assertEqual(set(state["rebuy_offers"]), {"p3"})
+        self.assertEqual(state["elimination_announcement"]["players"][0]["player_id"], "p3")
+        visible = self.view(state, "p3", 115)
+        self.assertEqual(visible["viewer"]["rebuy_offer"]["id"], state["rebuy_offers"]["p3"]["id"])
+        self.assertEqual(visible["elimination_announcement"]["players"][0]["player_id"], "p3")
+
+        engine.accept_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=115)
+        self.assertEqual(state["status"], "playing")
+        self.assertIsNone(state["elimination_announcement"])
+        self.assertEqual(state["hand"]["next_hand_at"], 119)
+        engine.advance(state, now=119)
+        self.assertEqual(state["hand_no"], 2)
+        self.assertIn("p3", state["hand"]["holes"])
+
+    def test_three_to_one_multi_bust_offers_stay_open_until_each_decision_after_reload(self):
+        state = json.loads(json.dumps(self.busted_table(("p2", "p3"), players=3)))
+        self.assertTrue(engine._rebuys_open(state))
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]), 1)
+        self.assertEqual(set(state["rebuy_offers"]), {"p2", "p3"})
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(
+            self.view(state, "p2", 115)["viewer"]["rebuy_offer"]["id"],
+            state["rebuy_offers"]["p2"]["id"],
+        )
+
+        engine.accept_rebuy(state, "p2", state["rebuy_offers"]["p2"]["id"], now=120)
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(state["hand_no"], 1)
+        self.assertEqual(set(state["rebuy_offers"]), {"p3"})
+        engine.advance(state, now=130)
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(state["hand_no"], 1)
+
+        engine.accept_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=140)
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(state["rebuy_offers"], {})
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]), 3)
+        engine.advance(state, now=143.99)
+        self.assertEqual(state["hand_no"], 1)
+        engine.advance(state, now=144)
+        self.assertEqual(state["hand_no"], 2)
+        self.assertTrue({"p2", "p3"}.issubset(state["hand"]["holes"]))
+
+    def test_three_to_one_tournament_finishes_only_after_all_eligible_offers_resolve(self):
+        state = self.busted_table(("p2", "p3"), players=3)
+        engine.decline_rebuy(state, "p2", state["rebuy_offers"]["p2"]["id"], now=120)
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(set(state["rebuy_offers"]), {"p3"})
+        engine.advance(state, now=130)
+        self.assertEqual(state["status"], "playing")
+        self.assertEqual(state["hand_no"], 1)
+
+        engine.decline_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=140)
+        self.assertEqual(state["status"], "completed")
+        self.assertEqual(state["rebuy_offers"], {})
+        self.assertIsNone(state["hand"]["next_hand_at"])
+
+    def test_legacy_hand_eligibility_falls_back_to_stack_and_hole_snapshots(self):
+        state = self.busted_table(players=4)
+        hand = state["hand"]
+        hand.pop("rebuy_eligible")
+        self.assertTrue(engine._hand_rebuy_eligible(hand))
+        hand.pop("stack_before")
+        self.assertTrue(engine._hand_rebuy_eligible(hand))
+
+        heads_up = self.busted_table(("p2",), players=2)
+        heads_up["hand"].pop("rebuy_eligible")
+        self.assertFalse(engine._hand_rebuy_eligible(heads_up["hand"]))
 
     def test_multiple_busts_wait_for_last_decision_and_survive_reload(self):
         state = json.loads(json.dumps(self.busted_table(("p3", "p4"), players=5)))
@@ -214,12 +290,9 @@ class RebuyTimingTests(unittest.TestCase):
         engine.advance(state, now=125)
         self.assertEqual(state["hand_no"], 2)
 
-    def test_bot_elimination_at_heads_up_does_not_add_rebuy_hold(self):
-        state = self.busted_table()
-        # At heads-up no player, including a bot, gets a rebuy offer.
-        engine.decline_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=115)
-        engine._seat_by_id(state, "p4")["is_bot"] = True
-        engine._seat_by_id(state, "p4")["stack"] = 0
-        engine._create_rebuy_offers(state, [{"player_id": "p4"}], state["hand"], 120)
-        self.assertEqual(state["rebuy_offers"], {})
-        self.assertNotIn("rebuy_hold_started_at", state)
+    def test_simultaneous_busts_remain_eligible_when_the_hand_ends_heads_up(self):
+        state = self.busted_table(("p3", "p4"), players=4)
+        self.assertTrue(state["hand"]["rebuy_eligible"])
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]), 2)
+        self.assertEqual(set(state["rebuy_offers"]), {"p3", "p4"})
+        self.assertIn("rebuy_hold_started_at", state)

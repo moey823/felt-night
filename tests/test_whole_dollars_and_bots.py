@@ -9,7 +9,7 @@ from payouts import whole_dollar_awards, rounded_tournament
 
 
 class WholeDollarAndBotTests(unittest.TestCase):
-    def table(self, count=4, busted_bot=True):
+    def table(self, count=4, busted_bot=True, busted_ids=None, bots=None):
         state = engine.create_lobby("bot-rebuy", "p1", "Ada", {
             "max_seats": count, "starting_stack": 1000, "small_blind": 5, "big_blind": 10,
             "level_minutes": 1, "buy_in": 13, "payout_percentages": [75,25],
@@ -17,12 +17,16 @@ class WholeDollarAndBotTests(unittest.TestCase):
         }, now=100)
         for i in range(2,count+1):
             engine.join(state,"p%d"%i,"Player %d"%i,now=101)
-        if busted_bot:
-            engine._seat_by_id(state,"p%d"%count)["is_bot"] = True
+        if busted_ids is None:
+            busted_ids = ("p%d" % count,)
+        if bots is None:
+            bots = ("p%d" % count,) if busted_bot else ()
+        for player_id in bots:
+            engine._seat_by_id(state,player_id)["is_bot"] = True
         engine.start(state,"p1",now=102)
         state["hand"]["showdown"] = [{"player_id":"p1","name":"Ada","cards":["As","Ah"],"rank":"Pair of aces"}]
         for seat in state["seats"]:
-            seat["stack"] = 0 if seat["player_id"]=="p%d"%count else 1000
+            seat["stack"] = 0 if seat["player_id"] in busted_ids else 1000
         engine._finish_hand(state,{},now=110)
         return state
 
@@ -78,6 +82,10 @@ class WholeDollarAndBotTests(unittest.TestCase):
                     self.assertIn("p4",state["hand"]["holes"])
                 else:
                     self.assertNotIn("p4",state["hand"]["holes"])
+                # This assertion isolates final payout accounting after the
+                # rebuy decision has been checked; the synthetic final hand is
+                # no longer an open rebuy hand.
+                state["rebuy_enabled"]=False
                 for seat in state["seats"]:
                     seat["stack"]=5000 if seat["player_id"]=="p1" else 0
                 engine._finish_hand(state,{},now=130)
@@ -99,24 +107,103 @@ class WholeDollarAndBotTests(unittest.TestCase):
             self.assertEqual(coin.call_count,1)
         self.assertEqual(state["prize"]["buy_ins"],5)
 
-    def test_no_rebuys_from_two_or_three_player_fields_when_two_or_fewer_remain(self):
-        for count in (2,3):
-            for bot in (False,True):
-                state=self.table(count,bot)
+    def test_two_busted_bots_decide_independently_after_the_full_showdown_hold(self):
+        state=self.table(count=4,busted_bot=False,busted_ids=("p3","p4"),bots=("p3","p4"))
+        self.assertEqual(set(state["rebuy_offers"]),{"p3","p4"})
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]),2)
+        self.assertEqual(
+            {player_id: (offer["offered_at"],offer["bot_decision_at"])
+             for player_id,offer in state["rebuy_offers"].items()},
+            {"p3": (115,120),"p4": (115,120)},
+        )
+        pool_before=state["prize"]["pool_cents"]
+
+        with patch.object(engine.random.SystemRandom,"choice",side_effect=(False,True)) as coin:
+            engine.advance(state,now=114.99)
+            coin.assert_not_called()
+            engine.advance(state,now=115)
+            coin.assert_not_called()
+            self.assertEqual(state["hand_no"],1)
+            engine.advance(state,now=119.99)
+            coin.assert_not_called()
+            engine.advance(state,now=120)
+            self.assertEqual(coin.call_count,2)
+            self.assertEqual(coin.call_args_list[0].args[0],(True,False))
+            self.assertEqual(coin.call_args_list[1].args[0],(True,False))
+
+        self.assertEqual(state["hand_no"],1)
+        self.assertEqual(state["status"],"playing")
+        self.assertEqual(state["rebuy_offers"],{})
+        self.assertEqual(engine._seat_by_id(state,"p3")["stack"],0)
+        self.assertEqual(engine._seat_by_id(state,"p4")["stack"],1000)
+        self.assertEqual(state["prize"]["rebuys"],1)
+        self.assertEqual(state["prize"]["pool_cents"],pool_before+1300)
+        self.assertEqual(
+            {row["player_id"]: row["action"] for row in state["rebuy_history"] if row["action"] != "offered"},
+            {"p3":"declined","p4":"accepted"},
+        )
+        engine.advance(state,now=123.99)
+        self.assertEqual(state["hand_no"],1)
+        engine.advance(state,now=124)
+        self.assertEqual(state["hand_no"],2)
+        self.assertNotIn("p3",state["hand"]["holes"])
+        self.assertIn("p4",state["hand"]["holes"])
+
+    def test_two_player_hand_has_no_offer_but_three_player_hand_can_rebuy_from_heads_up(self):
+        for bot in (False,True):
+            with self.subTest(bot=bot, starting_players=2):
+                state=self.table(count=2,busted_bot=bot)
                 self.assertEqual(state["rebuy_offers"],{})
                 self.assertNotIn("rebuy_hold_started_at",state)
-                self.assertEqual(state["status"],"completed" if count==2 else "playing")
+                self.assertEqual(state["status"],"completed")
                 with patch("engine.time.time",return_value=115):
                     for seat in state["seats"]:
                         self.assertIsNone(engine.public_view(state,seat["player_id"])["viewer"]["rebuy_offer"])
+            with self.subTest(bot=bot, starting_players=3):
+                state=self.table(count=3,busted_bot=bot)
+                self.assertEqual(set(state["rebuy_offers"]),{"p3"})
+                self.assertIn("rebuy_hold_started_at",state)
+                self.assertEqual(state["status"],"playing")
+                self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]),2)
+                with patch("engine.time.time",return_value=115):
+                    self.assertIsNotNone(engine.public_view(state,"p3")["viewer"]["rebuy_offer"])
 
-    def test_saved_pending_offer_is_closed_on_heads_up_transition(self):
-        state=self.table(busted_bot=False)
+    def test_saved_pending_offer_remains_valid_after_multi_bust_heads_up_transition(self):
+        state=json.loads(json.dumps(self.table(busted_bot=False,busted_ids=("p3","p4"))))
         old=state["rebuy_offers"]["p4"]["id"]
-        engine._seat_by_id(state,"p3")["stack"]=0
-        with self.assertRaises(engine.GameError):
-            engine.accept_rebuy(state,"p4",old,now=115)
-        engine.advance(state,now=115)
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]),2)
+        self.assertEqual(set(state["rebuy_offers"]),{"p3","p4"})
+        engine.accept_rebuy(state,"p4",old,now=115)
+        self.assertEqual(engine._seat_by_id(state,"p4")["stack"],1000)
+        self.assertEqual(set(state["rebuy_offers"]),{"p3"})
+        self.assertEqual(state["status"],"playing")
+        self.assertEqual(state["prize"]["rebuys"],1)
+
+    def test_simultaneous_human_and_bot_busts_can_both_reenter_from_heads_up(self):
+        state=self.table(count=4,busted_bot=False,busted_ids=("p3","p4"),bots=("p4",))
+        self.assertEqual(set(state["rebuy_offers"]),{"p3","p4"})
+        self.assertEqual(sum(seat["stack"] > 0 for seat in state["seats"]),2)
+        self.assertEqual(state["rebuy_offers"]["p4"]["bot_decision_at"],120)
+        pool_before=state["prize"]["pool_cents"]
+
+        engine.accept_rebuy(state,"p3",state["rebuy_offers"]["p3"]["id"],now=115)
+        self.assertEqual(set(state["rebuy_offers"]),{"p4"})
+        with patch.object(engine.random.SystemRandom,"choice",return_value=True) as coin:
+            engine.advance(state,now=119.99)
+            coin.assert_not_called()
+            self.assertEqual(state["hand_no"],1)
+            engine.advance(state,now=120)
+            self.assertEqual(coin.call_count,1)
+            self.assertEqual(state["hand_no"],1)
+
         self.assertEqual(state["rebuy_offers"],{})
-        self.assertNotIn("rebuy_hold_started_at",state)
-        self.assertEqual(state["prize"]["rebuys"],0)
+        self.assertEqual(state["status"],"playing")
+        self.assertEqual(engine._seat_by_id(state,"p3")["stack"],1000)
+        self.assertEqual(engine._seat_by_id(state,"p4")["stack"],1000)
+        self.assertEqual(state["prize"]["rebuys"],2)
+        self.assertEqual(state["prize"]["pool_cents"],pool_before+2600)
+        engine.advance(state,now=123.99)
+        self.assertEqual(state["hand_no"],1)
+        engine.advance(state,now=124)
+        self.assertEqual(state["hand_no"],2)
+        self.assertTrue({"p3","p4"}.issubset(state["hand"]["holes"]))

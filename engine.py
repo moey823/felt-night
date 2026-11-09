@@ -1075,6 +1075,7 @@ def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
         "to_act": None,
         "turn_deadline": None,
         "stack_before": {seat["player_id"]: seat["stack"] for seat in alive},
+        "rebuy_eligible": len(alive) > 2,
         "showdown": [],
         "revealed": [],
         "payouts": {},
@@ -2558,11 +2559,26 @@ def _renumber_elimination_order(state: Dict[str, Any]) -> None:
         removed += len(group)
 
 
+def _hand_rebuy_eligible(hand: Any) -> bool:
+    if not isinstance(hand, dict):
+        return False
+    snapshot = hand.get("rebuy_eligible")
+    if type(snapshot) is bool:
+        return snapshot
+    # Persisted hands from before the eligibility snapshot can still determine
+    # how many players started from their original stack/card maps.
+    for key in ("stack_before", "holes"):
+        participants = hand.get(key)
+        if isinstance(participants, dict) and participants:
+            return len(participants) > 2
+    return False
+
+
 def _rebuys_open(state: Dict[str, Any]) -> bool:
     limit = state.get("config", {}).get("rebuy_max_level")
     return (state.get("rebuy_enabled") is True and state.get("status") == "playing"
             and (limit is None or state["blinds"]["level"] <= limit)
-            and sum(seat.get("stack", 0) > 0 for seat in state.get("seats", [])) > 2)
+            and _hand_rebuy_eligible(state.get("hand")))
 
 
 def _advance_rebuy_decisions(state: Dict[str, Any], now: float) -> bool:
@@ -2641,7 +2657,7 @@ def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
         if receipt.get("status") in ("declined", "expired"):
             raise GameError("rebuy_expired", "This rebuy offer is no longer available.", 409)
     if not _rebuys_open(state):
-        raise GameError("rebuy_unavailable", "Rebuys are disabled, past their last permitted level, or closed because two players remain.", 409)
+        raise GameError("rebuy_unavailable", "Rebuys are disabled, past their last permitted level, or unavailable for this hand.", 409)
     offers = state.get("rebuy_offers")
     offer = offers.get(actor_id) if isinstance(offers, dict) else None
     if not isinstance(offer, dict) or offer.get("id") != offer_id:
@@ -3148,6 +3164,7 @@ def _finish_hand(state: Dict[str, Any], payouts: Dict[str, int], now: float) -> 
             {
                 "players": [
                     {
+                        "player_id": item["player_id"],
                         "name": item["name"],
                         "place": item["place"],
                         "tied": bool(item.get("tied", False)),

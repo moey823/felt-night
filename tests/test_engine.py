@@ -266,7 +266,7 @@ class EngineTests(unittest.TestCase):
             view = engine.public_view(final, "p2")
         self.assertEqual(view["results"][0]["name"], "Bea")
         self.assertEqual(view["elimination_announcement"]["players"], [
-            {"name": "Ada", "place": 2, "tied": False, "tie_count": 1},
+            {"player_id": "p1", "name": "Ada", "place": 2, "tied": False, "tie_count": 1},
         ])
         self.assertEqual(view["elimination_announcement"]["starts_at"], 201.5)
         self.assertEqual(view["elimination_announcement"]["until"], 207.5)

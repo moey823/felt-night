@@ -3292,6 +3292,13 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
   white-space: nowrap !important;
 }
 body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-action-value { font-variant-numeric: tabular-nums !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-action.is-timeout { gap: 2px !important; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-action-timeout {
+  font-size: .72em !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+  white-space: nowrap !important;
+}
 body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .seat-card:not(.seat-empty) .seat-local-markers > .seat-turn-indicator {
   grid-row: 2 !important;
   grid-column: 1 !important;
