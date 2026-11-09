@@ -70,7 +70,13 @@ ROOM_PASSWORD_FILE_ENV = "FELT_NIGHT_ROOM_PASSWORD_FILE"
 MAX_ROOM_PASSWORD_LENGTH = 4096
 ADMIN_END_CONFIRM_SECONDS = 60
 ADMIN_PLAYER_PREFIX = "admin:"
+DEFAULT_HOST_DEFAULTS = {
+    "table_name": "", "buy_in": 10, "payout_percentages": [60, 25, 15],
+    "starting_stack": 1000, "small_blind": 10, "big_blind": 20,
+    "level_minutes": 5, "turn_seconds": 30,
+}
 DEFAULT_GLOBAL_CONFIG = {
+    "host_defaults": DEFAULT_HOST_DEFAULTS,
     "runout_seconds": engine.RUNOUT_SECONDS,
     "blind_announcement_seconds": engine.BLIND_ANNOUNCEMENT_SECONDS,
     "elimination_announcement_seconds": engine.ELIMINATION_ANNOUNCEMENT_SECONDS,
@@ -379,7 +385,7 @@ def _validate_global_config(value, base=None):
         raise AppError(400, "invalid_admin_config", "Admin settings must be a JSON object.")
     allowed = {
         "runout_seconds", "blind_announcement_seconds",
-        "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds", "bet_presets",
+        "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds", "bet_presets", "host_defaults",
     }
     unknown = set(value) - allowed
     if unknown:
@@ -417,6 +423,27 @@ def _validate_global_config(value, base=None):
                 raise AppError(400, "invalid_admin_config", "Invalid " + key + " presets.")
             updated[key] = list(values)
         result["bet_presets"] = updated
+    if "host_defaults" in value:
+        defaults = value["host_defaults"]
+        if not isinstance(defaults, dict) or set(defaults) - set(DEFAULT_HOST_DEFAULTS):
+            raise AppError(400, "invalid_admin_config", "Invalid host defaults.")
+        updated = copy.deepcopy(result.get("host_defaults", DEFAULT_HOST_DEFAULTS))
+        updated.update(defaults)
+        name = updated["table_name"]
+        if (not isinstance(name, str) or len(name) > 40 or
+                any(not ch.isprintable() or ch in "<>" for ch in name)):
+            raise AppError(400, "invalid_admin_config", "Default table name must be at most 40 printable characters.")
+        updated["table_name"] = " ".join(name.strip().split())
+        try:
+            engine._validated_config({key: setting for key, setting in updated.items() if key != "table_name"})
+        except engine.GameError as error:
+            raise AppError(400, "invalid_admin_config", str(error))
+        if (updated["small_blind"] >= updated["big_blind"] or
+                updated["big_blind"] > updated["starting_stack"] or
+                updated["starting_stack"] > 1_000_000 or updated["small_blind"] > 100_000 or
+                updated["big_blind"] > 200_000):
+            raise AppError(400, "invalid_admin_config", "Default blinds must increase, fit the stack, and stay within host settings limits.")
+        result["host_defaults"] = updated
     return result
 
 
@@ -1323,7 +1350,7 @@ class Store:
             }
             rows = conn.execute(
                 "SELECT id,state FROM tables WHERE json_extract(state,'$.status') IN ('lobby','playing')"
-            ).fetchall()
+            ).fetchall() if any(key in changes for key in timings) else []
             for row in rows:
                 state = json.loads(row["state"])
                 table_config = state.setdefault("config", {})
@@ -2711,7 +2738,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/poker/api/tables":
-                name = body.get("name")
+                defaults = self.app.store.get_global_config()["host_defaults"]
+                body = {**defaults, **body}
+                name = body.get("name", defaults["table_name"] or (player["name"] + "’s table")[:40])
                 if not isinstance(name, str):
                     raise AppError(400, "invalid_table_name", "Choose a table name.")
                 name = " ".join(name.strip().split())

@@ -4889,7 +4889,7 @@ body.gameplay-active #app-panel #table-view #table-surface > #action-panel #acti
 body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="call"] { grid-column: 1 !important; }
 body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls.is-big-blind-option > .action-buttons > [data-action-slot="raise"] { grid-column: 2 !important; }
 
-.admin-tabs { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 6px; }
+.admin-tabs { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 6px; }
 .admin-tabs > button { min-height: 44px; border: 1px solid #b9d69d44; border-radius: 9px; padding: 10px; background: #11241e; color: var(--muted); font-weight: 750; }
 .admin-tabs > button[aria-selected="true"] { background: var(--green); color: #172410; border-color: var(--green); }
 #admin-panel [role="tabpanel"][hidden] { display: none !important; }

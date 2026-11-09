@@ -3930,6 +3930,7 @@
     var presets = config.bet_presets || {};
     var previous = state.globalConfig || DEFAULT_GLOBAL_CONFIG;
     state.globalConfig = {
+      host_defaults: config.host_defaults || previous.host_defaults,
       runout_seconds: number(config.runout_seconds, previous.runout_seconds),
       blind_announcement_seconds: number(config.blind_announcement_seconds, previous.blind_announcement_seconds),
       elimination_announcement_seconds: number(config.elimination_announcement_seconds, previous.elimination_announcement_seconds),
@@ -4004,7 +4005,7 @@
       byId(tab.getAttribute("aria-controls")).hidden = !selected;
     });
     if (!state.adminOpen) return;
-    if (name === "settings" && !state.adminConfigLoaded) loadAdminConfig();
+    if ((name === "settings" || name === "host-defaults") && !state.adminConfigLoaded) loadAdminConfig();
     if (name === "users") loadAdminAccounts();
     if (name === "images") loadAvatarPresets(true).then(function () { renderAdminAvatarCatalog(); });
     if (name === "games") loadAdminHistory(0, false);
@@ -4171,13 +4172,64 @@
       var data = await request("/admin/config");
       applyGlobalConfig(data.config || data);
       writeAdminConfigForm(state.globalConfig);
+      writeAdminHostDefaultsForm(state.globalConfig.host_defaults);
       byId("admin-config-error").hidden = true;
+      byId("admin-host-defaults-error").hidden = true;
       state.adminConfigLoaded = true;
       status.textContent = "Pacing changes apply to upcoming transitions; active timers continue.";
     } catch (err) {
+      byId("admin-host-defaults-error").textContent = err.message;
+      byId("admin-host-defaults-error").hidden = false;
       status.textContent = "Could not load room settings.";
       byId("admin-config-error").textContent = err.message;
       byId("admin-config-error").hidden = false;
+    }
+  }
+
+  var hostDefaultFields = ["table_name", "buy_in", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds"];
+  function writeAdminHostDefaultsForm(defaults) {
+    if (!defaults) return;
+    hostDefaultFields.forEach(function (key) {
+      byId("admin-host-" + key.replace(/_/g, "-")).value = String(defaults[key]);
+    });
+    byId("admin-host-payout").value = defaults.payout_percentages.join(", ");
+  }
+
+  async function saveAdminHostDefaults(event) {
+    event.preventDefault();
+    if (!state.adminOpen || state.adminHostDefaultsSaving || !state.adminConfigLoaded) return;
+    var error = byId("admin-host-defaults-error");
+    var status = byId("admin-host-defaults-status");
+    error.hidden = true;
+    var defaults = {};
+    hostDefaultFields.forEach(function (key) {
+      var input = byId("admin-host-" + key.replace(/_/g, "-"));
+      defaults[key] = key === "table_name" ? input.value.trim() : Number(input.value);
+    });
+    defaults.payout_percentages = byId("admin-host-payout").value.split(",").map(function (share) { return /^\s*\d+\s*$/.test(share) ? Number(share) : NaN; });
+    if (!byId("admin-host-defaults-form").checkValidity() || defaults.payout_percentages.length > 9 ||
+        defaults.payout_percentages.some(function (share) { return !Number.isFinite(share) || share < 0 || share > 100; }) ||
+        defaults.payout_percentages.reduce(function (total, share) { return total + share; }, 0) !== 100 ||
+        defaults.big_blind <= defaults.small_blind || defaults.big_blind > defaults.starting_stack) {
+      error.textContent = "Check the defaults: blinds must increase and fit the stack, and payout shares must total 100%.";
+      error.hidden = false;
+      return;
+    }
+    state.adminHostDefaultsSaving = true;
+    byId("admin-host-defaults-save").disabled = true;
+    status.textContent = "Saving host defaults…";
+    try {
+      var data = await mutate("/admin/config", {host_defaults: defaults});
+      applyGlobalConfig(data.config || data);
+      writeAdminHostDefaultsForm(state.globalConfig.host_defaults);
+      status.textContent = "Saved. New games will use these defaults.";
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+      status.textContent = "Host defaults were not saved.";
+    } finally {
+      state.adminHostDefaultsSaving = false;
+      byId("admin-host-defaults-save").disabled = false;
     }
   }
 
@@ -6391,6 +6443,7 @@
     }
   });
   byId("admin-config-form").addEventListener("submit", saveAdminConfig);
+  byId("admin-host-defaults-form").addEventListener("submit", saveAdminHostDefaults);
   byId("admin-history-list").addEventListener("click", function (event) {
     var button = event.target.closest("button");
     if (!button) return;
@@ -6682,17 +6735,7 @@
     var tableWindow = reservedWindow === undefined ? reserveTableWindow() : reservedWindow;
     button.disabled = true;
     try {
-      var tableName = String(state.player.name || "Friends") + "’s table";
-      var data = await mutate("/tables", {
-        buy_in: 10,
-        payout_percentages: [60, 25, 15],
-        name: tableName,
-        starting_stack: 1000,
-        small_blind: 10,
-        big_blind: 20,
-        level_minutes: 5,
-        turn_seconds: 30
-      });
+      var data = await mutate("/tables", {});
       var table = data.table || data;
       if (!table.id) throw new Error("The room did not return the new table.");
       closeLastHandDialog(false);

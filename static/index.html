@@ -157,6 +157,7 @@
           <button id="admin-tab-users" type="button" role="tab" data-admin-tab="users" aria-controls="admin-users-panel" aria-selected="false" tabindex="-1">Users</button>
           <button id="admin-tab-images" type="button" role="tab" data-admin-tab="images" aria-controls="admin-avatar-presets" aria-selected="false" tabindex="-1">Profile images</button>
           <button id="admin-tab-games" type="button" role="tab" data-admin-tab="games" aria-controls="admin-games-panel" aria-selected="false" tabindex="-1">Past games</button>
+          <button id="admin-tab-host-defaults" type="button" role="tab" data-admin-tab="host-defaults" aria-controls="admin-host-defaults-form" aria-selected="false" tabindex="-1">Host defaults</button>
         </div>
         <form role="tabpanel" aria-labelledby="admin-tab-settings" id="admin-config-form" class="panel admin-settings-form">
           <div class="panel-kicker">GLOBAL TABLE SETTINGS</div>
@@ -172,6 +173,22 @@
           </div>
           <p id="admin-config-error" class="player-prefs-error" role="alert" hidden></p>
           <div class="settings-footer"><p id="admin-config-status" class="muted" role="status" aria-live="polite">These settings apply to all players.</p><button id="admin-config-save" class="button button-primary button-small" type="submit">Save room settings</button></div>
+        </form>
+        <form id="admin-host-defaults-form" role="tabpanel" aria-labelledby="admin-tab-host-defaults" class="panel admin-settings-form" hidden>
+          <div class="panel-kicker">HOST SETTINGS</div><h2>Before you deal defaults</h2>
+          <p class="muted">New games start with these settings. Hosts can change them before dealing. Existing games keep their settings.</p>
+          <div class="admin-config-grid">
+            <div class="settings-field"><label for="admin-host-table-name">Default table name</label><input id="admin-host-table-name" type="text" maxlength="40" placeholder="Use the host’s name"><small class="muted">Leave blank to name each table after its host.</small></div>
+            <div class="settings-field"><label for="admin-host-buy-in">Buy-in ($)</label><input id="admin-host-buy-in" type="number" min="0" max="1000000000" step="1" required></div>
+            <div class="settings-field"><label for="admin-host-payout">Paid places and payout shares (%)</label><input id="admin-host-payout" type="text" maxlength="40" placeholder="60, 25, 15" required><small class="muted">One share per paid place, up to nine, totaling 100%. For example: 60, 25, 15 pays three places.</small></div>
+            <div class="settings-field"><label for="admin-host-starting-stack">Starting stack</label><input id="admin-host-starting-stack" type="number" min="100" max="1000000" step="100" required></div>
+            <div class="settings-field"><label for="admin-host-small-blind">Small blind</label><input id="admin-host-small-blind" type="number" min="1" max="100000" step="1" required></div>
+            <div class="settings-field"><label for="admin-host-big-blind">Big blind</label><input id="admin-host-big-blind" type="number" min="2" max="200000" step="1" required></div>
+            <div class="settings-field"><label for="admin-host-level-minutes">Blind levels (minutes)</label><input id="admin-host-level-minutes" type="number" min="0.01" max="2147483647" step="any" required></div>
+            <div class="settings-field"><label for="admin-host-turn-seconds">Shot clock (seconds)</label><input id="admin-host-turn-seconds" type="number" min="1" max="3600" step="1" required></div>
+          </div>
+          <p id="admin-host-defaults-error" class="player-prefs-error" role="alert" hidden></p>
+          <div class="settings-footer"><p id="admin-host-defaults-status" class="muted" role="status" aria-live="polite">Applies to newly created games.</p><button id="admin-host-defaults-save" class="button button-primary button-small" type="submit">Save host defaults</button></div>
         </form>
         <section id="admin-users-panel" role="tabpanel" aria-labelledby="admin-tab-users" class="panel admin-accounts-panel" hidden>
           <div class="section-heading compact"><div><div class="panel-kicker">ACCOUNT ACCESS</div><h2 id="admin-accounts-title">Users</h2></div><button id="admin-accounts-refresh" class="button button-outline button-small" type="button">Refresh</button></div>

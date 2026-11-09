@@ -15,7 +15,7 @@ export default async function adminManagement([page,playerPage],sleep,roomPasswo
   async function game(name,bot,ended){const view=await request('/tables',keeper,{name,starting_stack:1000,small_blind:5,big_blind:10,level_minutes:10});if(bot)await request('/tables/'+view.id+'/bots',keeper,{seat_no:1});if(ended){const prompt=await request('/tables/'+view.id+'/end',keeper,{confirm:true});await request('/tables/'+view.id+'/end',keeper,{confirmation_token:prompt.confirmation_token});}return view.id;}
   const purgeId=await game('Past game with bots',true,true),keepId=await game('Past game with people',false,true),liveId=await game('Live game with bots',true,false);
   await openAdminFixture(page);
-  assert(await ev(()=>[...document.querySelectorAll('#admin-tabs [role="tab"]')].map(node=>node.textContent).join('|')==='Table settings|Users|Profile images|Past games'&&!document.querySelector('#admin-tables-details')),'Admin tabs are incorrect or obsolete tools remain.');
+  assert(await ev(()=>[...document.querySelectorAll('#admin-tabs [role="tab"]')].map(node=>node.textContent).join('|')==='Table settings|Users|Profile images|Past games|Host defaults'&&!document.querySelector('#admin-tables-details')),'Admin tabs are incorrect or obsolete tools remain.');
   await ev(()=>{document.querySelector('#admin-tab-settings').focus();document.querySelector('#admin-tab-settings').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));});
   await wait(()=>document.querySelector('#admin-tab-users').getAttribute('aria-selected')==='true');
   for(const [w,h] of [[1366,768],[390,844],[320,568]]){
@@ -50,5 +50,5 @@ export default async function adminManagement([page,playerPage],sleep,roomPasswo
   assert((await raw('/admin/history/'+purgeId,admin)).status===404&&(await raw('/admin/history/'+keepId,admin)).status===200&&(await raw('/tables/'+liveId,keeper)).table.status==='lobby','Purge removed the wrong games.');
   await click('#admin-purge-bots');await wait(()=>document.querySelector('#admin-games-status').textContent==='No past games with bots to purge.');
   await page.screenshot('admin-past-games-desktop');
-  console.log('Admin management passed: four tabs, keyboard/mobile layout, account search and confirmed deletion, admin protection, revoked access, count-confirmed bot purge and active/human game preservation.');
+  console.log('Admin management passed: five tabs, keyboard/mobile layout, account search and confirmed deletion, admin protection, revoked access, count-confirmed bot purge and active/human game preservation.');
 }

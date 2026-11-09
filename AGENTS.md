@@ -22,6 +22,8 @@ Read README.md and deploy/README.md before changing server startup or ingress.
 - Rebuys are available only while more than two players remain. Bots decide once, by fair coin flip, five seconds after the showdown hold; host pause freezes that decision timer. Reuse the normal rebuy accounting and table/blind hold.
 - Keep table event overlays off the cards during the full showdown hold. Persist shared rebuy decisions for a four-second presentation before the next deal; reconnects and host pause must preserve that hold. An explicit host pause replaces the whole play area for all viewers, including during showdown; resume restores the remaining viewing time.
 
+- Persist host setup defaults in room configuration. Apply them only when creating a new game; preserve host overrides and existing game settings. Validate default blinds, stack, payout total, and timers against the host form limits.
+
 ## Delivery
 
 Deploy committed source while preserving credentials and stored room data. Check the actual launch service and OS sandbox permit only the configured primary loopback listener. Keep deployment configuration persistent across restarts.

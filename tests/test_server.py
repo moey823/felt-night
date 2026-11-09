@@ -2150,6 +2150,47 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(invalid_query["error"]["code"], "invalid_url")
 
+    def test_host_defaults_persist_only_affect_new_games_and_allow_host_overrides(self):
+        cookie, proof, csrf, admin = self.enable_admin("admin")
+        auth = dict(cookie=cookie, proof=proof, csrf=csrf)
+        hc, hp, hs, host = self.login("Host")
+        host_auth = dict(cookie=hc, proof=hp, csrf=hs)
+        status, _, old = self.create_table(hc, hp, hs)
+        self.assertEqual(status, 201, old)
+        old_id = old["table"]["id"]
+        with self.app.store.connect() as conn:
+            before = conn.execute("SELECT state,updated FROM tables WHERE id=?", (old_id,)).fetchone()
+            before = tuple(before)
+        defaults = {"table_name": "Friday night", "buy_in": 25, "payout_percentages": [70, 30],
+                    "starting_stack": 2500, "small_blind": 25, "big_blind": 50,
+                    "level_minutes": 12.5, "turn_seconds": 45}
+        self.assertEqual(self.request("POST", "/poker/api/admin/config", {"host_defaults": defaults}, **host_auth)[0], 403)
+        status, _, saved = self.request("POST", "/poker/api/admin/config", {"host_defaults": defaults}, **auth)
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["config"]["host_defaults"], defaults)
+        with self.app.store.connect() as conn:
+            self.assertEqual(tuple(conn.execute("SELECT state,updated FROM tables WHERE id=?", (old_id,)).fetchone()), before)
+        reopened = server.Store(self.data_dir, self.password)
+        self.assertEqual(reopened.get_global_config()["host_defaults"], defaults)
+        status, _, created = self.request("POST", "/poker/api/tables", {}, **host_auth)
+        self.assertEqual(status, 201, created)
+        self.assertEqual(created["table"]["name"], defaults["table_name"])
+        for key, value in defaults.items():
+            if key != "table_name":
+                self.assertEqual(created["table"]["config"][key], value)
+        status, _, changed = self.request("POST", "/poker/api/tables", {"name": "Host choice", "starting_stack": 5000}, **host_auth)
+        self.assertEqual(status, 201, changed)
+        self.assertEqual(changed["table"]["name"], "Host choice")
+        self.assertEqual(changed["table"]["config"]["starting_stack"], 5000)
+        for invalid in ({"big_blind": 25}, {"big_blind": 3000}, {"buy_in": True},
+                        {"payout_percentages": [80, 30]}, {"payout_percentages": []},
+                        {"table_name": "<table>"}, {"starting_stack": 1000001},
+                        {"turn_seconds": 0}, {"level_minutes": 0}, {"unknown": 1}):
+            status, _, rejected = self.request("POST", "/poker/api/admin/config", {"host_defaults": invalid}, **auth)
+            self.assertEqual(status, 400, rejected)
+            self.assertEqual(rejected["error"]["code"], "invalid_admin_config")
+        self.assertEqual(self.app.store.get_global_config()["host_defaults"], defaults)
+
     def test_admin_config_owns_shared_timers_presets_and_existing_table_defaults(self):
         admin_cookie, admin_proof, admin_csrf, admin = self.enable_admin("admin")
         admin_auth = dict(cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf)
