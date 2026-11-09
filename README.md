@@ -60,7 +60,7 @@ Admins see an **Admin** button in the app and the table menu. The Admin screen c
 
 Existing databases keep all accounts, credentials, games, and history. Upgrading does not assign a role to an arbitrary new registrant when accounts already exist: explicitly grant the owner's existing account admin access during migration. Back up the database first. The old synthetic admin's sessions are revoked during startup.
 
-The optional `--admin-port` and `--admin-origin` pair remains supported for a second private origin. Both origins use the same password-authenticated roles; the primary origin permits authenticated admins to use the Admin button. Keep existing private ingress private and never expose the database or room invite.
+Players and admins use the same origin and listener. Admin accounts open settings with the Admin button after signing in normally. A separate admin port or private admin URL is unnecessary; remove legacy `--admin-port` / `--admin-origin` service arguments and the corresponding ingress route when upgrading. Never expose the database or room invite.
 
 Global settings remain stored with the room database. Non-admin accounts cannot change them. Admins can inspect terminal **Past games** and delete selected games after an explicit confirmation; player accounts and active games are preserved.
 

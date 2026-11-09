@@ -11,14 +11,14 @@ The configured `--public-origin` must be the public HTTPS origin exactly, such a
 
 The service requires exactly one of `FELT_NIGHT_ROOM_PASSWORD_FILE` or `FELT_NIGHT_ROOM_PASSWORD`; the example uses the file setting. The secret file must be a regular file readable by the service user with no group or other permissions. Rotating the invite and restarting invalidates active sessions; accounts and history remain in the data directory.
 
-## Admin accounts and an optional private origin
+## Admin accounts on the primary origin
 
 On a fresh database, the first registered account becomes admin. Complete that registration before sharing the room invite. Existing rooms must explicitly grant the intended owner's account admin access during the upgrade; back up the database before changing roles. `FELT_NIGHT_ADMIN_USERNAME` no longer creates an administrator. Remove it from service configuration.
 
 Admins sign in with their normal password, play normally, and open **Admin** to change settings or grant/remove admin roles. The last admin cannot be removed. Non-admin accounts cannot use admin APIs.
 
-Existing deployments may keep a second private origin with the paired arguments `--admin-port 18944 --admin-origin https://ROOM_HOST:9465`, alongside the primary `--port 18943 --public-origin https://ROOM_HOST:8443`. Both listeners share one database, one ticker, and the same account roles; both reject the retired blank-password admin login.
+Use a single loopback listener and public origin for both players and admins. When upgrading a deployment that used a separate admin port, remove both `--admin-port` and `--admin-origin` from its persistent service arguments, remove the old admin ingress route, and remove any sandbox permission for that retired listener. Keep the primary player route intact.
 
-Preserve the existing loopback bindings, external data directory, room invite, and paired listener arguments during an upgrade. If a process sandbox is used, permit loopback inbound connections on both backend ports. Keep the second origin tailnet-only; publish only the primary player port through Funnel. Never reset Tailscale ingress globally.
+Preserve the primary loopback binding, external data directory, room invite, and public origin. If a process sandbox is used, permit loopback inbound connections only on the configured primary port. Remove only this app’s retired admin ingress; never reset Tailscale ingress globally.
 
-After deployment verify both health endpoints, rejected blank-password admin login, expected account roles, and the ingress status. Test registration, role management, and gameplay against disposable development data; do not create test accounts or games in the live room.
+After deployment verify primary health, rejected blank-password admin login, expected account roles, and the ingress status. Verify that the retired admin listener and route are absent, including after restarting the service. Test registration, role management, and gameplay against disposable development data; do not create test accounts or games in the live room.
