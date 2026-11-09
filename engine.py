@@ -81,7 +81,7 @@ def _integer(value: Any, label: str, minimum: int, maximum: int) -> int:
 def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise GameError("invalid_config", "Table settings are required.")
-    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "blind_announcement_seconds", "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds", "buy_in", "payout_percentages"}
+    allowed = {"max_seats", "starting_stack", "small_blind", "big_blind", "level_minutes", "turn_seconds", "runout_seconds", "blind_announcement_seconds", "elimination_announcement_seconds", "showdown_seconds", "uncontested_seconds", "buy_in", "payout_percentages", "rebuy_enabled", "rebuy_max_level"}
     unknown = set(config) - allowed
     if unknown:
         raise GameError("invalid_config", "Unknown table setting: %s." % sorted(unknown)[0])
@@ -97,7 +97,14 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
     values.setdefault("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS)
     values.setdefault("buy_in", DEFAULT_BUY_IN)  # Tables saved before configurable play-money buy-ins.
     values.setdefault("payout_percentages", list(DEFAULT_PAYOUT_PERCENTAGES))
+    values.setdefault("rebuy_enabled", True)
+    values.setdefault("rebuy_max_level", None)
     values.update(config)
+    if type(values["rebuy_enabled"]) is not bool:
+        raise GameError("invalid_config", "Choose whether rebuys are allowed.")
+    limit = values["rebuy_max_level"]
+    if limit is not None and (type(limit) is not int or not 1 <= limit <= 2147483647):
+        raise GameError("invalid_config", "Last rebuy level must be a positive whole number, or no limit.")
     minutes = values["level_minutes"]
     if (type(minutes) not in (int, float) or not 0.01 <= minutes <= MAX_LEVEL_MINUTES
             or not math.isfinite(minutes)):
@@ -144,6 +151,8 @@ def _validated_config(config: Dict[str, Any], base: Optional[Dict[str, Any]] = N
         "uncontested_seconds": uncontested_seconds,
         "buy_in": _integer(values["buy_in"], "Buy-in", 0, MAX_CHIPS),
         "payout_percentages": list(payout_percentages),
+        "rebuy_enabled": values["rebuy_enabled"],
+        "rebuy_max_level": values["rebuy_max_level"],
     }
     if result["big_blind"] < result["small_blind"]:
         raise GameError("invalid_config", "The big blind must be at least the small blind.")
@@ -321,6 +330,8 @@ def create_lobby(
             "uncontested_seconds": validated["uncontested_seconds"],
             "buy_in": validated["buy_in"],
             "payout_percentages": list(validated["payout_percentages"]),
+            "rebuy_enabled": validated["rebuy_enabled"],
+            "rebuy_max_level": validated["rebuy_max_level"],
         },
         "seats": [
             {
@@ -359,7 +370,7 @@ def create_lobby(
         "results": [],
         # Only newly created tournaments opt into rebuys. Persisted older games
         # keep their original freezeout result semantics.
-        "rebuy_enabled": True,
+        "rebuy_enabled": validated["rebuy_enabled"],
         "rebuy_offers": {},
         "rebuy_receipts": {},
         "rebuy_history": [],
@@ -728,14 +739,17 @@ def update_settings(
         raise GameError("table_started", "Table settings cannot change after the tournament starts.", 409)
     allowed = {
         "starting_stack", "small_blind", "big_blind", "level_minutes",
-        "turn_seconds", "buy_in", "payout_percentages",
+        "turn_seconds", "buy_in", "payout_percentages", "rebuy_enabled", "rebuy_max_level",
     }
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise GameError("invalid_config", "Only host-controlled table settings can change.")
-    updated = _validated_config(settings, state["config"])
+    base = dict(state["config"])
+    base.setdefault("rebuy_enabled", state.get("rebuy_enabled") is True)
+    updated = _validated_config(settings, base)
     table_name = _valid_table_name(name) if name is not None else state["name"]
     timestamp = _now(now)
     state["config"] = updated
+    state["rebuy_enabled"] = updated["rebuy_enabled"]
     state["name"] = table_name
     for seat in state["seats"]:
         seat["stack"] = updated["starting_stack"]
@@ -2545,7 +2559,9 @@ def _renumber_elimination_order(state: Dict[str, Any]) -> None:
 
 
 def _rebuys_open(state: Dict[str, Any]) -> bool:
+    limit = state.get("config", {}).get("rebuy_max_level")
     return (state.get("rebuy_enabled") is True and state.get("status") == "playing"
+            and (limit is None or state["blinds"]["level"] <= limit)
             and sum(seat.get("stack", 0) > 0 for seat in state.get("seats", [])) > 2)
 
 
@@ -2625,7 +2641,7 @@ def accept_rebuy(state: Dict[str, Any], actor_id: str, offer_id: Any,
         if receipt.get("status") in ("declined", "expired"):
             raise GameError("rebuy_expired", "This rebuy offer is no longer available.", 409)
     if not _rebuys_open(state):
-        raise GameError("rebuy_unavailable", "Rebuys close when two players remain.", 409)
+        raise GameError("rebuy_unavailable", "Rebuys are disabled, past their last permitted level, or closed because two players remain.", 409)
     offers = state.get("rebuy_offers")
     offer = offers.get(actor_id) if isinstance(offers, dict) else None
     if not isinstance(offer, dict) or offer.get("id") != offer_id:
@@ -2834,9 +2850,9 @@ def _prize_awards_for_group(
         # No reachable place has a positive weight; only the champion can win.
         pooled_weight = 100 if place <= 1 < place + len(player_ids) else 0
         denominator = 100
-    if state.get("rebuy_enabled") is True:
-        # New games allocate whole cents. The champion receives all cent
-        # remainders when final results are assembled.
+    if state.get("rebuy_enabled") is True or state.get("config", {}).get("rebuy_enabled") is False:
+        # New games, including host-selected freezeouts, allocate whole cents.
+        # The champion receives cent remainders when final results are assembled.
         amount = pool_cents * pooled_weight // (denominator * len(player_ids))
     else:
         # Retained legacy games preserve their original whole-credit award rule.
@@ -3423,6 +3439,8 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
             "uncontested_seconds": state["config"].get("uncontested_seconds", HAND_COMPLETE_PAUSE_SECONDS),
             "buy_in": state["config"].get("buy_in", DEFAULT_BUY_IN),
             "payout_percentages": list(state["config"].get("payout_percentages", DEFAULT_PAYOUT_PERCENTAGES)),
+            "rebuy_enabled": state.get("rebuy_enabled") is True,
+            "rebuy_max_level": state["config"].get("rebuy_max_level"),
         },
         "prize": (
             dict(state["prize"], payout_percentages=list(state["prize"].get("payout_percentages", [])))

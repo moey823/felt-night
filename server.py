@@ -74,6 +74,7 @@ DEFAULT_HOST_DEFAULTS = {
     "table_name": "", "buy_in": 10, "payout_percentages": [60, 25, 15],
     "starting_stack": 1000, "small_blind": 10, "big_blind": 20,
     "level_minutes": 5, "turn_seconds": 30,
+    "rebuy_enabled": True, "rebuy_max_level": None,
 }
 DEFAULT_GLOBAL_CONFIG = {
     "host_defaults": DEFAULT_HOST_DEFAULTS,
@@ -427,7 +428,8 @@ def _validate_global_config(value, base=None):
         defaults = value["host_defaults"]
         if not isinstance(defaults, dict) or set(defaults) - set(DEFAULT_HOST_DEFAULTS):
             raise AppError(400, "invalid_admin_config", "Invalid host defaults.")
-        updated = copy.deepcopy(result.get("host_defaults", DEFAULT_HOST_DEFAULTS))
+        updated = copy.deepcopy(DEFAULT_HOST_DEFAULTS)
+        updated.update(result.get("host_defaults", {}))
         updated.update(defaults)
         name = updated["table_name"]
         if (not isinstance(name, str) or len(name) > 40 or
@@ -2750,6 +2752,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise AppError(400, "invalid_table_name", "Table name contains an unsupported character.")
                 config = {
                     "max_seats": engine.MAX_SEATS,
+                    "rebuy_enabled": body.get("rebuy_enabled"),
+                    "rebuy_max_level": body.get("rebuy_max_level"),
                     "starting_stack": self._integer(body.get("starting_stack"), "starting_stack", 100, 1_000_000_000),
                     "small_blind": self._integer(body.get("small_blind"), "small_blind", 1, 1_000_000_000),
                     "big_blind": self._integer(body.get("big_blind"), "big_blind", 2, 1_000_000_000),
@@ -2820,7 +2824,7 @@ class Handler(BaseHTTPRequestHandler):
                 supported_settings = {
                     "starting_stack", "small_blind", "big_blind",
                     "buy_in", "turn_seconds", "level_minutes",
-                    "payout_percentages", "name",
+                    "payout_percentages", "name", "rebuy_enabled", "rebuy_max_level",
                 }
                 unknown_settings = set(body) - supported_settings
                 if unknown_settings:
@@ -2837,9 +2841,9 @@ class Handler(BaseHTTPRequestHandler):
                     for field, (minimum, maximum) in field_ranges.items()
                     if field in body
                 }
-                for duration in ("level_minutes",):
-                    if duration in body:
-                        settings[duration] = body[duration]  # Numeric ranges are validated by the engine.
+                for field in ("level_minutes", "rebuy_enabled", "rebuy_max_level"):
+                    if field in body:
+                        settings[field] = body[field]  # Types and ranges are validated by the engine.
                 if "payout_percentages" in body:
                     settings["payout_percentages"] = self._payout_percentages(
                         body["payout_percentages"],

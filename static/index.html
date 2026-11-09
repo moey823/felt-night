@@ -180,6 +180,8 @@
           <div class="admin-config-grid">
             <div class="settings-field"><label for="admin-host-table-name">Default table name</label><input id="admin-host-table-name" type="text" maxlength="40" placeholder="Use the host’s name"><small class="muted">Leave blank to name each table after its host.</small></div>
             <div class="settings-field"><label for="admin-host-buy-in">Buy-in ($)</label><input id="admin-host-buy-in" type="number" min="0" max="1000000000" step="1" required></div>
+            <div class="settings-field"><label for="admin-host-rebuy-enabled">Rebuys allowed</label><select id="admin-host-rebuy-enabled"><option value="true">Yes</option><option value="false">No</option></select></div>
+            <div class="settings-field"><label for="admin-host-rebuy-max-level">Last rebuy level</label><input id="admin-host-rebuy-max-level" type="number" min="1" max="2147483647" step="1" placeholder="No level limit"><small class="muted">Includes this level. Leave blank for no level limit. Rebuys always close when two players remain.</small></div>
             <div class="settings-field"><label for="admin-host-payout">Paid places and payout shares (%)</label><input id="admin-host-payout" type="text" maxlength="40" placeholder="60, 25, 15" required><small class="muted">One share per paid place, up to nine, totaling 100%. For example: 60, 25, 15 pays three places.</small></div>
             <div class="settings-field"><label for="admin-host-starting-stack">Starting stack</label><input id="admin-host-starting-stack" type="number" min="100" max="1000000" step="100" required></div>
             <div class="settings-field"><label for="admin-host-small-blind">Small blind</label><input id="admin-host-small-blind" type="number" min="1" max="100000" step="1" required></div>
@@ -416,6 +418,8 @@
                 </div>
                 <div class="settings-grid">
                   <div class="settings-field" data-lobby-only><label for="settings-buy-in">Buy-in ($)</label><input id="settings-buy-in" type="number" min="0" max="1000000000" step="1" value="10" required></div>
+                  <div class="settings-field" data-lobby-only><label for="settings-rebuy-enabled">Rebuys allowed</label><select id="settings-rebuy-enabled"><option value="true">Yes</option><option value="false">No</option></select></div>
+                  <div class="settings-field" data-lobby-only><label for="settings-rebuy-max-level">Last rebuy level</label><input id="settings-rebuy-max-level" type="number" min="1" max="2147483647" step="1" placeholder="No level limit"><small class="muted">Includes this level. Leave blank for no level limit. Rebuys always close when two players remain.</small></div>
                   <div class="settings-field settings-payout-field" data-lobby-only>
                     <label for="payout-place-count">Paid places</label>
                     <select id="payout-place-count" aria-describedby="settings-payout-tip">

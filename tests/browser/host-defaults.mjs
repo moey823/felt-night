@@ -6,7 +6,7 @@ export default async function hostDefaults([page],sleep) {
   await openAdminFixture(page);
   await ev(()=>document.querySelector('#admin-tab-host-defaults').click());
   await wait(()=>document.querySelector('#admin-host-starting-stack')?.value==='1000');
-  const values={'table-name':'Friday night','buy-in':'25','payout':'70, 30','starting-stack':'2500','small-blind':'25','big-blind':'50','level-minutes':'12.5','turn-seconds':'45'};
+  const values={'table-name':'Friday night','buy-in':'25','payout':'70, 30','starting-stack':'2500','small-blind':'25','big-blind':'50','level-minutes':'12.5','turn-seconds':'45','rebuy-enabled':'false','rebuy-max-level':'4'};
   await ev(values=>{for(const [key,value] of Object.entries(values))document.querySelector('#admin-host-'+key).value=value;document.querySelector('#admin-host-defaults-form').requestSubmit();},values);
   await wait(()=>document.querySelector('#admin-host-defaults-status').textContent.includes('Saved.'));
   for(const [w,h] of [[1366,768],[390,844],[320,568]]) {
@@ -23,10 +23,15 @@ export default async function hostDefaults([page],sleep) {
   await wait(()=>document.querySelector('#create-game-tab')?.offsetWidth);
   await ev(()=>document.querySelector('#create-game-tab').click());
   await wait(()=>document.querySelector('#table-settings-dialog')?.open&&document.querySelector('#settings-starting-stack')?.value==='2500');
-  const setup=await ev(()=>({name:document.querySelector('#settings-table-name').value,buyIn:document.querySelector('#settings-buy-in').value,stack:document.querySelector('#settings-starting-stack').value,small:document.querySelector('#settings-small-blind').value,big:document.querySelector('#settings-big-blind').value,minutes:document.querySelector('#settings-level-minutes').value,seconds:document.querySelector('#settings-turn-seconds').value,places:document.querySelector('#payout-place-count').value,payout:document.querySelector('#settings-payout').value}));
-  assert(setup.name==='Friday night'&&setup.buyIn==='25'&&setup.stack==='2500'&&setup.small==='25'&&setup.big==='50'&&setup.minutes==='12.5'&&setup.seconds==='45'&&setup.places==='2'&&setup.payout.replace(/\s/g,'')==='70,30','New host setup did not use saved defaults: '+JSON.stringify(setup));
+  const setup=await ev(()=>({name:document.querySelector('#settings-table-name').value,buyIn:document.querySelector('#settings-buy-in').value,stack:document.querySelector('#settings-starting-stack').value,small:document.querySelector('#settings-small-blind').value,big:document.querySelector('#settings-big-blind').value,minutes:document.querySelector('#settings-level-minutes').value,seconds:document.querySelector('#settings-turn-seconds').value,places:document.querySelector('#payout-place-count').value,payout:document.querySelector('#settings-payout').value,rebuys:document.querySelector('#settings-rebuy-enabled').value,rebuyLevel:document.querySelector('#settings-rebuy-max-level').value}));
+  assert(setup.rebuys==='false'&&setup.rebuyLevel==='4'&&setup.name==='Friday night'&&setup.buyIn==='25'&&setup.stack==='2500'&&setup.small==='25'&&setup.big==='50'&&setup.minutes==='12.5'&&setup.seconds==='45'&&setup.places==='2'&&setup.payout.replace(/\s/g,'')==='70,30','New host setup did not use saved defaults: '+JSON.stringify(setup));
   await page.screenshot('new-game-host-defaults');
-  await ev(()=>{document.querySelector('#settings-starting-stack').value='5000';document.querySelector('#settings-starting-stack').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#table-settings-form').requestSubmit();});
+  await ev(()=>{document.querySelector('#settings-rebuy-enabled').value='true';document.querySelector('#settings-rebuy-max-level').value='2';document.querySelector('#settings-starting-stack').value='5000';document.querySelector('#settings-starting-stack').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#table-settings-form').requestSubmit();});
   await wait(()=>document.querySelector('#notice')?.textContent.includes('Table settings saved.'));
+  await page.reload();
+  await wait(()=>Boolean(document.querySelector('#runtime-settings-button')&&!document.querySelector('#runtime-settings-button').hidden));
+  await ev(()=>document.querySelector('#runtime-settings-button').click());
+  await wait(()=>document.querySelector('#table-settings-dialog')?.open);
+  assert(await ev(()=>document.querySelector('#settings-rebuy-enabled').value==='true'&&document.querySelector('#settings-rebuy-max-level').value==='2'),'Host rebuy override did not survive reload.');
   console.log('Host defaults passed: admin save, reload persistence, phone layout, new-game setup, payout places and host override.');
 }

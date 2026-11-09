@@ -19,7 +19,7 @@ Read README.md and deploy/README.md before changing server startup or ingress.
 ## Payouts and rebuys
 
 - Display currency in whole dollars. Final awards must be whole-dollar amounts summing exactly to the prize pool, including every accepted rebuy. Allocate rounding remainders by largest fractional share, then finish order; never overpay the pool. Preserve original historical records when normalizing saved-game views.
-- Rebuys are available only while more than two players remain. Bots decide once, by fair coin flip, five seconds after the showdown hold; host pause freezes that decision timer. Reuse the normal rebuy accounting and table/blind hold.
+- Rebuys are available only when enabled by the host, at or below the optional last rebuy level, and while more than two players remain. Hosts set the policy before the first hand; admin defaults apply only to new games. Preserve unlimited rebuys in existing rebuy-enabled games and the disabled policy of legacy freezeouts. Bots decide once, by fair coin flip, five seconds after the showdown hold; host pause freezes that decision timer. Reuse the normal rebuy accounting and table/blind hold.
 - Keep table event overlays off the cards during the full showdown hold. Persist shared rebuy decisions for a four-second presentation before the next deal; reconnects and host pause must preserve that hold. An explicit host pause replaces the whole play area for all viewers, including during showdown; resume restores the remaining viewing time.
 
 - Persist host setup defaults in room configuration. Apply them only when creating a new game; preserve host overrides and existing game settings. Validate default blinds, stack, payout total, and timers against the host form limits.

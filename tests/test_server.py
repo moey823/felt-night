@@ -2163,7 +2163,7 @@ class ServerAuthTests(unittest.TestCase):
             before = tuple(before)
         defaults = {"table_name": "Friday night", "buy_in": 25, "payout_percentages": [70, 30],
                     "starting_stack": 2500, "small_blind": 25, "big_blind": 50,
-                    "level_minutes": 12.5, "turn_seconds": 45}
+                    "level_minutes": 12.5, "turn_seconds": 45, "rebuy_enabled": False, "rebuy_max_level": 4}
         self.assertEqual(self.request("POST", "/poker/api/admin/config", {"host_defaults": defaults}, **host_auth)[0], 403)
         status, _, saved = self.request("POST", "/poker/api/admin/config", {"host_defaults": defaults}, **auth)
         self.assertEqual(status, 200, saved)
@@ -2182,10 +2182,18 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(status, 201, changed)
         self.assertEqual(changed["table"]["name"], "Host choice")
         self.assertEqual(changed["table"]["config"]["starting_stack"], 5000)
+        status, _, policy = self.request("POST", "/poker/api/tables/" + created["table"]["id"] + "/settings",
+                                         {"rebuy_enabled": True, "rebuy_max_level": 2}, **host_auth)
+        self.assertEqual(status, 200, policy)
+        self.assertTrue(policy["table"]["config"]["rebuy_enabled"])
+        self.assertEqual(policy["table"]["config"]["rebuy_max_level"], 2)
+        self.assertEqual(self.app.store.get_global_config()["host_defaults"]["rebuy_max_level"], 4)
         for invalid in ({"big_blind": 25}, {"big_blind": 3000}, {"buy_in": True},
                         {"payout_percentages": [80, 30]}, {"payout_percentages": []},
                         {"table_name": "<table>"}, {"starting_stack": 1000001},
-                        {"turn_seconds": 0}, {"level_minutes": 0}, {"unknown": 1}):
+                        {"turn_seconds": 0}, {"level_minutes": 0}, {"unknown": 1},
+                        {"rebuy_enabled": 1}, {"rebuy_max_level": 0},
+                        {"rebuy_max_level": True}, {"rebuy_max_level": 2.5}):
             status, _, rejected = self.request("POST", "/poker/api/admin/config", {"host_defaults": invalid}, **auth)
             self.assertEqual(status, 400, rejected)
             self.assertEqual(rejected["error"]["code"], "invalid_admin_config")

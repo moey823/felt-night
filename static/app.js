@@ -4193,6 +4193,8 @@
       byId("admin-host-" + key.replace(/_/g, "-")).value = String(defaults[key]);
     });
     byId("admin-host-payout").value = defaults.payout_percentages.join(", ");
+    byId("admin-host-rebuy-enabled").value = String(defaults.rebuy_enabled !== false);
+    byId("admin-host-rebuy-max-level").value = defaults.rebuy_max_level == null ? "" : String(defaults.rebuy_max_level);
   }
 
   async function saveAdminHostDefaults(event) {
@@ -4206,6 +4208,8 @@
       var input = byId("admin-host-" + key.replace(/_/g, "-"));
       defaults[key] = key === "table_name" ? input.value.trim() : Number(input.value);
     });
+    defaults.rebuy_enabled = byId("admin-host-rebuy-enabled").value === "true";
+    defaults.rebuy_max_level = byId("admin-host-rebuy-max-level").value === "" ? null : Number(byId("admin-host-rebuy-max-level").value);
     defaults.payout_percentages = byId("admin-host-payout").value.split(",").map(function (share) { return /^\s*\d+\s*$/.test(share) ? Number(share) : NaN; });
     if (!byId("admin-host-defaults-form").checkValidity() || defaults.payout_percentages.length > 9 ||
         defaults.payout_percentages.some(function (share) { return !Number.isFinite(share) || share < 0 || share > 100; }) ||
@@ -5126,6 +5130,8 @@
   function loadSettingsForm(view) {
     var config = view.config || {};
     byId("settings-buy-in").value = String(config.buy_in == null ? 10 : config.buy_in);
+    byId("settings-rebuy-enabled").value = String(config.rebuy_enabled === true);
+    byId("settings-rebuy-max-level").value = config.rebuy_max_level == null ? "" : String(config.rebuy_max_level);
     writePayoutShares(Array.isArray(config.payout_percentages) ? config.payout_percentages : [60, 25, 15]);
     byId("settings-table-name").value = view.name || "";
     byId("settings-starting-stack").value = String(number(config.starting_stack, number(view.starting_stack, 1000)));
@@ -5945,6 +5951,8 @@
     };
     if (view.status === "playing") return payload;
     payload.buy_in = number(byId("settings-buy-in").value, -1);
+    payload.rebuy_enabled = byId("settings-rebuy-enabled").value === "true";
+    payload.rebuy_max_level = byId("settings-rebuy-max-level").value === "" ? null : Number(byId("settings-rebuy-max-level").value);
     payload.payout_percentages = payouts("settings-payout");
     payload.name = byId("settings-table-name").value.trim();
     payload.starting_stack = number(byId("settings-starting-stack").value, 0);

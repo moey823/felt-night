@@ -142,6 +142,48 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertIsNone(self.view(state, "p3", 154.99)["viewer"]["rebuy_offer"])
         self.assertIsNotNone(self.view(state, "p3", 155)["viewer"]["rebuy_offer"])
 
+    def test_host_rebuy_switch_and_inclusive_level_cutoff_apply_to_people_and_bots(self):
+        for bot in (False, True):
+            for enabled, limit, level, allowed in ((False, None, 1, False), (True, 4, 4, True),
+                                                  (True, 4, 5, False), (True, None, 50, True)):
+                with self.subTest(bot=bot, enabled=enabled, limit=limit, level=level):
+                    state = self.busted_table()
+                    state["rebuy_offers"] = {}
+                    state.pop("rebuy_hold_started_at", None)
+                    state["rebuy_enabled"] = enabled
+                    state["config"].update(rebuy_enabled=enabled, rebuy_max_level=limit)
+                    state["blinds"]["level"] = level
+                    engine._seat_by_id(state, "p3")["is_bot"] = bot
+                    engine._create_rebuy_offers(state, [{"player_id": "p3"}], state["hand"], 110)
+                    self.assertEqual(bool(state["rebuy_offers"]), allowed)
+                    if allowed:
+                        engine.accept_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=115, _bot_decision=bot)
+                        self.assertEqual(engine._seat_by_id(state, "p3")["stack"], 1000)
+                    else:
+                        with self.assertRaises(engine.GameError) as error:
+                            engine.accept_rebuy(state, "p3", "not-offered", now=115)
+                        self.assertEqual(error.exception.code, "rebuy_unavailable")
+
+    def test_host_can_choose_rebuy_policy_before_dealing_and_it_locks_at_start(self):
+        state = engine.create_lobby("policy", "p1", "Ada", {}, now=100)
+        engine.join(state, "p2", "Bea", now=101)
+        engine.update_settings(state, "p1", {"rebuy_enabled": False, "rebuy_max_level": 3}, now=102)
+        self.assertFalse(state["rebuy_enabled"])
+        self.assertEqual(self.view(state, "p1", 102)["config"]["rebuy_max_level"], 3)
+        engine.start(state, "p1", now=103)
+        for change in ({"rebuy_enabled": True}, {"rebuy_max_level": None}):
+            with self.assertRaises(engine.GameError):
+                engine.update_settings(state, "p1", change, now=104)
+            engine.pause_table(state, "p1", True, now=104)
+            with self.assertRaises(engine.GameError):
+                engine.update_runtime_settings(state, "p1", change, now=104)
+        legacy = engine.create_lobby("legacy", "p1", "Ada", {}, now=100)
+        legacy.pop("rebuy_enabled")
+        legacy["config"].pop("rebuy_enabled")
+        legacy["config"].pop("rebuy_max_level")
+        engine.update_settings(legacy, "p1", {"turn_seconds": 40}, now=101)
+        self.assertFalse(legacy["rebuy_enabled"])
+
     def test_shared_outcome_survives_reload_and_host_pause(self):
         state = self.busted_table()
         engine.decline_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=120)
