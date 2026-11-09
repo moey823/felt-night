@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const modes = new Set(['betting-display', 'adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'history', 'flow', 'layout', 'stability', 'compact', 'action-pacing', 'reactions', 'admin-bulk', 'lobby', 'blind-announcement', 'profile-avatars', 'player-displays', 'shot-clock']);
+const modes = new Set(['betting-display', 'adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'history', 'flow', 'layout', 'stability', 'compact', 'action-pacing', 'reactions', 'admin-bulk', 'lobby', 'blind-announcement', 'profile-avatars', 'player-displays', 'shot-clock', 'admin-roles']);
 const suite = modes.has(mode) ? mode : 'tournament';
 const game = (await import('./' + suite + '.mjs')).default;
 const testRoomPassword = 'test-room-invite';
@@ -26,7 +26,7 @@ const origin = 'http://127.0.0.1:' + port;
 const backendEnv = {...process.env};
 delete backendEnv.FELT_NIGHT_ROOM_PASSWORD_FILE;
 backendEnv.FELT_NIGHT_ROOM_PASSWORD = testRoomPassword;
-backendEnv.FELT_NIGHT_ADMIN_USERNAME = 'admin';
+delete backendEnv.FELT_NIGHT_ADMIN_USERNAME;
 const backend = spawn(process.env.PYTHON || 'python3', ['-B','server.py','--port',String(port),
   '--public-origin',origin,'--data-dir',join(directory,'data')], {cwd:root,env:backendEnv,stdio:['ignore','pipe','inherit']});
 let browser;
@@ -185,6 +185,17 @@ async function stop(child) {
 let timer;
 try {
   await Promise.race([once(backend.stdout,'data'), once(backend,'exit').then(()=>{throw Error('Test server failed to start');})]);
+  if (suite !== 'admin-roles') {
+    const bootstrap = await fetch(origin+'/poker/api/register', {method:'POST',
+      headers:{Origin:origin,'Content-Type':'application/json'},
+      body:JSON.stringify({username:'admin',password:'test-admin-password',room_password:testRoomPassword})});
+    if (bootstrap.status !== 201) throw Error('Could not bootstrap the browser fixture admin.');
+    const fixtureAdmin=await bootstrap.json();
+    const portrait=await fetch(origin+'/poker/api/profile/avatar',{method:'POST',headers:{Origin:origin,
+      'Content-Type':'application/json',Cookie:bootstrap.headers.get('set-cookie').split(';')[0],
+      'X-SitNgo-Session':fixtureAdmin.session_proof,'X-SitNgo-CSRF':fixtureAdmin.csrf},body:JSON.stringify({preset_id:'fish'})});
+    if (portrait.status!==200) throw Error('Could not seed the fixture admin portrait.');
+  }
   browser = spawn(process.env.BROWSER_BIN,['--remote-debugging-pipe','--disable-gpu','--disable-background-networking',
     '--user-data-dir='+join(directory,'browser'),'about:blank'],{stdio:['ignore','ignore','ignore','pipe','pipe']});
   browser.stdio[4].setEncoding('utf8');

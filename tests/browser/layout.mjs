@@ -1,3 +1,4 @@
+import {openAdminFixture} from './admin-fixture.mjs';
 import {seedAvatar} from "./avatar-fixture.mjs";
 // Geometry and readability checks for the reserved poker table layout.
 export default async function layout([activePage, spectatorPage], sleep, roomPassword) {
@@ -98,7 +99,7 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
   const players = [];
   for (let i=0;i<names.length;i++) players.push(await register(names[i],String(i)));
   const spectator = await register('LayoutObserver','observer');
-  const admin = await req('/login',null,{username:'admin',password:''});
+  const admin = await req('/login',null,{username:'admin',password:'test-admin-password'});
   await req('/admin/config',admin,{
     runout_seconds:1,blind_announcement_seconds:0,elimination_announcement_seconds:0,
     showdown_seconds:60,bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]},
@@ -434,7 +435,8 @@ export default async function layout([activePage, spectatorPage], sleep, roomPas
   await activePage.screenshot('showdown');
 
   await logout(spectatorPage);
-  await signIn(spectatorPage,{username:'admin',password:''});
+  await signIn(spectatorPage,{username:'admin',password:'test-admin-password'});
+  await openAdminFixture(spectatorPage);
   await spectatorPage.resize(390,844);
   const adminMetrics=await ev(spectatorPage,()=>{
     const fields=[...document.querySelectorAll('#admin-config-form input')];

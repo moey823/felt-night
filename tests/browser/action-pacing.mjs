@@ -1,3 +1,4 @@
+import {openAdminFixture} from './admin-fixture.mjs';
 import {seedAvatar} from './avatar-fixture.mjs';
 
 // Check full five-card showdowns in the compact 667x375 and 844x390 table layouts.
@@ -105,15 +106,7 @@ export default async function actionPacing([tablePage, adminPage], sleep, roomPa
     await seedAvatar(request,session);
     players.push(session);
   }
-  await wait(adminPage, () => Boolean(document.querySelector("#login-name")?.offsetWidth));
-  await ev(adminPage, () => {
-    document.querySelector("#admin-login-button").click();
-    document.querySelector("#login-name").value = "admin";
-    document.querySelector("#login-password").value = "";
-    document.querySelector("#login-form").requestSubmit();
-  });
-  await wait(adminPage, () => !document.querySelector("#admin-panel")?.hidden &&
-    Boolean(document.querySelector("#admin-uncontested-seconds")?.offsetWidth));
+  await openAdminFixture(adminPage);
   await ev(adminPage, () => {
     document.querySelector("#admin-uncontested-seconds").value = "8.25";
     document.querySelector("#admin-config-form").requestSubmit();
@@ -192,7 +185,7 @@ export default async function actionPacing([tablePage, adminPage], sleep, roomPa
     "Winner highlight failed "+JSON.stringify(winner));
   await tablePage.screenshot("uncontested-winner");
   // Changing the global setting must not shorten the hold already in progress.
-  const admin=await newSession("/login",{username:"admin",password:""});
+  const admin=await newSession("/login",{username:"admin",password:'test-admin-password'});
   await request("/admin/config",admin,{uncontested_seconds:0});
   assert((await request(path,host)).hand_no===current.hand_no,"Dealt before winner hold finished");
   await until(async()=> (await request(path,host)).hand_no===current.hand_no+1,"next deal after winner hold",12000);

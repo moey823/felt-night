@@ -49,14 +49,13 @@ class RoomPasswordConfigTests(unittest.TestCase):
             server._load_room_password({server.ROOM_PASSWORD_ENV: "private\ninvite"})
         self.assertNotIn("private", str(caught.exception))
 
-    def test_admin_username_is_explicitly_opt_in_and_validated(self):
-        self.assertIsNone(server._load_admin_username({}))
-        self.assertEqual(
-            server._load_admin_username({server.ADMIN_USERNAME_ENV: "Admin.Room"}),
-            "admin.room",
-        )
-        with self.assertRaisesRegex(RuntimeError, "admin username"):
-            server._load_admin_username({server.ADMIN_USERNAME_ENV: "bad username"})
+    def test_retired_admin_environment_does_not_create_a_passwordless_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {"FELT_NIGHT_ADMIN_USERNAME": "admin"}):
+                app = server.App(types.SimpleNamespace(public_origin="http://localhost:1", data_dir=directory),
+                                 room_password=TEST_ROOM_PASSWORD)
+            self.assertIsNone(app.store.login_account("admin", "", time.time()))
+
 
     def test_private_file_password_accepts_one_trailing_newline(self):
         with tempfile.TemporaryDirectory(prefix="felt-night-password-") as directory:
@@ -119,7 +118,7 @@ class SQLiteTempStoreSandboxTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="felt-night-temp-store-", dir="/private/tmp") as scratch:
             scratch_path = Path(scratch)
             data_dir = scratch_path / "data"
-            store = server.Store(str(data_dir), TEST_ROOM_PASSWORD, admin_username="sandbox-admin")
+            store = server.Store(str(data_dir), TEST_ROOM_PASSWORD)
             owner_id = "f" * 32
             table_ids = [f"{index + 1:032x}" for index in range(20)]
             now = time.time()
@@ -243,6 +242,9 @@ class ServerAuthTests(unittest.TestCase):
             data_dir=str(self.data_dir),
         )
         self.app = server.App(args, room_password=TEST_ROOM_PASSWORD)
+        bootstrap, bootstrap_token = self.app.store.create_account("roomowner", "Room owner", self.account_password, time.time())
+        self.bootstrap_admin_id = bootstrap["id"]
+        self.app.store.logout(bootstrap_token)
         self.httpd = server.LimitedThreadingHTTPServer(("127.0.0.1", 0), server.Handler, self.app)
         self.port = self.httpd.server_port
         self.origin = "http://localhost:%d" % self.port
@@ -317,22 +319,17 @@ class ServerAuthTests(unittest.TestCase):
         return cookie, proof, csrf, player
 
     def enable_admin(self, username="admin"):
-        args = types.SimpleNamespace(
-            public_origin=self.origin,
-            data_dir=str(self.data_dir),
-        )
-        self.app = server.App(
-            args, room_password=self.password, admin_username=username,
-        )
-        self.app.public_origin = self.origin
-        self.app.public_netloc = "localhost:%d" % self.port
-        self.app.secure_cookie = False
-        self.httpd.app = self.app
+        now = time.time()
+        result = self.app.store.login_account(username, self.account_password, now)
+        if result is None:
+            player, token = self.app.store.create_account(username, username, self.account_password, now)
+        else:
+            player, token = result
+        self.app.store.set_account_admin(self.bootstrap_admin_id, player["id"], True)
+        self.app.store.logout(token)
         status, headers, body = self.request(
-            "POST", "/poker/api/login", {"username": username, "password": ""},
-        )
-        if status != 200:
-            raise AssertionError((status, body))
+            "POST", "/poker/api/login", {"username": username, "password": self.account_password})
+        self.assertEqual(status, 200, body)
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         return cookie, body["session_proof"], body["csrf"], body["player"]
 
@@ -630,7 +627,7 @@ class ServerAuthTests(unittest.TestCase):
         # same durable data directory, while its images remain session protected.
         new_app = server.App(
             types.SimpleNamespace(public_origin=self.origin, data_dir=str(self.data_dir)),
-            room_password=self.password, admin_username="catalog-admin",
+            room_password=self.password,
         )
         self.app = new_app
         self.httpd.app = new_app
@@ -848,8 +845,8 @@ class ServerAuthTests(unittest.TestCase):
             "POST", path, {"display_name": "Not an account"},
             cookie=admin_cookie, proof=admin_proof, csrf=admin_csrf,
         )
-        self.assertEqual(status, 403)
-        self.assertEqual(admin_denied["error"]["code"], "admin_read_only")
+        self.assertEqual(status, 200)
+        self.assertTrue(admin_denied["player"]["is_admin"])
 
     def test_registration_accepts_one_character_password_and_rejects_empty(self):
         status, _, empty = self.request(
@@ -2165,7 +2162,7 @@ class ServerAuthTests(unittest.TestCase):
              "room_password": self.password},
         )
         self.assertEqual(status, 409)
-        self.assertEqual(reserved["error"]["code"], "username_reserved")
+        self.assertEqual(reserved["error"]["code"], "username_taken")
         status, _, wrong_admin_password = self.request(
             "POST", "/poker/api/login", {"username": "admin", "password": "wrong"},
         )
@@ -2228,8 +2225,8 @@ class ServerAuthTests(unittest.TestCase):
         status, _, forbidden_seat = self.request(
             "POST", path + "/seat", {"seat_no": 1}, **admin_auth,
         )
-        self.assertEqual(status, 403)
-        self.assertEqual(forbidden_seat["error"]["code"], "admin_read_only")
+        self.assertEqual(status, 409)
+        self.assertEqual(forbidden_seat["error"]["code"], "profile_photo_required")
         status, _, seated = self.request(
             "POST", path + "/seat", {"seat_no": 8},
             cookie=guest_cookie, proof=guest_proof, csrf=guest_csrf,
@@ -2238,8 +2235,8 @@ class ServerAuthTests(unittest.TestCase):
         status, _, not_host_start = self.request(
             "POST", path + "/start", {}, **admin_auth,
         )
-        self.assertEqual(status, 403)
-        self.assertEqual(not_host_start["error"]["code"], "admin_read_only")
+        self.assertEqual(status, 409)
+        self.assertEqual(not_host_start["error"]["code"], "profile_photo_required")
 
         for field, value in (
             ("max_seats", 4), ("runout_seconds", 7),
@@ -2289,8 +2286,8 @@ class ServerAuthTests(unittest.TestCase):
              "expected_turn_version": started["table"]["turn_version"]},
             **admin_auth,
         )
-        self.assertEqual(status, 403)
-        self.assertEqual(forbidden_action["error"]["code"], "admin_read_only")
+        self.assertEqual(status, 409)
+        self.assertEqual(forbidden_action["error"]["code"], "not_your_turn")
 
         future_runout = time.time() + 90
         def preserve_deadline(state):
@@ -2324,7 +2321,7 @@ class ServerAuthTests(unittest.TestCase):
         self.assertTrue(all("cards" not in seat for seat in admin_detail["table"]["seats"]))
 
         args = types.SimpleNamespace(public_origin=self.origin, data_dir=str(self.data_dir))
-        self.app = server.App(args, room_password=self.password, admin_username="admin")
+        self.app = server.App(args, room_password=self.password)
         self.app.public_origin = self.origin
         self.app.public_netloc = "localhost:%d" % self.port
         self.httpd.app = self.app
@@ -2526,11 +2523,11 @@ class ServerAuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 200, guest_seat)
         status, _, admin_seat = self.request("POST", path + "/join", {}, **admin_auth)
-        self.assertEqual(status, 403)
-        self.assertEqual(admin_seat["error"]["code"], "admin_read_only")
+        self.assertEqual(status, 409)
+        self.assertEqual(admin_seat["error"]["code"], "profile_photo_required")
         status, _, admin_start = self.request("POST", path + "/start", {}, **admin_auth)
-        self.assertEqual(status, 403)
-        self.assertEqual(admin_start["error"]["code"], "admin_read_only")
+        self.assertEqual(status, 409)
+        self.assertEqual(admin_start["error"]["code"], "profile_photo_required")
 
         status, _, started = self.request("POST", path + "/start", {}, **host_auth)
         self.assertEqual(status, 200, started)

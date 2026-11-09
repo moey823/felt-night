@@ -92,7 +92,7 @@ export default async function crowded([activePage, spectatorPage], sleep, roomPa
     return json.table;
   };
 
-  const admin = await req('/login', null, {username:'admin', password:''});
+  const admin = await req('/login', null, {username:'admin', password:'test-admin-password'});
   await req('/admin/config', admin, {
     runout_seconds: 40,
     blind_announcement_seconds: 0,

@@ -107,7 +107,7 @@ export default async function compact([tablePage], sleep, roomPassword) {
     players.push(session);
   }
   const playersById = new Map(players.map(player => [player.player.id, player]));
-  const admin = await newSession("/login", { username: "admin", password: "" });
+  const admin = await newSession("/login", { username: "admin", password: 'test-admin-password' });
   await request("/admin/config", admin, {
     runout_seconds: 1,
     blind_announcement_seconds: 0,

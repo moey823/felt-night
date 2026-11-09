@@ -1,3 +1,4 @@
+import {openAdminFixture} from './admin-fixture.mjs';
 import {seedAvatar} from './avatar-fixture.mjs';
 
 // Exercise a real nine-player game across phone, landscape, and desktop viewports.
@@ -189,7 +190,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
     });
   }
 
-  const admin = await newSession("/login", { username:"admin", password:"" });
+  const admin = await newSession("/login", { username:"admin", password:'test-admin-password' });
   await request("/admin/config", admin, {
     runout_seconds:1, blind_announcement_seconds:0,
     elimination_announcement_seconds:0, showdown_seconds:2,
@@ -630,11 +631,7 @@ export default async function stability([playerPage, secondPage], sleep, roomPas
 
   await clickAt(secondPage,"#table-logout-button");
   await wait(secondPage,()=>Boolean(document.querySelector("#login-name")?.offsetWidth));
-  await clickAt(secondPage,"#admin-login-button");
-  await wait(secondPage,()=>document.querySelector("#login-name")?.value==="admin"&&
-    document.querySelector("#login-password")?.required===false);
-  await ev(secondPage,()=>document.querySelector("#login-form").requestSubmit());
-  await wait(secondPage,()=>Boolean(document.querySelector("#admin-panel")?.offsetWidth));
+  await openAdminFixture(secondPage);
   await clickAt(secondPage,"#admin-history-details > summary");
   await wait(secondPage,id=>Boolean(document.querySelector('[data-admin-history-id="'+id+'"]')),table.id);
   const historyEntry=await ev(secondPage,id=>{

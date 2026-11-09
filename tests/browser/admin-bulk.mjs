@@ -1,3 +1,4 @@
+import {openAdminFixture} from './admin-fixture.mjs';
 // Exercise paginated admin selection, count confirmation, safe backdrop dismissal, and atomic bulk deletion.
 export default async function adminBulk([playerPage, adminPage], sleep, roomPassword) {
   const evaluate = (page, fn, ...args) => page.evaluate("(" + fn.toString() + ")(..." + JSON.stringify(args) + ")");
@@ -58,12 +59,7 @@ export default async function adminBulk([playerPage, adminPage], sleep, roomPass
       input.dispatchEvent(new Event("input", { bubbles: true }));
     }, selector, value);
   }
-  async function signInAdmin() {
-    await wait(adminPage, () => Boolean(document.querySelector("#login-name")?.offsetWidth));
-    await click(adminPage, "#admin-login-button");
-    await evaluate(adminPage, () => document.querySelector("#login-form").requestSubmit());
-    await wait(adminPage, () => Boolean(document.querySelector("#admin-panel")?.offsetWidth));
-  }
+  async function signInAdmin() { await openAdminFixture(adminPage); }
 
   const stamp = Date.now().toString(36);
   const username = ("Bulk" + stamp).slice(0, 24);

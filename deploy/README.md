@@ -11,37 +11,14 @@ The configured `--public-origin` must be the public HTTPS origin exactly, such a
 
 The service requires exactly one of `FELT_NIGHT_ROOM_PASSWORD_FILE` or `FELT_NIGHT_ROOM_PASSWORD`; the example uses the file setting. The secret file must be a regular file readable by the service user with no group or other permissions. Rotating the invite and restarting invalidates active sessions; accounts and history remain in the data directory.
 
-## Public players with private admin
+## Admin accounts and an optional private origin
 
-Run one process with two loopback listeners against the existing data directory:
+On a fresh database, the first registered account becomes admin. Complete that registration before sharing the room invite. Existing rooms must explicitly grant the intended owner's account admin access during the upgrade; back up the database before changing roles. `FELT_NIGHT_ADMIN_USERNAME` no longer creates an administrator. Remove it from service configuration.
 
-```sh
-FELT_NIGHT_ADMIN_USERNAME=admin \
-FELT_NIGHT_ROOM_PASSWORD_FILE="$HOME/.config/felt-night/room-invite" \
-python3 server.py --host 127.0.0.1 --port 18943 \
-  --public-origin "https://$ROOM_HOST:8443" \
-  --admin-port 18944 --admin-origin "https://$ROOM_HOST:9465" \
-  --data-dir "$HOME/.local/share/felt-night/data"
-```
+Admins sign in with their normal password, play normally, and open **Admin** to change settings or grant/remove admin roles. The last admin cannot be removed. Non-admin accounts cannot use admin APIs.
 
-Here `ROOM_HOST` is your Tailscale HTTPS hostname. Configure the two ingress routes
-individually, preserving all unrelated routes:
+Existing deployments may keep a second private origin with the paired arguments `--admin-port 18944 --admin-origin https://ROOM_HOST:9465`, alongside the primary `--port 18943 --public-origin https://ROOM_HOST:8443`. Both listeners share one database, one ticker, and the same account roles; both reject the retired blank-password admin login.
 
-```sh
-tailscale serve --bg --https=9465 http://127.0.0.1:18944
-tailscale funnel --bg --https=8443 http://127.0.0.1:18943
-```
+Preserve the existing loopback bindings, external data directory, room invite, and paired listener arguments during an upgrade. If a process sandbox is used, permit loopback inbound connections on both backend ports. Keep the second origin tailnet-only; publish only the primary player port through Funnel. Never reset Tailscale ingress globally.
 
-Players use `https://$ROOM_HOST:8443/poker/`; admin uses
-`https://$ROOM_HOST:9465/poker/` while connected to the tailnet.
-Never enable Funnel on the private admin port. If using a process sandbox,
-allow loopback inbound connections on both backend ports. Keep credentials and
-runtime data outside the source deployment, and persist both listener arguments
-in the service definition so restarts preserve the separation.
-
-Before enabling public ingress, verify that the deployed player listener rejects
-blank-password admin login with 401 and rejects replayed admin sessions, while
-the private listener permits admin login. After deployment, check both health
-endpoints and the Funnel status: only the player port should be public. Test
-registration, account login, and joining against disposable development data;
-do not create test accounts or games in the live room.
+After deployment verify both health endpoints, rejected blank-password admin login, expected account roles, and the ingress status. Test registration, role management, and gameplay against disposable development data; do not create test accounts or games in the live room.

@@ -52,7 +52,7 @@ export default async function game([one, two], sleep, roomPassword) {
     await page.reload();
     await wait(page,visible,'#app-panel');
   }
-  const admin = await adminRequest('/login',null,{username:'admin',password:''});
+  const admin = await adminRequest('/login',null,{username:'admin',password:'test-admin-password'});
   await adminRequest('/admin/config',admin,{runout_seconds:1.75,showdown_seconds:0,
     blind_announcement_seconds:0,elimination_announcement_seconds:0});
   async function create(name, extra = {}) {

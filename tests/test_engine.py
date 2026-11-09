@@ -2628,10 +2628,12 @@ class EngineTests(unittest.TestCase):
         now = 104.0
         checked_delay = False
 
-        def passive_legal_action(options):
-            return next((item for item in options if item[0] in ("check", "call")), options[0])
+        # This exercises ticker scheduling, not stochastic strategy. A random
+        # first-hand shove can legitimately finish before the second deal.
+        def passive_action(state, hand, player_id):
+            return ("call" if engine._to_call(hand, player_id) else "check", None)
 
-        with patch.object(engine.random.SystemRandom, "choice", side_effect=passive_legal_action):
+        with patch.object(engine, "_choose_bot_action", side_effect=passive_action):
             for _ in range(3000):
                 if state["status"] != "playing":
                     break

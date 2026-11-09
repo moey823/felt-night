@@ -67,7 +67,6 @@ GLOBAL_LOGIN_LIMIT = 50
 MAX_WORKERS = 32
 ROOM_PASSWORD_ENV = "FELT_NIGHT_ROOM_PASSWORD"
 ROOM_PASSWORD_FILE_ENV = "FELT_NIGHT_ROOM_PASSWORD_FILE"
-ADMIN_USERNAME_ENV = "FELT_NIGHT_ADMIN_USERNAME"
 MAX_ROOM_PASSWORD_LENGTH = 4096
 ADMIN_END_CONFIRM_SECONDS = 60
 ADMIN_PLAYER_PREFIX = "admin:"
@@ -82,7 +81,6 @@ DEFAULT_GLOBAL_CONFIG = {
         "postflop_percent": [50, 75, 100],
     },
 }
-_ADMIN_USERNAME_FROM_ENV = object()
 
 
 class AppError(Exception):
@@ -376,21 +374,6 @@ def _load_room_password(environ=None):
     return _validate_room_password(direct_password)
 
 
-def _validate_admin_username(value):
-    if not isinstance(value, str):
-        raise RuntimeError("admin username must be 3 to 24 letters, numbers, periods, underscores, or hyphens")
-    username = value.strip().lower()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,23}", username):
-        raise RuntimeError("admin username must be 3 to 24 letters, numbers, periods, underscores, or hyphens")
-    return username
-
-
-def _load_admin_username(environ=None):
-    config = os.environ if environ is None else environ
-    value = config.get(ADMIN_USERNAME_ENV)
-    return None if value is None else _validate_admin_username(value)
-
-
 def _validate_global_config(value, base=None):
     if not isinstance(value, dict):
         raise AppError(400, "invalid_admin_config", "Admin settings must be a JSON object.")
@@ -442,11 +425,7 @@ def _json_dumps(value):
 
 
 class Store:
-    def __init__(self, data_dir, room_password, admin_username=None):
-        self.admin_username = admin_username
-        self.admin_player_id = (
-            ADMIN_PLAYER_PREFIX + admin_username if admin_username is not None else None
-        )
+    def __init__(self, data_dir, room_password):
         self.data_dir = os.path.abspath(data_dir)
         if os.path.lexists(self.data_dir) and os.path.islink(self.data_dir):
             raise RuntimeError("data directory may not be a symlink")
@@ -514,7 +493,8 @@ class Store:
                     player_id TEXT NOT NULL UNIQUE REFERENCES players(id),
                     password_salt TEXT NOT NULL,
                     password_verifier TEXT NOT NULL,
-                    created REAL NOT NULL
+                    created REAL NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0 CHECK(is_admin IN (0,1))
                 );
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
@@ -592,28 +572,11 @@ class Store:
                     _validate_global_config(stored_global_config)
                 except (ValueError, TypeError, AppError) as exc:
                     raise RuntimeError("stored global settings are invalid") from exc
-            if self.admin_username is None:
-                conn.execute(
-                    "DELETE FROM sessions WHERE player_id LIKE ?",
-                    (ADMIN_PLAYER_PREFIX + "%",),
-                )
-            else:
-                if conn.execute(
-                    "SELECT 1 FROM accounts WHERE username=?", (self.admin_username,),
-                ).fetchone():
-                    raise RuntimeError("configured admin username is already registered")
-                conn.execute(
-                    "DELETE FROM sessions WHERE player_id LIKE ? AND player_id<>?",
-                    (ADMIN_PLAYER_PREFIX + "%", self.admin_player_id),
-                )
-                conn.execute(
-                    "INSERT OR IGNORE INTO players(id,name,created) VALUES(?,?,?)",
-                    (self.admin_player_id, self.admin_username, time.time()),
-                )
-                conn.execute(
-                    "UPDATE players SET name=? WHERE id=?",
-                    (self.admin_username, self.admin_player_id),
-                )
+            account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
+            if "is_admin" not in account_columns:
+                conn.execute("ALTER TABLE accounts ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0 CHECK(is_admin IN (0,1))")
+            # Old passwordless identities are inert after the upgrade.
+            conn.execute("DELETE FROM sessions WHERE player_id LIKE ?", (ADMIN_PLAYER_PREFIX + "%",))
             history_marker = conn.execute(
                 "SELECT value FROM meta WHERE key='history_backfill_v1'"
             ).fetchone()
@@ -711,7 +674,7 @@ class Store:
         try:
             row = conn.execute(
                 """SELECT s.token_hash,s.player_id,s.expires,p.name,
-                          a.username AS account_username,a.display_name AS account_name
+                          a.username AS account_username,a.display_name AS account_name,a.is_admin AS account_admin
                    FROM sessions s JOIN players p ON p.id=s.player_id
                    LEFT JOIN accounts a ON a.player_id=p.id
                    WHERE s.token_hash=?""",
@@ -722,13 +685,13 @@ class Store:
             if row["expires"] <= now:
                 conn.execute("DELETE FROM sessions WHERE token_hash=?", (row["token_hash"],))
                 return None
-            is_admin = self.admin_player_id is not None and row["player_id"] == self.admin_player_id
-            has_account = row["account_name"] is not None or is_admin
+            is_admin = bool(row["account_admin"])
+            has_account = row["account_name"] is not None
             return {
                 "id": row["player_id"],
-                "name": self.admin_username if is_admin else row["name"],
-                "username": self.admin_username if is_admin else row["account_username"],
-                "display_name": self.admin_username if is_admin else row["account_name"],
+                "name": row["name"],
+                "username": row["account_username"],
+                "display_name": row["account_name"],
                 "account": has_account,
                 "needs_claim": not has_account,
                 "is_admin": is_admin,
@@ -1035,7 +998,7 @@ class Store:
             conn.close()
 
     @staticmethod
-    def _account_player(player_id, username, display_name):
+    def _account_player(player_id, username, display_name, is_admin=False):
         return {
             "id": player_id,
             "name": display_name,
@@ -1043,18 +1006,7 @@ class Store:
             "username": username,
             "account": True,
             "needs_claim": False,
-            "is_admin": False,
-        }
-
-    def _admin_player(self):
-        return {
-            "id": self.admin_player_id,
-            "name": self.admin_username,
-            "display_name": self.admin_username,
-            "username": self.admin_username,
-            "account": True,
-            "needs_claim": False,
-            "is_admin": True,
+            "is_admin": bool(is_admin),
         }
 
     def _issue_session(self, conn, player_id, now):
@@ -1072,8 +1024,6 @@ class Store:
         return token
 
     def create_account(self, username, display_name, password, now, legacy_player_id=None):
-        if self.admin_username is not None and username == self.admin_username:
-            raise AppError(409, "username_reserved", "That username is reserved for the room admin.")
         salt = secrets.token_bytes(16)
         verifier = self._password_verifier(password, salt)
         conn = self.connect()
@@ -1101,15 +1051,17 @@ class Store:
                 ).fetchone():
                     raise AppError(409, "account_exists", "This seat already has an account.")
                 conn.execute("UPDATE players SET name=? WHERE id=?", (display_name, player_id))
+            # BEGIN IMMEDIATE serializes first-account bootstrap with all registrations.
+            first_account = conn.execute("SELECT 1 FROM accounts LIMIT 1").fetchone() is None
             conn.execute(
                 """INSERT INTO accounts
-                   (username,display_name,player_id,password_salt,password_verifier,created)
-                   VALUES(?,?,?,?,?,?)""",
-                (username, display_name, player_id, salt.hex(), verifier, now),
+                   (username,display_name,player_id,password_salt,password_verifier,created,is_admin)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (username, display_name, player_id, salt.hex(), verifier, now, int(first_account)),
             )
             token = None if legacy_player_id is not None else self._issue_session(conn, player_id, now)
             conn.commit()
-            return self._account_player(player_id, username, display_name), token
+            return self._account_player(player_id, username, display_name, first_account), token
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
@@ -1126,7 +1078,7 @@ class Store:
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                """SELECT username,display_name,password_salt,password_verifier
+                """SELECT username,display_name,password_salt,password_verifier,is_admin
                    FROM accounts WHERE player_id=?""",
                 (player_id,),
             ).fetchone()
@@ -1142,8 +1094,6 @@ class Store:
                     raise AppError(403, "invalid_current_password", "Current password is incorrect.")
             target_username = row["username"] if username is None else username
             target_display = row["display_name"] if display_name is None else display_name
-            if self.admin_username is not None and target_username == self.admin_username:
-                raise AppError(409, "username_reserved", "That username is reserved for the room admin.")
             if target_username != row["username"] and conn.execute(
                 "SELECT 1 FROM accounts WHERE username=?", (target_username,),
             ).fetchone():
@@ -1163,7 +1113,7 @@ class Store:
                 )
             conn.execute("UPDATE players SET name=? WHERE id=?", (target_display, player_id))
             conn.commit()
-            return self._account_player(player_id, target_username, target_display)
+            return self._account_player(player_id, target_username, target_display, row["is_admin"])
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
@@ -1171,20 +1121,32 @@ class Store:
         finally:
             conn.close()
 
-    def login_admin(self, now):
-        if self.admin_username is None or self.admin_player_id is None:
-            return None
+    def list_account_roles(self):
+        conn = self.connect()
+        try:
+            return {"accounts": [dict(row, is_admin=bool(row["is_admin"])) for row in conn.execute(
+                "SELECT player_id,username,display_name,is_admin FROM accounts ORDER BY is_admin DESC,username")],
+                "admin_count": conn.execute("SELECT COUNT(*) FROM accounts WHERE is_admin=1").fetchone()[0]}
+        finally:
+            conn.close()
+
+    def set_account_admin(self, actor_id, player_id, is_admin):
+        if type(is_admin) is not bool:
+            raise AppError(400, "invalid_role", "Choose whether this account is an admin.")
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            player = conn.execute(
-                "SELECT 1 FROM players WHERE id=?", (self.admin_player_id,),
-            ).fetchone()
-            if player is None:
-                return None
-            token = self._issue_session(conn, self.admin_player_id, now)
+            actor = conn.execute("SELECT is_admin FROM accounts WHERE player_id=?", (actor_id,)).fetchone()
+            if actor is None or not actor["is_admin"]:
+                raise AppError(403, "admin_required", "Room admin access is required.")
+            target = conn.execute("SELECT is_admin FROM accounts WHERE player_id=?", (player_id,)).fetchone()
+            if target is None:
+                raise AppError(404, "account_not_found", "Account not found.")
+            if target["is_admin"] and not is_admin and conn.execute(
+                    "SELECT COUNT(*) FROM accounts WHERE is_admin=1").fetchone()[0] <= 1:
+                raise AppError(409, "last_admin", "Add another admin before removing the last admin.")
+            conn.execute("UPDATE accounts SET is_admin=? WHERE player_id=?", (int(is_admin), player_id))
             conn.commit()
-            return self._admin_player(), token
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
@@ -1198,7 +1160,7 @@ class Store:
         conn = self.connect()
         try:
             row = conn.execute(
-                """SELECT a.player_id,a.username,a.display_name,a.password_salt,a.password_verifier
+                """SELECT a.player_id,a.username,a.display_name,a.password_salt,a.password_verifier,a.is_admin
                    FROM accounts a WHERE a.username=?""",
                 (username,),
             ).fetchone()
@@ -1216,7 +1178,7 @@ class Store:
                 return None
             conn.execute("BEGIN IMMEDIATE")
             player_id = row["player_id"]
-            player = self._account_player(player_id, row["username"], row["display_name"])
+            player = self._account_player(player_id, row["username"], row["display_name"], row["is_admin"])
             token = self._issue_session(conn, player_id, now)
             conn.commit()
             return player, token
@@ -1296,7 +1258,7 @@ class Store:
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            if not owner.get("is_admin") and conn.execute(
+            if conn.execute(
                 "SELECT 1 FROM player_avatars WHERE player_id=?", (owner["id"],),
             ).fetchone() is None:
                 raise AppError(409, "profile_photo_required",
@@ -1965,8 +1927,6 @@ class Handler(BaseHTTPRequestHandler):
                 not hmac.compare_digest(proof, self.app.store.session_proof(cookie_token))):
             return None
         player = self.app.store.authenticate(cookie_token)
-        if player and player.get("is_admin") and not self.app.allow_admin:
-            return None
         return player, cookie_token
 
     def _require_player(self, require_account=True):
@@ -2218,6 +2178,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._require_player()
                 self._json(200, {"config": self.app.store.get_global_config()})
                 return
+            if path == "/poker/api/admin/accounts":
+                self._require_admin()
+                self._json(200, self.app.store.list_account_roles())
+                return
             if path == "/poker/api/admin/config":
                 self._require_admin()
                 self._json(200, {"config": self.app.store.get_global_config()})
@@ -2369,14 +2333,7 @@ class Handler(BaseHTTPRequestHandler):
                 password = body.get("password")
                 if not isinstance(password, str) or len(password) > 256:
                     password = ""
-                if (self.app.admin_username is not None and
-                        username == self.app.admin_username and password == "" and
-                        self.app.allow_admin):
-                    result = self.app.store.login_admin(now)
-                elif username == self.app.admin_username:
-                    result = None
-                else:
-                    result = self.app.store.login_account(username, password, now)
+                result = self.app.store.login_account(username, password, now)
                 if result is None:
                     self.app.store.record_failed_login(client_key, now)
                     self._error(401, "invalid_credentials", "Sign-in failed.")
@@ -2422,8 +2379,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/poker/api/profile":
-                if player.get("is_admin"):
-                    raise AppError(403, "admin_read_only", "Room admins cannot change player profiles.")
                 if not player.get("account"):
                     raise AppError(403, "account_required", "Create or claim a personal account first.")
                 allowed = {"username", "display_name", "new_password", "current_password"}
@@ -2443,8 +2398,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if path == "/poker/api/profile/avatar":
-                if player.get("is_admin"):
-                    raise AppError(403, "admin_read_only", "Room admins cannot change player profiles.")
                 if not player.get("account"):
                     raise AppError(403, "account_required", "Create or claim a personal account first.")
                 allowed = {"image_data", "full_image_data", "preset_id"}
@@ -2507,6 +2460,15 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
 
+            role_match = re.fullmatch(r"/poker/api/admin/accounts/([a-f0-9]{32})/role", path)
+            if role_match:
+                if set(body) != {"is_admin"}:
+                    raise AppError(400, "invalid_role", "Choose whether this account is an admin.")
+                self.app.store.set_account_admin(player["id"], role_match.group(1), body["is_admin"])
+                current = self.app.store.authenticate(token)
+                self._json(200, {"player": self._player_payload(current)})
+                return
+
             if path == "/poker/api/admin/config":
                 if not player.get("is_admin"):
                     raise AppError(403, "admin_required", "Room admin access is required.")
@@ -2560,9 +2522,6 @@ class Handler(BaseHTTPRequestHandler):
             if not player.get("account"):
                 raise AppError(403, "account_required",
                                "Claim this legacy seat or sign in with a personal account.")
-            if player.get("is_admin"):
-                raise AppError(403, "admin_read_only",
-                               "Room admins can only change global settings or lobby bots.")
 
             rebuy_match = re.fullmatch(
                 r"/poker/api/tables/([a-f0-9]{32})/rebuy(/decline)?", path,
@@ -2703,8 +2662,7 @@ class Handler(BaseHTTPRequestHandler):
             table_id, operation = match.groups()
             if operation == "join":
                 def join_player(value):
-                    if (not player.get("is_admin")
-                            and not self.app.store.has_player_avatar(player["id"])):
+                    if not self.app.store.has_player_avatar(player["id"]):
                         raise AppError(409, "profile_photo_required",
                                        "Add a profile photo before joining a game.")
                     return engine.join(value, player["id"], player["name"], now)
@@ -2712,8 +2670,7 @@ class Handler(BaseHTTPRequestHandler):
             elif operation == "seat":
                 seat_no = self._integer(body.get("seat_no"), "seat_no", 0, 8)
                 def move_player(value):
-                    if (not player.get("is_admin")
-                            and not self.app.store.has_player_avatar(player["id"])):
+                    if not self.app.store.has_player_avatar(player["id"]):
                         raise AppError(409, "profile_photo_required",
                                        "Add a profile photo before joining a game.")
                     return engine.join(
@@ -2893,31 +2850,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class App:
-    def __init__(self, args, room_password=None, admin_username=_ADMIN_USERNAME_FROM_ENV):
+    def __init__(self, args, room_password=None):
         self.room_password = (
             _load_room_password() if room_password is None
             else _validate_room_password(room_password)
         )
-        self.admin_username = (
-            _load_admin_username() if admin_username is _ADMIN_USERNAME_FROM_ENV
-            else (None if admin_username is None else _validate_admin_username(admin_username))
-        )
         self.public_origin, self.public_netloc, self.secure_cookie = _parse_origin(args.public_origin)
-        self.store = Store(args.data_dir, self.room_password, self.admin_username)
-        self.allow_admin = True
+        self.store = Store(args.data_dir, self.room_password)
         self.cookie_name = COOKIE_NAME
 
     def private_admin_app(self, origin):
-        """Share one store and ticker; enforce privileges by listener, never headers."""
-        if self.admin_username is None:
-            raise RuntimeError("--admin-origin requires FELT_NIGHT_ADMIN_USERNAME")
+        """Optional second origin sharing the same password-authenticated roles."""
         private = copy.copy(self)
         private.public_origin, private.public_netloc, private.secure_cookie = _parse_origin(origin)
         if private.public_netloc == self.public_netloc:
             raise RuntimeError("admin and player origins must use different hosts or ports")
-        private.allow_admin = True
         private.cookie_name = COOKIE_NAME + "_admin"
-        self.allow_admin = False
         return private
 
 

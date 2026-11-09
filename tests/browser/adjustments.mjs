@@ -126,7 +126,7 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
   const host = await register('Host');
   const guest = await register('Guest');
   const third = await register('Third');
-  const admin = await request('/login', null, {username:'admin', password:''});
+  const admin = await request('/login', null, {username:'admin', password:'test-admin-password'});
   const presetValues = {
     preflop_bb:[2,2.5,3,3.5,4],
     postflop_percent:[30,50,75,100,150],

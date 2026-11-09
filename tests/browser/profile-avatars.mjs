@@ -1,3 +1,4 @@
+import {openAdminFixture} from './admin-fixture.mjs';
 // Focused coverage for profile photos, shared portraits, account editing, seat images, and card backs.
 import {seedAvatar} from "./avatar-fixture.mjs";
 export default async function profileAvatars([hostPage, guestPage], sleep, roomPassword) {
@@ -701,9 +702,7 @@ export default async function profileAvatars([hostPage, guestPage], sleep, roomP
   await wait(hostPage, () => document.querySelector('#login-panel')?.hidden === false);
 
   // A room admin can add a shared portrait; a normal player sees it on their next gallery open.
-  await click(hostPage, '#admin-login-button');
-  await evaluate(hostPage, () => document.querySelector('#login-form').requestSubmit());
-  await wait(hostPage, () => document.querySelector('#admin-panel')?.hidden === false);
+  await openAdminFixture(hostPage);
   const adminVisibility = await evaluate(hostPage, () => ({
     adminPanelVisible:!document.querySelector('#admin-panel').hidden,
     adminFormVisible:Boolean(document.querySelector('#admin-avatar-preset-form').offsetWidth),

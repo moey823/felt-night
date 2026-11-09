@@ -32,6 +32,7 @@
           <span class="identity-avatar" id="identity-avatar" aria-hidden="true"><span class="avatar-fallback-text">♠</span><img class="avatar-image" alt=""></span>
           <span id="welcome-name" class="welcome-name"></span>
           <button id="profile-photo-button" class="button button-quiet button-small" type="button">Profile photo</button>
+          <button id="admin-button" class="button button-quiet button-small" type="button" hidden>Admin</button>
           <button id="profile-account-button" class="button button-quiet button-small" type="button">Edit account</button>
           <button id="lobby-history-button" class="button button-quiet button-small" type="button">My history</button>
           <button id="logout-button" class="button button-quiet button-small" type="button">Log out</button>
@@ -137,7 +138,6 @@
             </button>
           </form>
           <button type="button" id="auth-switch" class="button button-quiet auth-switch">Create an account</button>
-          <button type="button" id="admin-login-button" class="button button-quiet auth-switch">Admin configuration</button>
           <div class="login-card-foot"><span class="lock-icon" aria-hidden="true">▣</span> Your session stays on this device</div>
         </div>
       </section>
@@ -149,8 +149,16 @@
             <h1 id="admin-title">Room defaults</h1>
             <p>Pacing changes apply to upcoming transitions; active timers continue.</p>
           </div>
-          <button id="admin-logout-button" class="button button-quiet button-small" type="button">Log out</button>
+          <div class="admin-screen-actions"><button id="admin-back-button" class="button button-outline button-small" type="button">Back to app</button>
+          <button id="admin-logout-button" class="button button-quiet button-small" type="button">Log out</button></div>
         </div>
+        <section class="panel admin-accounts-panel" aria-labelledby="admin-accounts-title">
+          <div class="section-heading compact"><div><div class="panel-kicker">ACCOUNT ACCESS</div><h2 id="admin-accounts-title">Admins</h2></div><button id="admin-accounts-refresh" class="button button-outline button-small" type="button">Refresh</button></div>
+          <p class="muted">Admins can change room settings and manage admin access. Keep at least one admin.</p>
+          <label for="admin-accounts-filter">Find an account</label><input id="admin-accounts-filter" type="search" placeholder="Username or name" autocomplete="off">
+          <p id="admin-accounts-status" class="muted" role="status" aria-live="polite"></p>
+          <div id="admin-accounts-list" class="admin-accounts-list"></div>
+        </section>
         <form id="admin-config-form" class="panel admin-settings-form">
           <div class="panel-kicker">GLOBAL TABLE SETTINGS</div>
           <h2>Default pacing and bet presets</h2>
@@ -263,6 +271,7 @@
                     <button id="rebuy-offer-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="rebuy-offer-dialog" hidden>Rebuy</button>
                     <button id="reaction-settings-button" class="button button-quiet button-small" type="button" aria-haspopup="dialog" aria-controls="reaction-settings-dialog" aria-expanded="false">Reaction shortcuts</button>
                     <button id="profile-photo-menu-button" class="button button-quiet button-small" type="button">Profile photo</button>
+                    <button id="table-admin-button" class="button button-quiet button-small" type="button" hidden>Admin</button>
                     <button id="history-button" class="button button-quiet button-small" type="button">My history</button>
                     <button id="table-logout-button" class="button button-quiet button-small" type="button">Log out</button>
                     <button id="cancel-button" class="button button-quiet button-small" type="button" hidden>Cancel lobby</button>

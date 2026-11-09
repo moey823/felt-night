@@ -32,7 +32,7 @@ export default async function interactions([one,two], sleep, roomPassword) {
     if(path==='/register'||path==='/login')return {...json,cookie:r.headers.get('set-cookie').split(';')[0]};
     return json;
   }
-  const admin=await request('/login',null,{username:'admin',password:''});
+  const admin=await request('/login',null,{username:'admin',password:'test-admin-password'});
   await request('/admin/config',admin,{
     runout_seconds:1,blind_announcement_seconds:0,elimination_announcement_seconds:0,
     showdown_seconds:0,bet_presets:{preflop_bb:[2.5,3,4],postflop_percent:[50,75,100]}

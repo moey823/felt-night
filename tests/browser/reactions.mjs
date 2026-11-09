@@ -169,7 +169,7 @@ export default async function reactions([one,two], sleep, roomPassword) {
   await wait(one,()=>!document.querySelector('#reaction-settings-dialog')?.open);
   await wait(one,()=>[...document.querySelectorAll('#reaction-shortcuts [data-send-reaction]')].map(n=>n.textContent).join('')==='🔥💩🤦');
 
-  const admin=await request('/login',null,{username:'admin',password:''});
+  const admin=await request('/login',null,{username:'admin',password:'test-admin-password'});
   const tableNow=(await request(path,users[0])).table;
   const occupied=new Set(tableNow.seats.map(seat=>seat.seat_no));
   for(let seatNo=0;seatNo<9;seatNo++) {

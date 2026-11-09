@@ -82,7 +82,7 @@ export default async function history([one, two], sleep, roomPassword) {
   }
 
   const stamp = Date.now().toString(36);
-  const admin = await request('/login', null, {username:'admin', password:''});
+  const admin = await request('/login', null, {username:'admin', password:'test-admin-password'});
   await request('/admin/config', admin, {
     runout_seconds:1, showdown_seconds:30,
     blind_announcement_seconds:0, elimination_announcement_seconds:0,

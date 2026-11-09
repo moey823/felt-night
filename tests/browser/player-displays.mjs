@@ -401,7 +401,7 @@ export default async function playerDisplays([playerPage, secondPage], sleep, ro
     assert(image.startsWith('data:image/jpeg;base64,'),'Generated photo was not JPEG.');
     players[i].avatarUrl = await uploadAvatar(players[i],image);
   }
-  const adminLogin=await rawApi('/login',null,{username:'admin',password:''});
+  const adminLogin=await rawApi('/login',null,{username:'admin',password:'test-admin-password'});
   assert(adminLogin.ok,'Disposable test admin login failed: '+JSON.stringify(adminLogin.data));
   const adminCookie=adminLogin.response.headers.get('set-cookie')?.split(';')[0];
   assert(adminCookie,'Disposable test admin did not receive a session cookie.');

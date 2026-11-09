@@ -1,3 +1,4 @@
+import {openAdminFixture} from './admin-fixture.mjs';
 // End-to-end coverage for the focused lobby, shared admin controls, payout sliders and terminal flow.
 import {seedAvatar} from './avatar-fixture.mjs';
 
@@ -204,15 +205,9 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   await openSettingsFromMenu(hostPage);
   await actualCloseSettings(hostPage, 844, 390, 'flow-settings-844x390');
 
-  // Admin can configure the room and test bots, but cannot enter a player flow.
+  // Admin roles open settings explicitly while preserving their player account.
   await signOut(guestPage);
-  await click(guestPage, '#admin-login-button');
-  await wait(guestPage, () => document.querySelector('#login-name')?.value === 'admin' &&
-    document.querySelector('#login-password')?.required === false);
-  await evaluate(guestPage, () => document.querySelector('#login-form').requestSubmit());
-  await wait(guestPage, () => Boolean(document.querySelector('#admin-panel')?.offsetWidth));
-  assert(await evaluate(guestPage, () => document.querySelector('#app-panel')?.hidden === true &&
-    !document.querySelector('#create-game-tab')?.offsetWidth), 'Admin can see player game actions.');
+  await openAdminFixture(guestPage);
   await waitText(guestPage, '#admin-config-status', 'Pacing changes apply');
   await guestPage.screenshot('flow-admin-config');
   await input(guestPage, '#admin-runout-seconds', 3.5);
@@ -220,7 +215,7 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   await input(guestPage, '#admin-postflop-percent', '40, 75, 110');
   await click(guestPage, '#admin-config-save');
   await waitText(guestPage, '#admin-config-status', 'Saved.');
-  const adminSession = await api('/login', null, {username: 'admin', password: ''});
+  const adminSession = await api('/login', null, {username: 'admin', password: 'test-admin-password'});
   const savedConfig = await api('/admin/config', adminSession);
   assert(Number(savedConfig.config.runout_seconds) === 3.5 &&
     JSON.stringify(savedConfig.config.bet_presets.preflop_bb) === JSON.stringify([2.5, 3, 4.5]) &&
@@ -368,5 +363,5 @@ export default async function flow([hostPage, guestPage], sleep, roomPassword) {
   assert(JSON.stringify(zeroSaved.table.config.payout_percentages) === JSON.stringify([100]),
     'Saving an unrelated setup field changed the valid first-place-only economics: ' + JSON.stringify(zeroSaved.table.config.payout_percentages));
 
-  console.log('New game opens one setup dialog; payouts stay at 100%, admin is config/test-only, mobile close works, and ending requires two confirmations.');
+  console.log('New game opens one setup dialog; payouts stay at 100%, admin roles open room settings, mobile close works, and ending requires two confirmations.');
 }

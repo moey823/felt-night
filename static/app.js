@@ -14,21 +14,16 @@
     var nameInput = byId("login-name");
     nameInput.pattern = "[A-Za-z0-9][A-Za-z0-9._\\x2d]{2,23}";
     nameInput.title = "3–24 characters: letters, numbers, dots, underscores or hyphens. Start with a letter or number.";
-    var adminLogin = !newAccount && String(nameInput.value || "").trim().toLowerCase() === "admin";
     var passwordInput = byId("login-password");
-    var passwordLabel = document.querySelector('label[for="login-password"]');
-    passwordInput.required = newAccount || !adminLogin;
+    passwordInput.required = true;
     passwordInput.maxLength = 256;
-    passwordInput.minLength = newAccount ? 1 : (adminLogin ? 0 : 1);
+    passwordInput.minLength = 1;
     passwordInput.autocomplete = newAccount ? "new-password" : "current-password";
-    passwordLabel.hidden = adminLogin;
-    passwordInput.hidden = adminLogin;
-    if (adminLogin) passwordInput.value = "";
-    sw.hidden = adminLogin;
-    byId("admin-login-button").hidden = claim || adminLogin;
-    byId("login-form").querySelector('button[type=submit] span').textContent = claim ? "Secure my seat" : newAccount ? "Create account" : (adminLogin ? "Sign in as admin" : "Sign in");
-    document.querySelector(".login-card h2").textContent = claim ? "Keep your seat" : newAccount ? "Create an account" : (adminLogin ? "Room administration" : "Welcome back");
-    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password with at least one character." : (adminLogin ? "Use the reserved room administrator account." : "Sign in to return to your seat and view your tournament history.");
+    document.querySelector('label[for="login-password"]').hidden = false;
+    passwordInput.hidden = false;
+    byId("login-form").querySelector('button[type=submit] span').textContent = claim ? "Secure my seat" : newAccount ? "Create account" : "Sign in";
+    document.querySelector(".login-card h2").textContent = claim ? "Keep your seat" : newAccount ? "Create an account" : "Welcome back";
+    document.querySelector(".login-card p.muted").textContent = claim ? "Choose a username and personal password to keep this browser’s seat and available history." : newAccount ? "Use the room invite password once. Choose a personal password with at least one character." : "Sign in to return to your seat and view your tournament history.";
   }
   byId("auth-switch").addEventListener("click", async function () {
     if (authMode === "claim") {
@@ -37,14 +32,6 @@
       setAuthMode(authMode === "login" ? "register" : "login");
       byId("login-password").value = ""; byId("room-password").value = ""; clearNotice();
     }
-  });
-  byId("admin-login-button").addEventListener("click", function () {
-    setAuthMode("login");
-    byId("login-name").value = "admin";
-    setAuthMode("login");
-    byId("login-password").value = "";
-    byId("login-form").querySelector('button[type=submit]').focus();
-    clearNotice();
   });
   byId("login-name").addEventListener("input", function () { setAuthMode(authMode); });
 
@@ -75,6 +62,11 @@
     sessionProof: "",
     player: null,
     isAdmin: false,
+    adminOpen: false,
+    identityRefreshAt: 0,
+    adminAccounts: [],
+    adminCount: 0,
+    adminRoleSaving: false,
     globalConfig: JSON.parse(JSON.stringify(DEFAULT_GLOBAL_CONFIG)),
     adminTables: [],
     adminConfigSaving: false,
@@ -290,14 +282,14 @@
   }
 
   function reserveTableWindow() {
-    if (!state.player || (!state.isAdmin && !state.player.avatar_url) || isStandaloneApp()) return null;
+    if (!state.player || (!state.adminOpen && !state.player.avatar_url) || isStandaloneApp()) return null;
     try { return window.open("about:blank", "_blank", tableWindowFeatures()); }
     catch (err) { return null; }
   }
 
   function openTableWindow(tableId, setup, reservedWindow) {
     if (!tableId || !state.player) return false;
-    if (!state.isAdmin && !state.player.avatar_url) {
+    if (!state.adminOpen && !state.player.avatar_url) {
       openProfilePhotoDialog(null, function () { openTableWindow(tableId, setup); });
       return false;
     }
@@ -642,7 +634,7 @@
 
   async function saveAdminAvatarPreset(event) {
     event.preventDefault();
-    if (!state.isAdmin || adminAvatarBusy) return;
+    if (!state.adminOpen || adminAvatarBusy) return;
     var form = byId("admin-avatar-preset-form");
     var name = byId("admin-avatar-preset-name").value.trim();
     var file = byId("admin-avatar-preset-file").files && byId("admin-avatar-preset-file").files[0];
@@ -811,7 +803,7 @@
   }
 
   function openProfilePhotoDialog(event, afterSave, afterCancel) {
-    if (!state.player || state.isAdmin) return false;
+    if (!state.player || state.adminOpen) return false;
     if (typeof afterSave === "function" && state.player.avatar_url) return false;
     invalidateProfilePhotoWork();
     profilePhotoTriggerId = event && event.currentTarget ? event.currentTarget.id : "profile-photo-button";
@@ -1074,7 +1066,7 @@
   }
 
   function openProfileAccountDialog(event) {
-    if (!state.player || state.isAdmin) return;
+    if (!state.player || state.adminOpen) return;
     profileAccountGeneration += 1;
     profileAccountBusy = false;
     profileAccountTrigger = event && event.currentTarget ? event.currentTarget : byId("profile-account-button");
@@ -1586,7 +1578,7 @@
   var reactionTouchSuppressClickButton = null;
 
   function openReactionSettingsDialog(slotIndex, trigger) {
-    if (state.isAdmin) return;
+    if (state.adminOpen) return;
     var dialog = byId("reaction-settings-dialog");
     if (!dialog) return;
     renderReactionSettingsDialog();
@@ -1907,7 +1899,9 @@
     renderIdentityAvatar();
     state.reactionFavorites = DEFAULT_REACTION_FAVORITES.slice();
     resetReactionStream();
+    state.adminOpen = false;
     state.isAdmin = false;
+    renderAdminAccess();
     document.body.classList.remove("admin-active");
     byId("admin-panel").hidden = true;
     state.showBigBlinds = false;
@@ -2018,7 +2012,7 @@
     var preview = byId("chat-preview");
     var quickForm = byId("chat-quick-form");
     if (!button || !panel) return;
-    var available = Boolean(state.player && !state.isAdmin && state.activeTableId && state.tableView);
+    var available = Boolean(state.player && !state.adminOpen && state.activeTableId && state.tableView);
     button.hidden = !available;
     if (topline) {
       topline.hidden = !available;
@@ -3142,7 +3136,7 @@
 
   async function sendTableReaction(emoji) {
     var tableId = String(state.activeTableId || "");
-    if (!tableId || !state.player || state.isAdmin || state.reactionSending ||
+    if (!tableId || !state.player || state.adminOpen || state.reactionSending ||
         REACTION_EMOJIS.indexOf(emoji) < 0 || Date.now() - state.reactionLastSentAt < 800) return;
     state.reactionSending = true;
     state.reactionLastSentAt = Date.now();
@@ -3947,8 +3941,98 @@
     byId("admin-postflop-percent").value = presets.postflop_percent.join(", ");
   }
 
+  function renderAdminAccess() {
+    ["admin-button", "table-admin-button"].forEach(function (id) {
+      byId(id).hidden = !state.player || !state.isAdmin;
+    });
+  }
+
+  function showAdminPanel(open) {
+    state.adminOpen = Boolean(open && state.isAdmin);
+    byId("admin-panel").hidden = !state.adminOpen;
+    byId("app-panel").hidden = state.adminOpen;
+    document.body.classList.toggle("admin-active", state.adminOpen);
+    if (state.adminOpen) {
+      document.body.classList.remove("gameplay-active");
+      if (byId("table-menu")) byId("table-menu").open = false;
+      loadAdminConfig();
+      loadAdminAccounts();
+      loadAvatarPresets(true).then(function () { renderAdminAvatarCatalog(); });
+      if (byId("admin-tables-details").open) loadAdminTables();
+      if (byId("admin-history-details").open) loadAdminHistory(0, false);
+    } else {
+      closeAdminHistoryDialog(false);
+      renderTables();
+      renderTable();
+    }
+  }
+
+  async function openAdminPanel() {
+    try {
+      var identity = await request("/me");
+      state.isAdmin = Boolean(identity.authenticated && identity.player && identity.player.is_admin);
+      renderAdminAccess();
+      if (state.isAdmin) showAdminPanel(true);
+    } catch (err) { showNotice(err.message, "error", false); }
+  }
+
+  function renderAdminAccounts() {
+    var filter = byId("admin-accounts-filter").value.trim().toLowerCase();
+    var rows = state.adminAccounts.filter(function (row) {
+      return (row.username + " " + row.display_name).toLowerCase().indexOf(filter) >= 0;
+    });
+    byId("admin-accounts-list").innerHTML = rows.map(function (row) {
+      var lastAdmin = row.is_admin && state.adminCount <= 1;
+      return '<div class="admin-account"><div><strong>' + esc(row.display_name) + '</strong><span>@' +
+        esc(row.username) + (row.is_admin ? ' · Admin' : '') + '</span></div><button type="button" class="button button-outline button-small" data-account-role="' +
+        esc(row.player_id) + '" data-role-next="' + String(!row.is_admin) + '"' +
+        (lastAdmin || state.adminRoleSaving ? ' disabled' : '') + ' aria-label="' +
+        esc((row.is_admin ? 'Remove admin role from ' : 'Make admin: ') + row.username) + '">' +
+        (lastAdmin ? 'Last admin' : row.is_admin ? 'Remove admin' : 'Make admin') + '</button></div>';
+    }).join("") || '<p class="muted">No matching accounts.</p>';
+  }
+
+  async function loadAdminAccounts() {
+    if (!state.adminOpen) return;
+    try {
+      var data = await request("/admin/accounts");
+      if (!state.adminOpen) return;
+      state.adminAccounts = data.accounts || [];
+      state.adminCount = number(data.admin_count, 0);
+      renderAdminAccounts();
+    } catch (err) { byId("admin-accounts-status").textContent = err.message; }
+  }
+
+  byId("admin-button").addEventListener("click", openAdminPanel);
+  byId("table-admin-button").addEventListener("click", openAdminPanel);
+  byId("admin-back-button").addEventListener("click", function () { showAdminPanel(false); });
+  byId("admin-accounts-filter").addEventListener("input", renderAdminAccounts);
+  byId("admin-accounts-refresh").addEventListener("click", loadAdminAccounts);
+  byId("admin-accounts-list").addEventListener("click", async function (event) {
+    var button = event.target.closest("[data-account-role]");
+    if (!button || button.disabled || state.adminRoleSaving) return;
+    state.adminRoleSaving = true;
+    renderAdminAccounts();
+    try {
+      var result = await mutate("/admin/accounts/" + encodeURIComponent(button.dataset.accountRole) + "/role",
+        { is_admin: button.dataset.roleNext === "true" });
+      state.isAdmin = Boolean(result.player && result.player.is_admin);
+      if (state.player) state.player.is_admin = state.isAdmin;
+      renderAdminAccess();
+      byId("admin-accounts-status").textContent = "Admin role updated.";
+      if (!state.isAdmin) showAdminPanel(false);
+      else await loadAdminAccounts();
+    } catch (err) {
+      byId("admin-accounts-status").textContent = err.message;
+      await loadAdminAccounts();
+    } finally {
+      state.adminRoleSaving = false;
+      renderAdminAccounts();
+    }
+  });
+
   async function loadAdminConfig() {
-    if (!state.isAdmin) return;
+    if (!state.adminOpen) return;
     var status = byId("admin-config-status");
     status.textContent = "Loading room settings…";
     try {
@@ -3967,7 +4051,7 @@
 
   async function saveAdminConfig(event) {
     event.preventDefault();
-    if (!state.isAdmin || state.adminConfigSaving) return;
+    if (!state.adminOpen || state.adminConfigSaving) return;
     var form = byId("admin-config-form");
     var error = byId("admin-config-error");
     error.hidden = true;
@@ -4028,7 +4112,7 @@
   }
 
   async function loadAdminTables() {
-    if (!state.isAdmin || state.adminTablesLoading) return;
+    if (!state.adminOpen || state.adminTablesLoading) return;
     state.adminTablesLoading = true;
     var list = byId("admin-tables-list");
     list.setAttribute("aria-busy", "true");
@@ -4069,7 +4153,7 @@
 
   async function inspectAdminTable(card) {
     var id = String(card && card.getAttribute("data-admin-table-id") || "");
-    if (!id || !state.isAdmin) return;
+    if (!id || !state.adminOpen) return;
     var target = card.querySelector("[data-admin-detail]");
     target.hidden = false;
     target.textContent = "Loading table…";
@@ -4085,7 +4169,7 @@
     var card = button.closest("[data-admin-table-id]");
     var id = String(card && card.getAttribute("data-admin-table-id") || "");
     var seatNo = number(button.getAttribute(add ? "data-admin-add-bot" : "data-admin-remove-bot"), -1);
-    if (!id || seatNo < 0 || !state.isAdmin) return;
+    if (!id || seatNo < 0 || !state.adminOpen) return;
     button.disabled = true;
     try {
       if (add) await mutate("/tables/" + encodeURIComponent(id) + "/bots", { seat_no: seatNo });
@@ -4209,7 +4293,7 @@
   }
 
   async function loadAdminHistory(offset, append) {
-    if (!state.isAdmin || state.adminHistoryLoading) return;
+    if (!state.adminOpen || state.adminHistoryLoading) return;
     var pageOffset = Math.max(0, Math.floor(number(offset, 0)));
     var shouldAppend = Boolean(append && pageOffset > 0);
     var generation = ++state.adminHistoryListGeneration;
@@ -4227,7 +4311,7 @@
     }
     try {
       var data = await request("/admin/history" + (pageOffset ? "?offset=" + encodeURIComponent(pageOffset) : ""));
-      if (generation !== state.adminHistoryListGeneration || !state.isAdmin) return;
+      if (generation !== state.adminHistoryListGeneration || !state.adminOpen) return;
       var rows = Array.isArray(data.tournaments) ? data.tournaments : [];
       if (shouldAppend) {
         var known = Object.create(null);
@@ -4289,7 +4373,7 @@
   }
 
   async function loadAdminHistoryDetail(id, offset, append) {
-    if (!state.isAdmin || state.adminHistoryDetailLoading || !id) return;
+    if (!state.adminOpen || state.adminHistoryDetailLoading || !id) return;
     var gameId = String(id);
     var pageOffset = Math.max(0, Math.floor(number(offset, 0)));
     var shouldAppend = Boolean(append && pageOffset > 0 && state.adminHistoryDetail);
@@ -4303,7 +4387,7 @@
       var path = "/admin/history/" + encodeURIComponent(gameId) +
         (pageOffset ? "?offset=" + encodeURIComponent(pageOffset) : "");
       var data = await request(path);
-      if (generation !== state.adminHistoryDetailGeneration || !state.isAdmin ||
+      if (generation !== state.adminHistoryDetailGeneration || !state.adminOpen ||
           !byId("admin-history-dialog").open || state.adminHistoryDetailId !== gameId) return;
       var tournament = data.tournament || {};
       var fetchedHands = Array.isArray(data.hands) ? data.hands : [];
@@ -4329,7 +4413,7 @@
   }
 
   function inspectAdminHistory(id, trigger) {
-    if (!state.isAdmin || !id) return;
+    if (!state.adminOpen || !id) return;
     state.adminHistoryDetailId = String(id);
     state.adminHistoryDetail = null;
     state.adminHistoryTrigger = trigger || null;
@@ -4368,7 +4452,7 @@
   }
 
   function beginAdminHistoryDelete(id) {
-    if (!state.isAdmin || !state.adminHistoryDetail) return;
+    if (!state.adminOpen || !state.adminHistoryDetail) return;
     var tournament = state.adminHistoryDetail.tournament || {};
     var gameId = String(tournament.id || state.adminHistoryDetailId);
     if (id && String(id) !== gameId) return;
@@ -4390,7 +4474,7 @@
   }
 
   function beginAdminHistoryBulkDelete(trigger) {
-    if (!state.isAdmin || state.adminHistoryDeleting || !state.adminHistorySelectedIds.length) return;
+    if (!state.adminOpen || state.adminHistoryDeleting || !state.adminHistorySelectedIds.length) return;
     var ids = state.adminHistorySelectedIds.slice();
     var count = ids.length;
     state.adminHistoryDetailGeneration += 1;
@@ -4432,7 +4516,7 @@
 
   async function confirmAdminHistoryDelete() {
     var target = state.adminHistoryDeleteTarget;
-    if (!state.isAdmin || !target || state.adminHistoryDeleting) return;
+    if (!state.adminOpen || !target || state.adminHistoryDeleting) return;
     if (target.bulk) {
       confirmAdminHistoryBulkDelete(target);
       return;
@@ -4451,7 +4535,7 @@
     if (error) error.remove();
     try {
       await mutate("/admin/history/" + encodeURIComponent(targetId) + "/delete", { confirm_delete: true });
-      if (!state.isAdmin || String(state.player && state.player.id || "") !== adminId ||
+      if (!state.adminOpen || String(state.player && state.player.id || "") !== adminId ||
           String(state.sessionProof || "") !== authProof) return;
       state.adminHistory = state.adminHistory.filter(function (game) {
         return String(game.id) !== targetId;
@@ -4497,7 +4581,7 @@
   }
 
   async function confirmAdminHistoryBulkDelete(target) {
-    if (!state.isAdmin || !target || !Array.isArray(target.ids) || state.adminHistoryDeleting) return;
+    if (!state.adminOpen || !target || !Array.isArray(target.ids) || state.adminHistoryDeleting) return;
     var ids = target.ids.slice();
     var adminId = String(state.player && state.player.id || "");
     var authProof = String(state.sessionProof || "");
@@ -4516,7 +4600,7 @@
           ids.some(function (id) { return deletedIds.indexOf(String(id)) < 0; })) {
         throw Error("The room returned an unexpected deletion result. Refresh past games and review the selection.");
       }
-      if (!state.isAdmin || String(state.player && state.player.id || "") !== adminId ||
+      if (!state.adminOpen || String(state.player && state.player.id || "") !== adminId ||
           String(state.sessionProof || "") !== authProof || state.adminHistoryDeleteTarget !== target) return;
       var deleted = Object.create(null);
       deletedIds.forEach(function (id) { deleted[id] = true; });
@@ -4657,7 +4741,7 @@
     var completed = view.status === "completed";
     var seated = Boolean(seat);
     var controlsVisible = seated && (playing || completed);
-    var reactionVisible = Boolean(seat && state.player && !state.isAdmin);
+    var reactionVisible = Boolean(seat && state.player && !state.adminOpen);
     var panelVisible = controlsVisible || reactionVisible;
     var shortcuts = byId("reaction-shortcuts");
     if (shortcuts) {
@@ -5266,7 +5350,7 @@
   function syncRebuyOffer(view) {
     var offer = view && view.viewer && view.viewer.rebuy_offer;
     var offerId = String(offer && offer.id || "");
-    if (!offerId || !state.activeTableId || !state.player || state.isAdmin) {
+    if (!offerId || !state.activeTableId || !state.player || state.adminOpen) {
       clearRebuyOffer();
       return;
     }
@@ -5332,6 +5416,7 @@
   }
 
   function renderTable() {
+    if (state.adminOpen) return;
     var view = pageMode === "table" ? state.tableView : null;
     var hasTable = Boolean(view);
     byId("table-loading").hidden = hasTable || pageMode !== "table";
@@ -5440,10 +5525,10 @@
     var host = String(view.host_id || "") === playerId;
     byId("cancel-button").hidden = !(host && status === "lobby");
     byId("end-game-button").hidden = !(host && status === "playing");
-    byId("history-button").hidden = state.isAdmin;
-    byId("profile-photo-menu-button").hidden = state.isAdmin;
-    byId("table-logout-button").hidden = state.isAdmin;
-    byId("reaction-settings-button").hidden = state.isAdmin;
+    byId("history-button").hidden = state.adminOpen;
+    byId("profile-photo-menu-button").hidden = state.adminOpen;
+    byId("table-logout-button").hidden = state.adminOpen;
+    byId("reaction-settings-button").hidden = state.adminOpen;
     var menu = byId("table-menu");
     if (menu && !hasTable) menu.open = false;
     renderSitOutButton(view, ownSeat);
@@ -5482,53 +5567,35 @@
     if (typeof csrf === "string" && csrf) state.csrf = csrf;
     persistAuth();
     state.isAdmin = Boolean(player && player.is_admin);
+    state.adminOpen = false;
     if (!state.activeTableId) setActiveTableId(requestedTableId());
-    var photoGatedTableId = !state.isAdmin && !player.avatar_url ? String(state.activeTableId || "") : "";
+    var photoGatedTableId = !player.avatar_url ? String(state.activeTableId || "") : "";
     if (photoGatedTableId) {
       setActiveTableId("");
       state.tableView = null;
       setHashTable("");
     }
     state.restoreTableId = state.activeTableId ? String(state.activeTableId) : "";
-    state.polling = !state.isAdmin;
+    state.polling = true;
     byId("login-panel").hidden = true;
-    byId("app-panel").hidden = state.isAdmin;
-    byId("admin-panel").hidden = !state.isAdmin;
+    byId("app-panel").hidden = false;
+    byId("admin-panel").hidden = true;
     byId("identity").hidden = false;
-    byId("profile-photo-button").hidden = state.isAdmin;
-    byId("profile-account-button").hidden = state.isAdmin;
-    byId("profile-photo-menu-button").hidden = state.isAdmin;
-    byId("lobby-history-button").hidden = state.isAdmin;
-    byId("logout-button").hidden = state.isAdmin;
-    byId("admin-logout-button").hidden = !state.isAdmin;
-    byId("history-button").hidden = state.isAdmin;
-    byId("table-logout-button").hidden = state.isAdmin;
-    byId("reaction-settings-button").hidden = state.isAdmin;
-    document.body.classList.toggle("admin-active", state.isAdmin);
+    ["profile-photo-button", "profile-account-button", "profile-photo-menu-button", "lobby-history-button",
+      "logout-button", "history-button", "table-logout-button", "reaction-settings-button"].forEach(function (id) { byId(id).hidden = false; });
+    byId("admin-logout-button").hidden = false;
+    document.body.classList.remove("admin-active");
     byId("welcome-name").textContent = state.player
       ? (state.player.display_name || state.player.name || state.player.username || "") : "";
+    renderAdminAccess();
     renderIdentityAvatar();
     clearNotice();
     loadGlobalConfig().catch(function () {});
-    if (state.isAdmin) {
-      setActiveTableId("");
-      state.tableView = null;
-      setHashTable("");
-      renderTable();
-      loadAvatarPresets(true).then(function () { renderAdminAvatarCatalog(); });
-      loadAdminConfig();
-      if (byId("admin-tables-details").open) loadAdminTables();
-      if (byId("admin-history-details").open) loadAdminHistory(0, false);
-    } else {
-      document.body.classList.remove("admin-active");
-      renderTables();
-      renderTable();
-      refreshAll(true);
-      if (photoGatedTableId) {
-        openProfilePhotoDialog(null, function () {
-          window.location.assign(tableWindowUrl(photoGatedTableId, false));
-        });
-      }
+    renderTables();
+    renderTable();
+    refreshAll(true);
+    if (photoGatedTableId) {
+      openProfilePhotoDialog(null, function () { window.location.assign(tableWindowUrl(photoGatedTableId, false)); });
     }
   }
 
@@ -5639,7 +5706,17 @@
     }
     state.refreshBusy = true;
     try {
-      if (!state.isAdmin && Date.now() - state.adminConfigRefreshAt > 15000) loadGlobalConfig().catch(function () {});
+      if (Date.now() - state.identityRefreshAt > 5000) {
+        state.identityRefreshAt = Date.now();
+        var identity = await request("/me");
+        if (identity.authenticated && identity.player) {
+          state.isAdmin = Boolean(identity.player.is_admin);
+          if (state.player) state.player.is_admin = state.isAdmin;
+          renderAdminAccess();
+          if (!state.isAdmin && state.adminOpen) showAdminPanel(false);
+        }
+      }
+      if (!state.adminOpen && Date.now() - state.adminConfigRefreshAt > 15000) loadGlobalConfig().catch(function () {});
       if (!state.activeTableId) {
         var result = await request("/tables");
         state.tables = Array.isArray(result.tables) ? result.tables : [];
@@ -6245,7 +6322,7 @@
     else if (button.hasAttribute("data-admin-remove-bot")) mutateAdminBot(button, false);
   });
   byId("admin-history-details").addEventListener("toggle", function () {
-    if (byId("admin-history-details").open && state.isAdmin) loadAdminHistory(0, false);
+    if (byId("admin-history-details").open && state.adminOpen) loadAdminHistory(0, false);
   });
   byId("admin-history-list").addEventListener("click", function (event) {
     var button = event.target.closest("button");
@@ -6306,7 +6383,7 @@
 
   function openTableSettingsDialog() {
     var view = state.tableView;
-    if (!view || state.isAdmin) return;
+    if (!view || state.adminOpen) return;
     var playerId = String(state.player && state.player.id || "");
     if (String(view.host_id || "") !== playerId) return;
     var dialog = byId("table-settings-dialog");
@@ -6422,7 +6499,7 @@
 
   function openEndGameDialog() {
     var view = state.tableView;
-    if (!view || view.status !== "playing" || state.isAdmin) return;
+    if (!view || view.status !== "playing" || state.adminOpen) return;
     var playerId = String(state.player && state.player.id || "");
     if (String(view.host_id || "") !== playerId) return;
     state.endConfirmation = { tableId: String(state.activeTableId), token: "", step: 0, busy: false };
@@ -6528,7 +6605,7 @@
 
   async function createNewGame(event, reservedWindow) {
     var button = byId("create-game-tab");
-    if (!state.player || state.isAdmin || button.disabled) return;
+    if (!state.player || state.adminOpen || button.disabled) return;
     if (!state.player.avatar_url) {
       openProfilePhotoDialog({ currentTarget: button }, function () {
         createNewGame();
@@ -6618,7 +6695,7 @@
       return;
     }
     var button = event.target.closest("[data-take-seat]");
-    if (!button || button.disabled || !state.activeTableId || state.isAdmin) return;
+    if (!button || button.disabled || !state.activeTableId || state.adminOpen) return;
     event.stopPropagation();
     var tableId = String(state.activeTableId);
     var playerId = String(state.player && state.player.id || "");
@@ -6833,7 +6910,7 @@
 
   byId("action-panel").addEventListener("click", function (event) {
     var reactionButton = event.target.closest("[data-send-reaction]");
-    if (!reactionButton || reactionButton.disabled || state.isAdmin) return;
+    if (!reactionButton || reactionButton.disabled || state.adminOpen) return;
     if (reactionTouchSuppressClickButton === reactionButton) {
       event.preventDefault();
       reactionTouchSuppressClickButton = null;
@@ -6899,20 +6976,20 @@
 
   byId("reaction-shortcuts").addEventListener("contextmenu", function (event) {
     var button = event.target.closest("[data-reaction-slot]");
-    if (!button || state.isAdmin) return;
+    if (!button || state.adminOpen) return;
     event.preventDefault();
     openReactionSettingsDialog(number(button.getAttribute("data-reaction-slot"), -1), button);
   });
   byId("reaction-shortcuts").addEventListener("keydown", function (event) {
     if (!((event.key === "ContextMenu") || (event.shiftKey && event.key === "F10"))) return;
     var button = event.target.closest("[data-reaction-slot]");
-    if (!button || state.isAdmin) return;
+    if (!button || state.adminOpen) return;
     event.preventDefault();
     openReactionSettingsDialog(number(button.getAttribute("data-reaction-slot"), -1), button);
   });
   byId("reaction-shortcuts").addEventListener("pointerdown", function (event) {
     var button = event.target.closest("[data-reaction-slot]");
-    if (!button || event.pointerType !== "touch" || state.isAdmin) return;
+    if (!button || event.pointerType !== "touch" || state.adminOpen) return;
     if (reactionTouchHoldTimer) window.clearTimeout(reactionTouchHoldTimer);
     reactionTouchHoldButton = button;
     reactionTouchHoldPointerId = event.pointerId;

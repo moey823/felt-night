@@ -199,7 +199,7 @@ export default async function blindAnnouncement([desktop, mobile], sleep, roomPa
   }
 
   const stamp = Date.now().toString(36);
-  const admin = await newSession("/login", { username: "admin", password: "" });
+  const admin = await newSession("/login", { username: "admin", password: 'test-admin-password' });
   await request("/admin/config", admin, {
     runout_seconds: 1,
     showdown_seconds: 5,

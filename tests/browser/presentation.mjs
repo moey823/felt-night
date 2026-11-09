@@ -322,7 +322,7 @@ export default async function presentation([one, two], sleep, roomPassword) {
   }
 
   const stamp = Date.now().toString(36);
-  const admin = await request('/login', null, {username:'admin', password:''});
+  const admin = await request('/login', null, {username:'admin', password:'test-admin-password'});
   async function setGlobalConfig(values) {
     return request('/admin/config', admin, values);
   }

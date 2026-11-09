@@ -4859,3 +4859,20 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #seat-grid .sea
     line-height: 1;
   }
 }
+
+.admin-accounts-panel { display: grid; gap: 12px; }
+.admin-accounts-list { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
+.admin-account { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px; border: 1px solid #b9d69d33; border-radius: 10px; }
+.admin-account > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.admin-account span { color: var(--muted); font-size: 12px; }
+.admin-account button { flex: 0 0 auto; min-height: 44px; }
+
+.admin-accounts-panel { padding: 24px; }
+#admin-accounts-status:empty { display: none; }
+.admin-screen-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+@media (max-width: 700px) {
+  body:not(.gameplay-active) .topbar-right { max-width: 100%; flex-wrap: wrap; }
+  body:not(.gameplay-active) .identity { flex-wrap: wrap; max-width: 100%; }
+  .admin-screen-heading { flex-wrap: wrap; }
+  .admin-accounts-panel { padding: 16px; }
+}

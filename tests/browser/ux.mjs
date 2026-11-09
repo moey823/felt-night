@@ -151,7 +151,7 @@ export default async function ux([one, two], sleep, roomPassword) {
     users.push(session);
   }
 
-  const admin = await request('/login', null, {username:'admin', password:''});
+  const admin = await request('/login', null, {username:'admin', password:'test-admin-password'});
   async function setAdminTiming(runoutSeconds, blindSeconds = 0, eliminationSeconds = 0, showdownSeconds = 0) {
     return request('/admin/config', admin, {
       runout_seconds:runoutSeconds, blind_announcement_seconds:blindSeconds,
