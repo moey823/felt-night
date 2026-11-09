@@ -501,7 +501,7 @@ def pause_table(
                 ):
                     if hand.get(key) is not None:
                         hand[key] += duration
-            for key in ("blind_announcement", "elimination_announcement"):
+            for key in ("blind_announcement", "elimination_announcement", "rebuy_announcement"):
                 announcement = state.get(key)
                 if isinstance(announcement, dict):
                     for deadline in ("starts_at", "until"):
@@ -532,7 +532,7 @@ def _presentation_end(state: Dict[str, Any], hand: Dict[str, Any]) -> Optional[f
         _deadline_number(hand.get("showdown_until")),
         _deadline_number(hand.get("blind_transition_until")),
     ]
-    for key in ("elimination_announcement", "blind_announcement"):
+    for key in ("elimination_announcement", "blind_announcement", "rebuy_announcement"):
         announcement = state.get(key)
         if isinstance(announcement, dict):
             deadlines.append(_deadline_number(announcement.get("until")))
@@ -989,7 +989,7 @@ def _post_blind(state: Dict[str, Any], hand: Dict[str, Any], player_id: str, amo
 
 
 def _start_hand(state: Dict[str, Any], now: float, first: bool = False) -> None:
-    for key in ("blind_announcement", "elimination_announcement"):
+    for key in ("blind_announcement", "elimination_announcement", "rebuy_announcement"):
         announcement = state.get(key)
         if isinstance(announcement, dict) and announcement.get("until", 0) <= now:
             state[key] = None
@@ -1932,7 +1932,7 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
             isinstance(state.get(key), dict)
             and state[key].get("until") is not None
             and timestamp < state[key]["until"]
-            for key in ("blind_announcement", "elimination_announcement")
+            for key in ("blind_announcement", "elimination_announcement", "rebuy_announcement")
         )
         if (
             state["status"] == "playing"
@@ -1947,7 +1947,7 @@ def advance(state: Dict[str, Any], now: Optional[float] = None) -> Dict[str, Any
                 or hand.get("hand_complete_at")
                 or timestamp + HAND_COMPLETE_PAUSE_SECONDS,
             ]
-            for key in ("blind_announcement", "elimination_announcement"):
+            for key in ("blind_announcement", "elimination_announcement", "rebuy_announcement"):
                 announcement = state.get(key)
                 if isinstance(announcement, dict) and announcement.get("until") is not None:
                     deadlines.append(announcement["until"])
@@ -2448,6 +2448,29 @@ def _resolve_rebuy_offer(state: Dict[str, Any], player_id: str,
     if offers.get(player_id, {}).get("id") == offer.get("id"):
         del offers[player_id]
     _sync_rebuy_hold(state, now)
+    hand = state.get("hand")
+    if isinstance(hand, dict) and hand.get("street") == "showdown":
+        # Persist the result for all viewers, including reconnects, before dealing.
+        effective_now = state.get("paused_at") if state.get("paused") else now
+        starts_at = max(float(effective_now), float(hand.get("hand_complete_at") or effective_now))
+        previous = state.get("rebuy_announcement")
+        players = list(previous.get("players", [])) if (
+            isinstance(previous, dict) and previous.get("until", 0) > effective_now
+        ) else []
+        seat = _seat_by_id(state, player_id)
+        players = [row for row in players if row.get("player_id") != player_id]
+        players.append({"player_id": player_id, "name": seat["name"] if seat else "Player",
+                        "status": status})
+        state["rebuy_announcement"] = {
+            "players": players, "starts_at": starts_at, "until": starts_at + 4,
+        }
+        elimination = state.get("elimination_announcement")
+        if isinstance(elimination, dict):
+            elimination["players"] = [row for row in elimination.get("players", [])
+                                      if row.get("player_id") != player_id]
+            if not elimination["players"]:
+                state["elimination_announcement"] = None
+        _refresh_presentation_deadline(state, hand)
     receipts = state.setdefault("rebuy_receipts", {})
     receipts[str(offer.get("id"))] = {
         "player_id": player_id, "status": status, "resolved_at": now,
@@ -3383,6 +3406,7 @@ def public_view(state: Dict[str, Any], viewer_id: Optional[str]) -> Dict[str, An
         "paused_at": paused_at,
         "blind_announcement": public_announcement("blind_announcement"),
         "elimination_announcement": public_announcement("elimination_announcement"),
+        "rebuy_announcement": public_announcement("rebuy_announcement"),
         "host_id": state["host_id"],
         "host_name": state["host_name"],
         "config": {

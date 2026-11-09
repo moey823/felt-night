@@ -4907,3 +4907,85 @@ body.gameplay-active #app-panel #table-view #table-surface > #action-panel #acti
  .admin-account { align-items: stretch; flex-direction: column; }
  #admin-games-panel { padding: 16px; }
 }
+
+
+/* Table events own the center only after the full hand-viewing pause. */
+body #app-panel #table-view #felt > #table-announcements:not([hidden]) {
+  position: absolute !important;
+  z-index: 120 !important;
+  top: 50% !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  width: min(460px, calc(100% - 28px)) !important;
+  height: auto !important;
+  min-height: 100px !important;
+  max-height: 70% !important;
+  overflow: auto !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: clamp(18px, 3vw, 28px) !important;
+  border: 2px solid #ead28b !important;
+  border-radius: 20px !important;
+  background: #0c1d17 !important;
+  box-shadow: 0 18px 50px #0009 !important;
+  text-align: center !important;
+  pointer-events: none !important;
+}
+body #app-panel #table-view #felt > #table-announcements[hidden],
+body #app-panel #table-view #felt #table-announcements > [hidden],
+body #app-panel #table-view #felt #showdown-summary { display: none !important; }
+body #app-panel #table-view #felt #table-announcements > :not([hidden]):not(#showdown-summary) {
+  position: static !important;
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  border: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+  color: #fff7dc !important;
+  font-size: clamp(18px, 2.4vw, 26px) !important;
+  font-weight: 600 !important;
+  line-height: 1.35 !important;
+  white-space: pre-line !important;
+  overflow-wrap: anywhere;
+  pointer-events: none !important;
+}
+#table-announcements .table-event-label,
+#table-announcements strong,
+#table-announcements strong + span { display: block; }
+#table-announcements .table-event-label {
+  color: #ead28b;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+#table-announcements strong { font-size: 1.2em; margin-bottom: 8px; }
+#table-announcements strong + span { font-size: .75em; color: #d4e0d8; }
+body.gameplay-active #app-panel #table-view #table-surface #felt #street-label[data-hold-label] {
+  height: auto !important;
+  min-height: 28px !important;
+  max-height: none !important;
+  overflow: visible !important;
+  font-size: 10px !important;
+  line-height: 14px !important;
+}
+#street-label[data-hold-label]::after {
+  content: attr(data-hold-label);
+  display: block;
+  color: #fff0b9;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .02em;
+}

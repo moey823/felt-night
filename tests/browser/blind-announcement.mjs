@@ -167,7 +167,7 @@ export default async function blindAnnouncement([desktop, mobile], sleep, roomPa
       const minWidth = innerWidth < 800 ? 250 : 320;
       return {
         visible,
-        directChild: Boolean(node && node.parentElement === felt),
+        directChild: Boolean(node && node.parentElement?.id === "table-announcements" && node.parentElement.parentElement === felt),
         centered: Boolean(box && feltBox &&
           Math.abs((box.left + box.right) / 2 - (feltBox.left + feltBox.right) / 2) <= 4 &&
           Math.abs((box.top + box.bottom) / 2 - (feltBox.top + feltBox.bottom) / 2) <= 4),

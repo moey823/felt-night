@@ -70,6 +70,10 @@ class WholeDollarAndBotTests(unittest.TestCase):
                 self.assertEqual(engine._seat_by_id(state,"p4")["rebuy_count"],int(decision))
                 self.assertEqual(state["rebuy_history"][-1]["action"],"accepted" if decision else "declined")
                 self.assertNotIn("rebuy_hold_started_at",state)
+                self.assertEqual(state["hand_no"],1)
+                self.assertEqual(state["rebuy_announcement"]["players"][0]["status"],"accepted" if decision else "declined")
+                engine.advance(state,now=124)
+                self.assertEqual(state["hand_no"],2)
                 if decision:
                     self.assertIn("p4",state["hand"]["holes"])
                 else:

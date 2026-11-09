@@ -2743,7 +2743,8 @@ class EngineTests(unittest.TestCase):
                     total = sum(seat["stack"] for seat in state["seats"])
                 self.assertEqual(total, initial_chips)
 
-            self.assertGreaterEqual(state["hand_no"], 2)
+            # A valid random deal can finish an all-bot field in its first hand.
+            self.assertGreaterEqual(state["hand_no"], 1 if state["status"] == "completed" else 2)
             return state
 
         three = engine.create_lobby(

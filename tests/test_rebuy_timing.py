@@ -62,6 +62,11 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertEqual(state["blinds"]["next_level_at"], 202)
         self.assertEqual(self.view(state, "p1", 150)["blinds"]["seconds_to_next"], 52)
         engine.advance(state, now=150)
+        self.assertEqual(state["hand_no"], 1)
+        outcome = self.view(state, "p1", 150)["rebuy_announcement"]
+        self.assertEqual(outcome["players"][0]["status"], "accepted")
+        self.assertEqual(outcome["until"], 154)
+        engine.advance(state, now=154)
         self.assertEqual(state["hand_no"], 2)
         self.assertIn("p3", state["hand"]["holes"])
         self.assertFalse(self.view(state, "p1", 151)["blinds"]["paused"])
@@ -76,6 +81,9 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertTrue(self.view(state, "p1", 130)["blinds"]["paused"])
         engine.decline_rebuy(state, "p4", state["rebuy_offers"]["p4"]["id"], now=140)
         engine.advance(state, now=140)
+        self.assertEqual(state["hand_no"], 1)
+        self.assertEqual(self.view(state, "p1", 140)["rebuy_announcement"]["players"][0]["status"], "declined")
+        engine.advance(state, now=144)
         self.assertEqual(state["hand_no"], 2)
         self.assertEqual(state["blinds"]["next_level_at"], 192)
         self.assertEqual(self.view(state, "p1", 140)["rebuy_waiting"], [])
@@ -87,9 +95,12 @@ class RebuyTimingTests(unittest.TestCase):
         self.assertEqual((state["hand_no"], state["blinds"]["level"]), (1, 1))
         engine.advance(state, now=175)
         self.assertEqual(state["rebuy_offers"], {})
+        self.assertEqual(state["blinds"]["level"], 1)
+        self.assertEqual(self.view(state, "p1", 175)["rebuy_announcement"]["players"][0]["status"], "expired")
+        engine.advance(state, now=179)
         self.assertEqual(state["blinds"]["level"], 2)
         self.assertNotIn("rebuy_hold_started_at", state)
-        engine.advance(state, now=180)
+        engine.advance(state, now=180.5)
         self.assertEqual(state["hand_no"], 2)
 
     def test_host_pause_does_not_double_count_blind_hold_or_consume_offer(self):
@@ -109,6 +120,9 @@ class RebuyTimingTests(unittest.TestCase):
                 self.assertEqual(state["blinds"]["next_level_at"], 212)
                 self.assertEqual(self.view(state, "p1", 160)["blinds"]["seconds_to_next"], 52)
                 engine.advance(state, now=160)
+                self.assertEqual(state["hand_no"], 1)
+                self.assertEqual(self.view(state, "p1", 160)["rebuy_announcement"]["until"], 164)
+                engine.advance(state, now=164)
                 self.assertEqual(state["hand_no"], 2)
 
     def test_paused_level_duration_edit_restarts_clock_without_counting_the_rebuy_wait(self):
@@ -127,6 +141,36 @@ class RebuyTimingTests(unittest.TestCase):
         engine.pause_table(state, "p1", False, now=152)
         self.assertIsNone(self.view(state, "p3", 154.99)["viewer"]["rebuy_offer"])
         self.assertIsNotNone(self.view(state, "p3", 155)["viewer"]["rebuy_offer"])
+
+    def test_shared_outcome_survives_reload_and_host_pause(self):
+        state = self.busted_table()
+        engine.decline_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=120)
+        state = json.loads(json.dumps(state))
+        for pid in ("p1", "p3", None):
+            result = self.view(state, pid, 121)["rebuy_announcement"]
+            self.assertEqual(result["players"], [{"player_id": "p3", "name": "Cy", "status": "declined"}])
+        engine.pause_table(state, "p1", True, now=121)
+        engine.advance(state, now=200)
+        self.assertEqual(state["hand_no"], 1)
+        self.assertEqual(self.view(state, None, 200)["rebuy_announcement"]["until"], 203)
+        engine.pause_table(state, "p1", False, now=201)
+        engine.advance(state, now=203.99)
+        self.assertEqual(state["hand_no"], 1)
+        engine.advance(state, now=204)
+        self.assertEqual(state["hand_no"], 2)
+        self.assertIsNone(self.view(state, None, 204)["rebuy_announcement"])
+
+    def test_simultaneous_decisions_are_announced_together(self):
+        state = self.busted_table(("p3", "p4"), players=5)
+        engine.accept_rebuy(state, "p3", state["rebuy_offers"]["p3"]["id"], now=120)
+        engine.decline_rebuy(state, "p4", state["rebuy_offers"]["p4"]["id"], now=121)
+        result = self.view(state, None, 121)["rebuy_announcement"]
+        self.assertEqual([row["status"] for row in result["players"]], ["accepted", "declined"])
+        self.assertEqual(result["until"], 125)
+        engine.advance(state, now=124.99)
+        self.assertEqual(state["hand_no"], 1)
+        engine.advance(state, now=125)
+        self.assertEqual(state["hand_no"], 2)
 
     def test_bot_elimination_at_heads_up_does_not_add_rebuy_hold(self):
         state = self.busted_table()

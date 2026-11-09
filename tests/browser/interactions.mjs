@@ -201,7 +201,9 @@ export default async function interactions([one,two], sleep, roomPassword) {
       for(const page of [one,two]) await wait(page,()=>
         document.querySelector('#blind-level-countdown')?.getAttribute('aria-label')?.includes('paused at')&&
         document.querySelectorAll('#seat-grid .seat-cards .mini-card:not(.back)').length>=4&&
-        !document.querySelector('#rebuy-offer-dialog')?.open);
+        !document.querySelector('#rebuy-offer-dialog')?.open&&
+        document.querySelector('#table-announcements')?.hidden&&
+        document.querySelector('#street-label')?.dataset.holdLabel?.includes('Hands visible'));
       const frozen=await evaluate(one,()=>document.querySelector('#blind-level-countdown').textContent);
       await one.screenshot('rebuy-showdown-before-offer');
       await sleep(1100);
@@ -243,8 +245,14 @@ export default async function interactions([one,two], sleep, roomPassword) {
     document.querySelector('#rebuy-offer-button')?.hidden),
     'Another table viewer could see the eliminated player’s private rebuy offer.');
   const rebuyPlayerName=String(offerOwner.player.name||offerOwner.player.display_name||offerOwner.username);
-  await wait(otherPage,name=>document.querySelector('#rebuy-waiting')?.textContent==='Waiting for '+name+' to rebuy'&&
+  await wait(otherPage,name=>document.querySelector('#rebuy-waiting')?.textContent.includes('Waiting for '+name+' to rebuy')&&
     !document.querySelector('#rebuy-waiting').hidden,rebuyPlayerName);
+  const eventGeometry=await evaluate(otherPage,()=>{
+    const event=document.querySelector('#table-announcements').getBoundingClientRect();
+    const felt=document.querySelector('#felt').getBoundingClientRect();
+    return {dx:Math.abs(event.x+event.width/2-felt.x-felt.width/2),dy:Math.abs(event.y+event.height/2-felt.y-felt.height/2),font:parseFloat(getComputedStyle(document.querySelector('#rebuy-waiting')).fontSize)};
+  });
+  assert(eventGeometry.dx<2&&eventGeometry.dy<2&&eventGeometry.font>=18,'Rebuy wait was not prominent and centered: '+JSON.stringify(eventGeometry));
   const waitingClock=await evaluate(otherPage,()=>document.querySelector('#blind-level-countdown').textContent);
   await sleep(1100);
   assert(await evaluate(otherPage,value=>document.querySelector('#blind-level-countdown').textContent===value,waitingClock),
@@ -278,13 +286,16 @@ export default async function interactions([one,two], sleep, roomPassword) {
   assert(rebuyPost.length===1&&rebuyPost[0].offer_id===offerId&&rebuyPost[0].confirm===true&&
     rebuyStateAfterPost.responses.length===1&&rebuyStateAfterPost.responses[0].status===200,
     'Confirm rebuy did not submit exactly one idempotent, confirmed request: '+JSON.stringify(rebuyStateAfterPost));
+  await wait(otherPage,name=>!document.querySelector('#rebuy-outcome')?.hidden&&
+    document.querySelector('#rebuy-outcome').textContent.includes(name+' rebought'),rebuyPlayerName);
+  await otherPage.screenshot('rebuy-outcome-desktop');
   const accepted=(await request(rebuyPath,offerOwner)).table;
   const acceptedSeat=accepted.seats.find(seat=>String(seat.player_id||seat.id)===offerOwner.player.id);
   const offerHandNo=Number(String(offerView.viewer.rebuy_offer.hand_id).split(':').pop());
   const acceptedHandNo=Number(accepted.hand_no);
   const restoredChips=acceptedHandNo===offerHandNo
     ? Number(acceptedSeat?.stack) : Number(acceptedSeat?.stack)+Number(acceptedSeat?.bet||0);
-  assert(acceptedSeat&&restoredChips===100&&!(acceptedHandNo===offerHandNo&&acceptedSeat.in_hand)&&
+  assert(acceptedSeat&&restoredChips===100&&!accepted.viewer.can_act&&
     Number(acceptedSeat.rebuy_count)===1&&Number(acceptedSeat.total_buy_in_cents)===1000&&
     Number(accepted.prize_pool_cents)===2500&&Number(accepted.viewer.rebuy_count)===1&&
     Number(accepted.viewer.buy_in_count)===2&&Number(accepted.viewer.total_buy_in_cents)===1000,

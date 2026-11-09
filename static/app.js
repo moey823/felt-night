@@ -1280,8 +1280,8 @@
   function syncTableAnnouncementRegion() {
     var region = byId("table-announcements");
     if (!region) return;
-    region.hidden = !Array.prototype.some.call(region.children, function (child) {
-      return !child.hidden;
+    region.hidden = region.dataset.showdownHold === "true" || !Array.prototype.some.call(region.children, function (child) {
+      return child.id !== "showdown-summary" && !child.hidden;
     });
   }
 
@@ -1398,6 +1398,7 @@
       deadline == null ? 0 : deadlineRemainingMs(view, deadline),
       showdownRemainingMs(view),
       announcementRemainingMs(view, view.elimination_announcement),
+      announcementRemainingMs(view, view.rebuy_announcement),
       announcementRemainingMs(view, view.blind_announcement)
     );
   }
@@ -1409,6 +1410,7 @@
     var deadlines = [
       view.showdown_until || hand.showdown_until,
       view.elimination_announcement && view.elimination_announcement.until,
+      view.rebuy_announcement && view.rebuy_announcement.until,
       view.blind_announcement && view.blind_announcement.until,
       view.presentation_until || hand.presentation_until,
       view.next_hand_at || hand.next_hand_at,
@@ -2517,7 +2519,17 @@
     return Math.max(0, Math.ceil((state.blindLevelRemainingMs - elapsed) / 1000));
   }
 
+  function updateHandHoldCountdown() {
+    var street = byId("street-label");
+    if (!street || !state.handHoldRemainingMs) return;
+    var elapsed = state.handHoldPaused ? 0 : monotonicNow() - state.handHoldUpdatedAt;
+    var seconds = Math.max(0, Math.ceil((state.handHoldRemainingMs - elapsed) / 1000));
+    street.dataset.holdLabel = (state.handHoldPaused ? "Paused · " : "") + (state.handHoldShowdown ? "Hands visible · " : "Next hand · ") + seconds + "s";
+    street.setAttribute("aria-label", street.textContent + ". " + street.dataset.holdLabel);
+  }
+
   function updateBlindLevelCountdownNode() {
+    updateHandHoldCountdown();
     var node = byId("blind-level-countdown");
     if (!node) return;
     var seconds = blindLevelSecondsRemaining();
@@ -5234,13 +5246,39 @@
     var viewerId = String(view.viewer && view.viewer.player_id || "");
     var names = rows.filter(function (row) { return String(row.player_id) !== viewerId; })
       .map(function (row) { return String(row.name || "Player"); });
-    node.textContent = names.length ? "Waiting for " + names.join(" and ") + " to rebuy" : "";
+    node.innerHTML = names.length ? '<span class="table-event-label">Player busted</span><strong>' + esc(names.join(" and ")) + '</strong><span>Waiting for ' + esc(names.join(" and ")) + ' to rebuy</span>' : "";
     node.hidden = !names.length;
   }
 
   function renderTableAnnouncements(view) {
+    var holdMs = blindAnnouncementHoldRemainingMs(view);
+    var region = byId("table-announcements");
+    region.dataset.showdownHold = String(holdMs > 0);
+    var street = byId("street-label");
+    state.handHoldRemainingMs = holdMs;
+    state.handHoldUpdatedAt = monotonicNow();
+    state.handHoldPaused = view.paused;
+    state.handHoldShowdown = Array.isArray(view.showdown) && view.showdown.length > 0;
+    if (holdMs > 0) updateHandHoldCountdown();
+    else {
+      delete street.dataset.holdLabel;
+      street.removeAttribute("aria-label");
+    }
     renderRebuyWaiting(view);
+    var outcome = byId("rebuy-outcome");
+    var announcement = view.rebuy_announcement;
+    var outcomes = announcementRemainingMs(view, announcement) > 0 ? announcement.players || [] : [];
+    outcome.innerHTML = outcomes.map(function (row) {
+      var accepted = row.status === "accepted";
+      return '<span class="table-event-label">' + (accepted ? "Back in the game" : "Out of the tournament") +
+        '</span><strong>' + esc(row.name || "Player") + (accepted ? ' rebought' : ' did not rebuy') +
+        '</strong><span>' + (accepted ? "Returning for the next hand" :
+          (row.status === "expired" ? "Rebuy time expired" : "Rebuy declined")) + '</span>';
+    }).join("");
+    outcome.hidden = !outcomes.length;
+    if (outcomes.length) byId("rebuy-waiting").hidden = true;
     if (view.status === "ended") {
+      outcome.hidden = true;
       clearEliminationAnnouncement();
       clearBlindAnnouncement(false);
       byId("showdown-summary").hidden = true;
@@ -5248,7 +5286,7 @@
       syncTableAnnouncementRegion();
       return;
     }
-    if (Array.isArray(view.rebuy_waiting) && view.rebuy_waiting.length) clearEliminationAnnouncement();
+    if (outcomes.length || (Array.isArray(view.rebuy_waiting) && view.rebuy_waiting.length)) clearEliminationAnnouncement();
     else announceEliminations(view);
     renderShowdownSummary(view);
     syncTableAnnouncementRegion();
