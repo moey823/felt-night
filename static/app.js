@@ -7305,11 +7305,14 @@
 
   byId("table-surface").addEventListener("wheel", function (event) {
     var target = event.target instanceof Element ? event.target : null;
+    var seatVisual = target && target.closest("#seat-grid .seat-card");
+    var button = target && target.closest("button");
     if (!target || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
         !Number.isFinite(event.deltaY) || event.deltaY === 0 ||
         Math.abs(event.deltaX || 0) > Math.abs(event.deltaY) ||
-        !target.closest("#felt, #action-panel") || document.querySelector("dialog[open], [role='dialog']:not([hidden])") ||
-        target.closest("button, a, textarea, select, [contenteditable='true'], input:not(#raise-amount), .chat-panel, .table-settings")) return;
+        document.querySelector("dialog[open], [role='dialog']:not([hidden])") ||
+        target.closest("a, textarea, select, [contenteditable='true'], input:not(#raise-amount), .chat-panel, #chat-panel, #chat-messages, .table-settings, #table-menu, .table-shell-header") ||
+        (button && !seatVisual)) return;
     var input = byId("raise-amount");
     var view = state.tableView;
     if (!input || input.disabled || !view || !viewerCanAct(view) || state.actionPending ||

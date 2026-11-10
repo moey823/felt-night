@@ -1,7 +1,7 @@
 // Focused headless checks for account bet presets, mobile actions/chat, pause controls and announcements.
 import {seedAvatar} from './avatar-fixture.mjs';
 
-export default async function adjustments([one, two], sleep, roomPassword, {bettingDisplayOnly = false} = {}) {
+export default async function adjustments([one, two], sleep, roomPassword, {bettingDisplayOnly = false, wheelTargetsOnly = false} = {}) {
   const evaluate = (page, fn, ...args) =>
     page.evaluate('(' + fn.toString() + ')(...' + JSON.stringify(args) + ')');
   const assert = (condition, message) => { if (!condition) throw Error(message); };
@@ -460,6 +460,8 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
   await evaluate(actorPage, () => {
     window.adjustmentsWheelEvents = 0;
     window.addEventListener('wheel', () => window.adjustmentsWheelEvents++, {capture:true,once:true});
+    window.adjustmentLastWheelPrevented = null;
+    document.addEventListener('wheel', event => { window.adjustmentLastWheelPrevented = event.defaultPrevented; }, {once:true});
   });
   await actorPage.wheelAt(feltPoint.x, feltPoint.y, -120, 0, 12);
   const wheelResult = await evaluate(actorPage, () => {
@@ -488,6 +490,116 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
   }));
   assert(horizontalWheelDraft.value === wheelResult.after && horizontalWheelDraft.posts === 0,
     'A horizontally dominant wheel gesture over the felt must not change the betting draft: ' + JSON.stringify(horizontalWheelDraft));
+
+  if (wheelTargetsOnly) {
+    await evaluate(actorPage, tablePath => {
+      const original = window.fetch.bind(window);
+      window.fetch = async function(input, init) {
+        const response = await original(input, init);
+        if (new URL(String(input), location.origin).pathname !== '/poker/api' + tablePath ||
+            (init?.method || 'GET').toUpperCase() !== 'GET' || !response.ok) return response;
+        const payload = await response.clone().json();
+        const view = payload.table || payload;
+        view.board = ['A','K','Q','J','T'].map(rank => ({rank,suit:'hearts'}));
+        view.pot = 12345;
+        return new Response(JSON.stringify(payload), {status:response.status,headers:{'Content-Type':'application/json'}});
+      };
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, presetPath);
+    await wait(actorPage, () => document.querySelectorAll('#board-cards .playing-card').length === 5 &&
+      document.querySelector('#pot-amount').textContent === '12,345');
+    const wheelTargets = await evaluate(actorPage, () => {
+      const point = (selector, label) => {
+        const node = document.querySelector(selector);
+        if (!node) return null;
+        const rect = node.getBoundingClientRect();
+        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        return {label,x,y,selector,tag:hit?.tagName || '',id:hit?.id || '',className:String(hit?.className || ''),
+          button:Boolean(hit?.closest('button')),inFelt:Boolean(hit?.closest('#felt')),
+          inAction:Boolean(hit?.closest('#action-panel'))};
+      };
+      const surface = document.querySelector('#table-surface');
+      const surfaceRect = surface.getBoundingClientRect();
+      let margin = null;
+      for (let y = Math.ceil(surfaceRect.top + 1); y < surfaceRect.bottom - 1 && !margin; y += 8) {
+        for (let x = Math.ceil(surfaceRect.left + 1); x < surfaceRect.right - 1; x += 8) {
+          const hit = document.elementFromPoint(x, y);
+          if (hit && surface.contains(hit) && !hit.closest('#felt, #action-panel, button, a, input')) {
+            margin = {label:'table-surface margin',x,y,tag:hit.tagName,id:hit.id || '',className:String(hit.className || ''),
+              inFelt:Boolean(hit.closest('#felt')),inAction:Boolean(hit.closest('#action-panel'))};
+            break;
+          }
+        }
+      }
+      return [
+        margin,
+        point('#seat-grid .seat-card.is-me .seat-avatar', 'seat avatar button'),
+        point('#board-cards .playing-card', 'board card'),
+        point('#pot-display strong', 'pot amount'),
+        point('#seat-grid .seat-card.is-me .seat-cards .mini-card', 'hole card'),
+      ];
+    });
+    assert(wheelTargets.length === 5 && wheelTargets.every(Boolean) &&
+      !wheelTargets[0].inFelt && !wheelTargets[0].inAction && wheelTargets[1].button && wheelTargets[2].inFelt &&
+      wheelTargets[3].inFelt && wheelTargets[4].inFelt,
+      'Trusted wheel probes did not hit the intended table margin, avatar button, board, pot, and hole-card elements: ' + JSON.stringify(wheelTargets));
+    for (const target of wheelTargets) {
+      const before = await evaluate(actorPage, () => Number(document.querySelector('#raise-amount').value));
+      await evaluate(actorPage, () => {
+        window.adjustmentLastWheelPrevented = null;
+        document.addEventListener('wheel', event => { window.adjustmentLastWheelPrevented = event.defaultPrevented; }, {once:true});
+      });
+      await actorPage.wheelAt(target.x, target.y, -120, 0, 12);
+      const after = await evaluate(actorPage, () => ({
+        value:Number(document.querySelector('#raise-amount').value),
+        min:Number(document.querySelector('#raise-amount').min),
+        max:Number(document.querySelector('#raise-amount').max),
+        posts:window.adjustmentActionPosts,
+        inputFocused:document.activeElement === document.querySelector('#raise-amount'),
+        prevented:window.adjustmentLastWheelPrevented,
+      }));
+      assert(after.value > before && after.value >= after.min && after.value <= after.max &&
+        after.posts === 0 && !after.inputFocused && after.prevented === true,
+        'Vertical wheel over ' + target.label + ' did not safely adjust the raise draft: ' + JSON.stringify({target,before,after}));
+    }
+    const controls = await evaluate(actorPage, () => [
+      '#action-panel [data-raise-preset]', '#raise-amount-text'
+    ].map(selector => {
+      const node = document.querySelector(selector), rect = node.getBoundingClientRect();
+      const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+      return {selector,x,y};
+    }));
+    for (const control of controls) {
+      const before = await evaluate(actorPage, () => Number(document.querySelector('#raise-amount').value));
+      await actorPage.wheelAt(control.x, control.y, -120);
+      const after = await evaluate(actorPage, () => ({value:Number(document.querySelector('#raise-amount').value),posts:window.adjustmentActionPosts}));
+      assert(after.value === before && after.posts === 0,
+        'Wheel over an interactive betting control changed the draft: ' + JSON.stringify({control,before,after}));
+    }
+    await click(actorPage, '#chat-button');
+    await wait(actorPage, visible, '#chat-panel:not([hidden]) #chat-messages');
+    const chatPoint = await evaluate(actorPage, () => {
+      const node = document.querySelector('#chat-messages'), rect = node.getBoundingClientRect();
+      document.addEventListener('wheel', event => {
+        if (event.target.closest('#chat-panel')) window.adjustmentChatWheelPrevented = event.defaultPrevented;
+      }, {once:true});
+      window.adjustmentChatWheelPrevented = null;
+      return {x:rect.left + rect.width / 2,y:rect.top + rect.height / 2};
+    });
+    const chatDraftBefore = await evaluate(actorPage, () => Number(document.querySelector('#raise-amount').value));
+    await actorPage.wheelAt(chatPoint.x, chatPoint.y, -120);
+    const chatWheel = await evaluate(actorPage, () => ({
+      value:Number(document.querySelector('#raise-amount').value),
+      posts:window.adjustmentActionPosts,
+      prevented:window.adjustmentChatWheelPrevented,
+    }));
+    assert(chatWheel.value === chatDraftBefore && chatWheel.posts === 0 && chatWheel.prevented === false,
+      'Wheel over chat must retain its native behavior and leave the raise draft alone: ' + JSON.stringify(chatWheel));
+    console.log('Gameplay wheel targets passed: ' + JSON.stringify(wheelTargets));
+    return;
+  }
+
   await actorPage.resize(320, 568);
   await sleep(180);
   await click(actorPage, '#chat-button');

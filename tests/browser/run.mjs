@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const mode = process.argv[2];
-const modes = new Set(['host-defaults', 'betting-display', 'adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'history', 'flow', 'layout', 'stability', 'compact', 'action-pacing', 'reactions', 'admin-bulk', 'lobby', 'blind-announcement', 'profile-avatars', 'player-displays', 'shot-clock', 'admin-roles', 'big-blind-option', 'admin-management', 'whole-dollar-payouts', 'timeout-actions']);
+const modes = new Set(['host-defaults', 'betting-display', 'adjustments', 'interactions', 'crowded', 'ux', 'presentation', 'history', 'flow', 'layout', 'stability', 'compact', 'action-pacing', 'reactions', 'admin-bulk', 'lobby', 'blind-announcement', 'profile-avatars', 'player-displays', 'shot-clock', 'admin-roles', 'big-blind-option', 'admin-management', 'whole-dollar-payouts', 'timeout-actions', 'wheel-targets']);
 const suite = modes.has(mode) ? mode : 'tournament';
 const game = (await import('./' + suite + '.mjs')).default;
 const testRoomPassword = 'test-room-invite';
