@@ -164,9 +164,9 @@ async function makePage() {
         throw Error('Target did not become visible: ' + String(visibility?.result?.value));
       }
     },
-    async wheelAt(x, y, deltaY, modifiers = 0) {
+    async wheelAt(x, y, deltaY, modifiers = 0, deltaX = 0) {
       await this.bringToFront();
-      await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:0,deltaY,modifiers});
+      await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX,deltaY,modifiers});
     },
     reload() {
       return send('Page.reload',{ignoreCache:true});

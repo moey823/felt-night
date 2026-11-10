@@ -839,6 +839,44 @@ body.gameplay-active #table-surface #felt .board-center {
   margin: 0;
   touch-action: pan-x;
 }
+#action-panel .raise-control > .raise-sizing-controls {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-row: 3;
+  grid-template-columns: minmax(0, .7fr) minmax(100px, 1.2fr) minmax(84px, 1fr);
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+#action-panel .raise-amount-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+#action-panel .raise-amount-entry input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  min-height: 32px;
+  padding: 0 4px;
+  border: 1px solid rgba(225, 237, 227, .34);
+  border-radius: 5px;
+  background: #102019;
+  color: #f3f8ef;
+  font: 750 16px/1 system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+#action-panel .raise-amount-entry input:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+#action-panel .raise-amount-entry input[aria-invalid="true"] { border-color: #e99082; color: #ffd0c7; }
+#action-panel .raise-amount-unit { color: #bac9b8; font-size: 9px; white-space: nowrap; }
+#action-panel .action-buttons > .fold-action { color: #f0c0b6; border-color: rgba(223, 123, 107, .42); background: rgba(160, 62, 54, .1); }
+#action-panel .action-buttons > .fold-action:not(:disabled) { color: #ffe0d7; border-color: rgba(239, 133, 113, .76); background: rgba(167, 61, 50, .24); }
+#action-panel .action-buttons > .fold-action:disabled { color: #9ba79e; border-color: rgba(225, 237, 227, .11); background: rgba(225, 237, 227, .025); }
 #action-panel .action-controls > .button,
 #action-panel .action-controls > .action-buttons > .button,
 #action-panel .action-controls > .primary-actions > .button {
@@ -4798,7 +4836,6 @@ body.gameplay-active #app-panel #table-view #table-surface #felt #pot-display st
   font-size: 22px !important; font-weight: 850; color: #ffe7a0;
 }
 body.gameplay-active #app-panel #table-view #table-surface #action-panel #raise-preview {
-  grid-column: 1 !important; grid-row: 3 !important;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-width: 0; height: 32px; gap: 1px; container-type: inline-size;
   border-radius: 5px; background: rgba(234, 197, 105, .1); color: #ffe7a0;
@@ -4807,8 +4844,41 @@ body.gameplay-active #app-panel #table-view #table-surface #action-panel #raise-
 body.gameplay-active #raise-preview-label { font-size: 10px; font-weight: 650; }
 body.gameplay-active #raise-preview-amount { font-size: min(20px, calc(150cqw / var(--amount-length, 1))); font-weight: 850; white-space: nowrap; }
 body.gameplay-active #raise-preview.is-unavailable { color: var(--muted); background: transparent; }
-body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-control > #raise-amount {
-  grid-column: 2 / -1 !important;
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-control > .raise-sizing-controls {
+  display: grid !important; grid-column: 1 / -1 !important; grid-row: 3 !important;
+  grid-template-columns: minmax(0, .7fr) minmax(100px, 1.2fr) minmax(84px, 1fr) !important;
+  align-items: center !important; gap: 4px !important; width: 100% !important; height: 32px !important;
+  min-width: 0 !important; min-height: 32px !important; max-height: 32px !important; margin: 0 !important; padding: 0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls > #raise-preview {
+  grid-column: auto !important; grid-row: auto !important; width: 100% !important; height: 32px !important; min-width: 0 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls > .raise-amount-entry {
+  grid-column: auto !important; grid-row: auto !important; display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important; gap: 3px !important; min-width: 0 !important; height: 32px !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls .raise-amount-entry > input {
+  display: block !important; box-sizing: border-box !important; width: 100% !important; min-width: 0 !important;
+  height: 28px !important; min-height: 28px !important; max-height: 28px !important; margin: 0 !important; padding: 0 3px !important;
+  border: 1px solid rgba(225, 237, 227, .34) !important; border-radius: 5px !important; background: #102019 !important;
+  color: #f3f8ef !important; font: 750 16px/1 system-ui, sans-serif !important; font-variant-numeric: tabular-nums !important; text-align: center !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls .raise-amount-entry > input[aria-invalid="true"] {
+  border-color: #e99082 !important; color: #ffd0c7 !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls .raise-amount-unit {
+  color: #bac9b8 !important; font-size: 9px !important; white-space: nowrap !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls > #raise-amount {
+  display: block !important; grid-column: auto !important; grid-row: auto !important; width: 100% !important;
+  height: 32px !important; min-height: 32px !important; max-height: 32px !important; margin: 0 !important;
+  padding: 0 4px !important; touch-action: pan-x !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #action-panel .action-buttons > .fold-action:not(:disabled) {
+  color: #ffe0d7 !important; border-color: rgba(239, 133, 113, .76) !important; background: rgba(167, 61, 50, .24) !important;
+}
+body.gameplay-active #app-panel #table-view #table-surface #action-panel .action-buttons > .fold-action:disabled {
+  color: #9ba79e !important; border-color: rgba(225, 237, 227, .11) !important; background: rgba(225, 237, 227, .025) !important;
 }
 @media (max-width: 820px), (max-height: 500px) {
   body.gameplay-active #app-panel #table-view #table-surface #felt #pot-display {
@@ -5085,3 +5155,28 @@ body.gameplay-active #app-panel #table-view #table-surface > #action-panel.is-my
 
 .admin-log-entry summary::after { content:"Show details ▾"; color:var(--green); font-size:12px; }
 .admin-log-entry[open] summary::after { content:"Hide details ▴"; }
+
+/* Use the short-landscape dock's vertical space for an in-column sizing stack. */
+@media (min-width: 600px) and (max-height: 500px) {
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel:not([hidden]) {
+    height: 164px !important; min-height: 164px !important; max-height: 164px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel #action-controls {
+    grid-template-rows: 44px 28px 88px !important;
+    height: 164px !important; min-height: 164px !important; max-height: 164px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-control > .raise-sizing-controls {
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: 28px 28px 28px !important;
+    gap: 2px !important; height: 88px !important; min-height: 88px !important; max-height: 88px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls > #raise-preview {
+    display: flex !important; grid-column: 1 !important; grid-row: 1 !important; height: 28px !important; min-height: 28px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls > .raise-amount-entry {
+    grid-column: 1 !important; grid-row: 2 !important; height: 28px !important;
+  }
+  body.gameplay-active #app-panel #table-view #table-surface > #action-panel .raise-sizing-controls > #raise-amount {
+    grid-column: 1 !important; grid-row: 3 !important; height: 28px !important; min-height: 28px !important; max-height: 28px !important;
+  }
+}

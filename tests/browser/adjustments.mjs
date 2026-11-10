@@ -192,6 +192,15 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
   await actorPage.resize(320, 568);
   await otherPage.resize(390, 844);
   await wait(actorPage, visible, '#action-panel:not([hidden]) #raise-amount:enabled');
+  const foldAppearance = await evaluate(actorPage, () => {
+    const node = document.querySelector('[data-action-slot="fold"]');
+    const style = getComputedStyle(node);
+    return {disabled:node.disabled, color:style.color, background:style.backgroundColor,
+      opacity:Number(style.opacity), hasActiveStyle:node.classList.contains('fold-action')};
+  });
+  assert(!foldAppearance.disabled && foldAppearance.hasActiveStyle && foldAppearance.opacity >= 0.95 &&
+    foldAppearance.background !== 'rgba(0, 0, 0, 0)' && foldAppearance.color !== 'rgb(177, 190, 178)',
+    'A legal Fold action must look active, not like a disabled or quiet button: ' + JSON.stringify(foldAppearance));
   const fivePresets = await evaluate(actorPage, () => {
     const buttons = [...document.querySelectorAll('#action-panel [data-raise-preset]')];
     return {
@@ -230,6 +239,12 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
       const button = document.querySelector('[data-action-slot="raise"]');
       const rect = node.getBoundingClientRect();
       const slider = document.querySelector('#raise-amount').getBoundingClientRect();
+      const manualEntry = document.querySelector('#raise-amount-text');
+      const manualRect = manualEntry.getBoundingClientRect();
+      const entry = manualEntry.closest('.raise-amount-entry');
+      const entryRect = entry.getBoundingClientRect();
+      const unitRect = entry.querySelector('.raise-amount-unit').getBoundingClientRect();
+      const dockRect = document.querySelector('#action-panel').getBoundingClientRect();
       const pot = document.querySelector('#pot-amount');
       return {
         text:amount.textContent, label:document.querySelector('#raise-preview-label').textContent,
@@ -238,12 +253,26 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
         potFont:parseFloat(getComputedStyle(pot).fontSize),
         visible:rect.width > 0 && rect.height >= 28 && getComputedStyle(node).visibility === 'visible',
         fits:amount.scrollWidth <= amount.clientWidth + 1 && rect.left >= 0 && rect.right <= innerWidth,
-        separate:rect.right <= slider.left + 1,
-        accessible:document.querySelector('#raise-amount').getAttribute('aria-describedby').includes('raise-preview'),
+        separate:rect.right <= entryRect.left + 1 && entryRect.right <= slider.left + 1 && unitRect.right <= entryRect.right + 1,
+        stacked:rect.bottom <= entryRect.top + 1 && entryRect.bottom <= slider.top + 1 && unitRect.right <= entryRect.right + 1,
+        manualVisible:manualRect.width >= 70 && manualRect.height >= 24 && manualRect.left >= 0 && manualRect.right <= innerWidth,
+        manualBounds:[manualRect.left,manualRect.top,manualRect.right,manualRect.bottom],
+        entryBounds:[entryRect.left,entryRect.top,entryRect.right,entryRect.bottom],
+        sliderBounds:[slider.left,slider.top,slider.right,slider.bottom],
+        viewport:[innerWidth,innerHeight],
+        shortLandscape:innerWidth >= 600 && innerHeight <= 500,
+        sliderInsideDock:slider.left >= dockRect.left && slider.right <= dockRect.right,
+        reactionShortcutsVisible:[...document.querySelectorAll('#reaction-shortcuts .reaction-shortcut')].every(node => node.getBoundingClientRect().width > 0),
+        manualFont:parseFloat(getComputedStyle(manualEntry).fontSize),
+        manualValue:manualEntry.value,
+        unit:entry.querySelector('.raise-amount-unit').textContent.trim(),
+        accessible:manualEntry.getAttribute('aria-label') === 'Raise to total in chips',
         value:Number(document.querySelector('#raise-amount').value)
       };
     });
-    assert(preview.visible && preview.fits && preview.separate && preview.accessible &&
+    assert(preview.visible && preview.fits && (preview.shortLandscape ? preview.stacked : preview.separate) &&
+      preview.manualVisible && preview.manualFont >= 16 && preview.manualValue === String(expected) &&
+      preview.unit === 'chips' && preview.accessible && preview.sliderInsideDock && preview.reactionShortcutsVisible &&
       preview.font >= (String(expected).length >= 4 ? 16 : 18) && preview.potFont >= 18 && preview.value === expected &&
       preview.text.replaceAll(',', '') === String(expected) && preview.button.replaceAll(',', '') === String(expected) &&
       preview.label === 'Raise to', 'Raise-to preview is missing, stale, clipped, or too small: ' + JSON.stringify(preview));
@@ -254,6 +283,23 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
   await input(actorPage, '#raise-amount', 50);
   await assertRaisePreview(50);
   await sleep(1100);
+  await assertRaisePreview(50);
+  await evaluate(actorPage, () => {
+    const manual = document.querySelector('#raise-amount-text');
+    manual.focus();
+    manual.value = '';
+    manual.dispatchEvent(new Event('input', {bubbles:true}));
+  });
+  await sleep(1100);
+  const emptyAfterPolling = await evaluate(actorPage, () => ({
+    value:document.querySelector('#raise-amount-text').value,
+    focused:document.activeElement === document.querySelector('#raise-amount-text'),
+    invalid:document.querySelector('#raise-amount-text').getAttribute('aria-invalid'),
+    disabled:document.querySelector('[data-action-slot="raise"]').disabled,
+  }));
+  assert(emptyAfterPolling.value === '' && emptyAfterPolling.focused && emptyAfterPolling.invalid === 'true' && emptyAfterPolling.disabled,
+    'Polling must preserve a focused intermediate empty draft without allowing stale submission: ' + JSON.stringify(emptyAfterPolling));
+  await input(actorPage, '#raise-amount', 50);
   await assertRaisePreview(50);
   const afterSizing = await request(presetPath, actorUser);
   assert(beforeSizing.turn_version === afterSizing.turn_version && beforeSizing.actor_id === afterSizing.actor_id &&
@@ -282,8 +328,12 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
     await assertRaisePreview(1000);
     await click(actorPage, '[data-chip-display-toggle]');
     const bb = await evaluate(actorPage, () => ({label:document.querySelector('#raise-preview-label').textContent,
-      amount:document.querySelector('#raise-preview-amount').textContent, value:document.querySelector('#raise-amount').value}));
-    assert(bb.label==='Raise to · BB' && bb.amount==='100.0' && bb.value==='1000', 'Big-blind mode changed or mislabeled the selected total: '+JSON.stringify(bb));
+      amount:document.querySelector('#raise-preview-amount').textContent, value:document.querySelector('#raise-amount').value,
+      manualUnit:document.querySelector('.raise-amount-unit').textContent.trim(),
+      manualLabel:document.querySelector('#raise-amount-text').getAttribute('aria-label')}));
+    assert(bb.label==='Raise to · BB' && bb.amount==='100.0' && bb.value==='1000' &&
+      bb.manualUnit==='chips' && bb.manualLabel==='Raise to total in chips',
+      'Big-blind display changed the total or obscured that the manual entry is in chips: '+JSON.stringify(bb));
     await click(actorPage, '[data-chip-display-toggle]');
     await evaluate(actorPage, tableId => {
       const original=window.fetch.bind(window);
@@ -312,7 +362,76 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
         'River pot collides or clips at '+width+'x'+height+': '+JSON.stringify(geometry));
       await actorPage.screenshot('betting-river-'+width+'x'+height);
     }
-    console.log('Betting displays passed: nine players at seven viewports, prominent pot and raise-to total, presets and slider without submission, polling preservation, all-in total, and big-blind units.');
+    await evaluate(actorPage, () => {
+      window.adjustmentManualRaisePosts = [];
+      const original = window.fetch.bind(window);
+      window.fetch = function(url, options) {
+        if (String(url).includes('/poker/api/tables/') && /\/action(?:\?|$)/.test(String(url)) &&
+            String(options?.method || 'GET').toUpperCase() === 'POST') {
+          try { window.adjustmentManualRaisePosts.push(JSON.parse(options.body)); } catch (_) {}
+        }
+        return original(url, options);
+      };
+    });
+    for (const draft of ['', 'abc', '67.5', '19', '1001']) {
+      await input(actorPage, '#raise-amount-text', draft);
+      const invalid = await evaluate(actorPage, () => ({
+        value:document.querySelector('#raise-amount-text').value,
+        invalid:document.querySelector('#raise-amount-text').getAttribute('aria-invalid'),
+        preview:document.querySelector('#raise-preview-amount').textContent,
+        disabled:document.querySelector('[data-action-slot="raise"]').disabled,
+        posts:window.adjustmentManualRaisePosts.length,
+      }));
+      assert(invalid.value === draft && invalid.invalid === 'true' && invalid.preview === '—' && invalid.disabled && invalid.posts === 0,
+        'An empty, malformed, fractional, or out-of-range manual amount must remain visibly invalid and unsendable: ' + JSON.stringify(invalid));
+      await evaluate(actorPage, () => {
+        const button = document.querySelector('[data-action-slot="raise"]');
+        button.disabled = false;
+        button.click();
+      });
+      await sleep(80);
+      const rejected = await evaluate(actorPage, () => ({posts:window.adjustmentManualRaisePosts.length}));
+      assert(rejected.posts === 0, 'Invalid manual raise draft submitted stale slider value: ' + JSON.stringify({draft,rejected}));
+    }
+    const exactTotal = 67;
+    await evaluate(actorPage, amount => {
+      const manual = document.querySelector('#raise-amount-text');
+      manual.focus();
+      manual.value = String(amount);
+      manual.dispatchEvent(new Event('input', {bubbles:true}));
+    }, exactTotal);
+    const manualPreview = await evaluate(actorPage, () => ({
+      typed:document.querySelector('#raise-amount-text').value,
+      slider:Number(document.querySelector('#raise-amount').value),
+      preview:document.querySelector('#raise-preview-amount').textContent,
+      disabled:document.querySelector('[data-action-slot="raise"]').disabled,
+    }));
+    assert(manualPreview.typed === String(exactTotal) && manualPreview.slider === exactTotal &&
+      manualPreview.preview.replaceAll(',', '') === String(exactTotal) && !manualPreview.disabled,
+      'A valid manual whole-chip total did not synchronize with the preview and slider: ' + JSON.stringify(manualPreview));
+    const turnBeforeManualRaise = (await request(presetPath, actorUser)).turn_version;
+    await click(actorPage, '[data-action-slot="raise"]');
+    let submittedTurn = turnBeforeManualRaise;
+    for (let attempt = 0; attempt < 80 && submittedTurn <= turnBeforeManualRaise; attempt++) {
+      await sleep(100);
+      submittedTurn = (await request(presetPath, actorUser)).turn_version;
+    }
+    const sentManualRaise = await evaluate(actorPage, () => window.adjustmentManualRaisePosts.slice());
+    assert(submittedTurn > turnBeforeManualRaise && sentManualRaise.length === 1 &&
+      sentManualRaise[0].amount === exactTotal && ['bet','raise'].includes(sentManualRaise[0].action),
+      'Clicking Raise did not submit the exact manually typed total: ' + JSON.stringify({turnBeforeManualRaise,submittedTurn,sentManualRaise}));
+    await wait(actorPage, target => {
+      const manual = document.querySelector('#raise-amount-text');
+      return manual.disabled && manual.value !== String(target);
+    }, exactTotal);
+    const resetDraft = await evaluate(actorPage, () => ({
+      value:document.querySelector('#raise-amount-text').value,
+      disabled:document.querySelector('#raise-amount-text').disabled,
+      focused:document.activeElement === document.querySelector('#raise-amount-text'),
+    }));
+    assert(resetDraft.disabled && resetDraft.value !== String(exactTotal),
+      'A focused manual amount must reset when the turn token changes: ' + JSON.stringify(resetDraft));
+    console.log('Betting displays passed: nine players at seven viewports, active Fold styling, chips input fit, focused-draft polling, invalid-draft safety, exact manual submission and turn reset, all-in total, and big-blind units.');
     return;
   }
 
@@ -342,7 +461,7 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
     window.adjustmentsWheelEvents = 0;
     window.addEventListener('wheel', () => window.adjustmentsWheelEvents++, {capture:true,once:true});
   });
-  await actorPage.wheelAt(feltPoint.x, feltPoint.y, -120);
+  await actorPage.wheelAt(feltPoint.x, feltPoint.y, -120, 0, 12);
   const wheelResult = await evaluate(actorPage, () => {
     const input = document.querySelector('#raise-amount');
     return {
@@ -362,7 +481,13 @@ export default async function adjustments([one, two], sleep, roomPassword, {bett
   assert(wheelResult.after > wheelResult.before && wheelResult.after >= wheelResult.min &&
     wheelResult.after <= wheelResult.max && !wheelResult.inputFocused && wheelResult.posts === 0 &&
     wheelResult.wheelEvents === 1 && wheelResult.responsive && wheelResult.visible && wheelResult.pageFocused,
-  'A real desktop wheel over the felt must step the legal raise amount without focus or submission: ' + JSON.stringify(wheelResult));
+  'A real vertical desktop wheel with slight horizontal drift over the felt must step the legal raise amount without focus or submission: ' + JSON.stringify(wheelResult));
+  await actorPage.wheelAt(feltPoint.x, feltPoint.y, -20, 0, 80);
+  const horizontalWheelDraft = await evaluate(actorPage, () => ({
+    value:Number(document.querySelector('#raise-amount').value), posts:window.adjustmentActionPosts,
+  }));
+  assert(horizontalWheelDraft.value === wheelResult.after && horizontalWheelDraft.posts === 0,
+    'A horizontally dominant wheel gesture over the felt must not change the betting draft: ' + JSON.stringify(horizontalWheelDraft));
   await actorPage.resize(320, 568);
   await sleep(180);
   await click(actorPage, '#chat-button');

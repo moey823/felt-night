@@ -4813,7 +4813,7 @@
     if (!controls || controls.dataset.initialized === "true") return;
     controls.innerHTML =
       '<div class="action-buttons" role="group" aria-label="Poker actions">' +
-        '<button class="button button-quiet" type="button" data-action-slot="fold" data-poker-action="fold"><span class="action-button-label">Fold</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
+        '<button class="button button-outline fold-action" type="button" data-action-slot="fold" data-poker-action="fold"><span class="action-button-label">Fold</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
         '<button class="button button-outline call-button" type="button" data-action-slot="call" data-poker-action="check"><span class="action-button-label">Check</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
         '<button class="button button-primary" type="button" data-action-slot="raise" data-poker-action="raise_to"><span class="action-button-label">Bet</span><span class="action-button-value" hidden><strong class="action-button-amount"></strong><span class="action-button-unit is-compact-unit"></span></span></button>' +
       '</div>' +
@@ -4824,8 +4824,11 @@
           '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">¾ pot</button>' +
           '<button class="button button-quiet raise-preset" type="button" data-raise-preset="true">Pot</button>' +
         '</div>' +
-        '<div id="raise-preview" class="raise-preview"><span id="raise-preview-label">Raise to</span><strong id="raise-preview-amount">—</strong></div>' +
-        '<input id="raise-amount" type="range" min="0" max="0" step="1" value="0" aria-describedby="raise-preview raise-range">' +
+        '<div class="raise-sizing-controls">' +
+          '<div id="raise-preview" class="raise-preview"><span id="raise-preview-label">Raise to</span><strong id="raise-preview-amount">—</strong></div>' +
+          '<div class="raise-amount-entry"><label class="visually-hidden" for="raise-amount-text">Raise total in chips</label><input id="raise-amount-text" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" aria-label="Raise to total in chips" aria-describedby="raise-preview raise-range"><span class="raise-amount-unit" aria-hidden="true">chips</span></div>' +
+          '<input id="raise-amount" type="range" min="0" max="0" step="1" value="0" aria-label="Bet or raise amount slider" aria-describedby="raise-preview raise-range">' +
+        '</div>' +
         '<span class="raise-range" id="raise-range"></span>' +
       '</div>';
     controls.dataset.initialized = "true";
@@ -4855,13 +4858,24 @@
     button.setAttribute("aria-label", ariaLabel);
   }
 
+  function parseChipAmount(value) {
+    var raw = String(value == null ? "" : value);
+    if (!/^[0-9]+$/.test(raw)) return null;
+    var amount = Number(raw);
+    return Number.isSafeInteger(amount) ? amount : null;
+  }
+
   function updateRaisePreview() {
     var input = byId("raise-amount");
+    var amountInput = byId("raise-amount-text");
     var view = state.tableView;
-    if (!input || !view) return;
-    var target = Number(input.value);
+    if (!input || !amountInput || !view) return;
     var min = number(input.min, 0);
     var max = number(input.max, 0);
+    var rawTarget = state.raiseDraftKey === actionTokenKey(view) && state.raiseDraftValue !== null
+      ? state.raiseDraftValue : input.value;
+    var parsedTarget = parseChipAmount(rawTarget);
+    var target = parsedTarget === null ? null : parsedTarget;
     var viewer = view.viewer || {};
     var seat = viewerSeat(view);
     var stack = number(seat && seat.stack, 0);
@@ -4870,7 +4884,7 @@
     var actionName = currentBet > 0 ? "Raise" : "Bet";
     var rangeAvailable = viewer.raise_rights !== false && stack > 0 &&
       max > currentBet && min <= max;
-    var valid = rangeAvailable && Number.isInteger(target) && target >= min && target <= max;
+    var valid = rangeAvailable && target !== null && target >= min && target <= max;
     var button = byId("action-controls").querySelector('[data-action-slot="raise"]');
     byId("raise-preview-label").textContent = actionName + " to" + (tableUsesBigBlinds(view) ? " · BB" : "");
     byId("raise-preview-amount").textContent = valid ? tableChipValue(target, view) : "—";
@@ -4878,11 +4892,18 @@
     byId("raise-preview").setAttribute("aria-label", valid ? actionName + " to " + actionChips(target) + " total" : "No legal bet or raise is available");
     byId("raise-preview").classList.toggle("is-unavailable", !valid);
     var actionAllowed = viewerCanAct(view) && rangeAvailable;
-    input.setAttribute("aria-valuetext", !rangeAvailable
+    var rangeDescription = !rangeAvailable
       ? "No legal bet or raise is available"
       : valid
         ? actionName + " to " + actionChips(target) + " total; adds " + actionChips(Math.max(0, target - ownBet))
-        : "Choose an amount from " + actionChips(min) + " to " + actionChips(max));
+        : "Enter a whole-chip total from " + actionChips(min) + " to " + actionChips(max);
+    input.setAttribute("aria-valuetext", rangeDescription);
+    amountInput.setAttribute("aria-invalid", String(rangeAvailable && !valid));
+    amountInput.setAttribute("aria-valuetext", rangeDescription);
+    amountInput.disabled = Boolean(state.actionPending || state.actionSubmittedKey === actionTokenKey(view) || !actionAllowed);
+    if (rangeAvailable && !valid) {
+      byId("raise-range").textContent = "Whole-chip total · " + actionChips(min) + "–" + actionChips(max);
+    }
     if (button) {
       var allInTarget = rangeAvailable && valid && Math.floor(ownBet + stack) <= target;
       var visibleLabel = allInTarget ? "All in" : actionName;
@@ -4989,7 +5010,8 @@
       maxRaise > currentBet && rangeMax >= currentBet + 1 && rangeMin <= rangeMax;
     var raiseAllowed = canAct && rangeAvailable;
     var draftKey = actionTokenKey(view);
-    if (state.raiseDraftKey !== draftKey) {
+    var raiseDraftTurnChanged = state.raiseDraftKey !== draftKey;
+    if (raiseDraftTurnChanged) {
       state.raiseDraftKey = draftKey;
       state.raiseDraftValue = null;
     }
@@ -5036,14 +5058,16 @@
 
     var suggested = Math.min(rangeMax, Math.max(rangeMin, number(viewer.suggested_raise_to, rangeMin)));
     if (!Number.isInteger(suggested)) suggested = Math.round(suggested);
-    var draft = state.raiseDraftValue === null ? suggested : Number(state.raiseDraftValue);
-    if (!Number.isInteger(draft) || draft < rangeMin || draft > rangeMax) draft = suggested;
-    if (state.raiseDraftValue !== null && String(draft) !== state.raiseDraftValue) state.raiseDraftValue = String(draft);
+    if (state.raiseDraftValue === null) state.raiseDraftValue = String(suggested);
+    var draftRaw = state.raiseDraftValue;
+    var parsedDraft = parseChipAmount(draftRaw);
+    var draft = parsedDraft !== null && parsedDraft >= rangeMin && parsedDraft <= rangeMax ? parsedDraft : suggested;
 
     var callButton = controls.querySelector('[data-action-slot="call"]');
     var foldButton = controls.querySelector('[data-action-slot="fold"]');
     var raiseButton = controls.querySelector('[data-action-slot="raise"]');
     var input = byId("raise-amount");
+    var amountInput = byId("raise-amount-text");
     var blocked = Boolean(state.actionPending || state.actionSubmittedKey === currentKey);
     if (foldButton) foldButton.disabled = blocked || !canAct || toCall <= 0;
     if (callButton) {
@@ -5058,9 +5082,8 @@
 
     input.min = String(rangeMin);
     input.max = String(rangeMax);
-    if (document.activeElement !== input || Number(input.value) < rangeMin || Number(input.value) > rangeMax) {
-      input.value = String(draft);
-    }
+    input.value = String(draft);
+    if (raiseDraftTurnChanged || document.activeElement !== amountInput) amountInput.value = String(draftRaw);
     input.disabled = blocked || !raiseAllowed;
     input.setAttribute("aria-valuetext", rangeAvailable
       ? "Bet or raise to " + actionChips(draft)
@@ -5082,7 +5105,7 @@
       preset.setAttribute("data-target", String(spec.target));
       preset.setAttribute("aria-label", spec.ariaLabel);
       preset.setAttribute("title", spec.ariaLabel);
-      preset.setAttribute("aria-pressed", String(spec.target === draft));
+      preset.setAttribute("aria-pressed", String(parsedDraft === spec.target));
       preset.disabled = blocked || !raiseAllowed;
     });
 
@@ -6116,10 +6139,10 @@
 
     if (action === "raise_to") {
       var input = byId("raise-amount");
-      var amount = Number(input && input.value);
+      var amount = state.raiseDraftKey === actionTokenKey(view) ? parseChipAmount(state.raiseDraftValue) : null;
       var min = number(input && input.min, 0);
       var max = number(input && input.max, 0);
-      if (!Number.isInteger(amount) || amount < min || amount > max) {
+      if (amount === null || amount < min || amount > max) {
         showActionFeedback("Choose a whole-chip bet or raise total within the displayed range.", "error", false);
         return null;
       }
@@ -7263,17 +7286,30 @@
   });
 
   byId("action-controls").addEventListener("input", function (event) {
-    if (event.target && event.target.id === "raise-amount") {
-      state.raiseDraftKey = actionTokenKey(state.tableView || {});
+    if (event.target && (event.target.id === "raise-amount" || event.target.id === "raise-amount-text")) {
+      var view = state.tableView || {};
+      state.raiseDraftKey = actionTokenKey(view);
       state.raiseDraftValue = event.target.value;
+      if (event.target.id === "raise-amount") {
+        byId("raise-amount-text").value = event.target.value;
+      } else {
+        var entered = parseChipAmount(event.target.value);
+        var slider = byId("raise-amount");
+        var min = number(slider.min, 0);
+        var max = number(slider.max, 0);
+        if (entered !== null && entered >= min && entered <= max) slider.value = String(entered);
+      }
       updateRaisePreview();
     }
   });
 
   byId("table-surface").addEventListener("wheel", function (event) {
-    if (event.ctrlKey || event.metaKey || event.shiftKey || event.deltaX !== 0 ||
+    var target = event.target instanceof Element ? event.target : null;
+    if (!target || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey ||
         !Number.isFinite(event.deltaY) || event.deltaY === 0 ||
-        event.target.closest("button, a, textarea, select, [contenteditable='true'], input:not(#raise-amount), .chat-panel, .table-settings")) return;
+        Math.abs(event.deltaX || 0) > Math.abs(event.deltaY) ||
+        !target.closest("#felt, #action-panel") || document.querySelector("dialog[open], [role='dialog']:not([hidden])") ||
+        target.closest("button, a, textarea, select, [contenteditable='true'], input:not(#raise-amount), .chat-panel, .table-settings")) return;
     var input = byId("raise-amount");
     var view = state.tableView;
     if (!input || input.disabled || !view || !viewerCanAct(view) || state.actionPending ||
@@ -7288,11 +7324,12 @@
     state.raiseDraftKey = actionTokenKey(view);
     state.raiseDraftValue = String(next);
     input.value = String(next);
+    byId("raise-amount-text").value = String(next);
     updateRaisePreview();
   }, { passive: false });
 
   byId("action-controls").addEventListener("keydown", function (event) {
-    if (event.key === "Enter" && event.target && event.target.id === "raise-amount") {
+    if (event.key === "Enter" && event.target && (event.target.id === "raise-amount" || event.target.id === "raise-amount-text")) {
       event.preventDefault();
       var raiseButton = byId("action-controls").querySelector('[data-poker-action="raise_to"]');
       if (raiseButton && !raiseButton.disabled) raiseButton.click();
@@ -7311,6 +7348,7 @@
       state.raiseDraftKey = actionTokenKey(presetView);
       state.raiseDraftValue = String(presetTarget);
       raiseInput.value = String(presetTarget);
+      byId("raise-amount-text").value = String(presetTarget);
       updateRaisePreview();
       return;
     }
